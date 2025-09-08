@@ -1,0 +1,5 @@
+开发模式软件运行（方便热更新）：
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+
+
