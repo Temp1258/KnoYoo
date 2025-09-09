@@ -1,51 +1,84 @@
 import { useState } from "react";
-import reactLogo from "./assets/react.svg";
 import { invoke } from "@tauri-apps/api/core";
-import "./App.css";
+import { hello } from "@knoyoo/shared";
 
-function App() {
-  const [greetMsg, setGreetMsg] = useState("");
-  const [name, setName] = useState("");
+export default function App() {
+  const [name, setName] = useState("KnoYoo");
+  const [note, setNote] = useState("");
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
 
-  async function greet() {
-    // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-    setGreetMsg(await invoke("greet", { name }));
+  async function onSave() {
+    if (!note.trim()) return;
+    setSaving(true);
+    try {
+      await invoke<number>("add_note", { content: note });
+      setNote("");
+    } catch (e) {
+      console.error(e);
+      alert("保存失败: " + e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onSearch() {
+    try {
+      const rows = await invoke<string[]>("search_notes", { query: q });
+      setResults(rows);
+    } catch (e) {
+      console.error(e);
+      alert("搜索失败: " + e);
+    }
   }
 
   return (
-    <main className="container">
-      <h1>Welcome to Tauri + React</h1>
+    <div style={{ padding: 24, color: "#111", fontFamily: "system-ui" }}>
+      <h2>{hello(name)}</h2>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Enter a name..."
+        style={{ padding: 8, borderRadius: 8, marginBottom: 16 }}
+      />
 
-      <div className="row">
-        <a href="https://vite.dev" target="_blank">
-          <img src="/vite.svg" className="logo vite" alt="Vite logo" />
-        </a>
-        <a href="https://tauri.app" target="_blank">
-          <img src="/tauri.svg" className="logo tauri" alt="Tauri logo" />
-        </a>
-        <a href="https://react.dev" target="_blank">
-          <img src={reactLogo} className="logo react" alt="React logo" />
-        </a>
+      <hr style={{ margin: "16px 0" }} />
+
+      <h3>新增记录</h3>
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="输入要保存的文本..."
+        rows={3}
+        style={{ width: "100%", padding: 8, borderRadius: 8 }}
+      />
+      <div style={{ marginTop: 8 }}>
+        <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
+          {saving ? "保存中..." : "保存"}
+        </button>
       </div>
-      <p>Click on the Tauri, Vite, and React logos to learn more.</p>
 
-      <form
-        className="row"
-        onSubmit={(e) => {
-          e.preventDefault();
-          greet();
-        }}
-      >
-        <input
-          id="greet-input"
-          onChange={(e) => setName(e.currentTarget.value)}
-          placeholder="Enter a name..."
-        />
-        <button type="submit">Greet</button>
-      </form>
-      <p>{greetMsg}</p>
-    </main>
+      <h3 style={{ marginTop: 24 }}>全文搜索（FTS5）</h3>
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder='关键字或 "短语" 或 a OR b'
+        style={{ padding: 8, borderRadius: 8, width: "100%" }}
+      />
+      <div style={{ marginTop: 8 }}>
+        <button onClick={onSearch} style={{ padding: "8px 12px" }}>
+          搜索
+        </button>
+      </div>
+
+      <ul style={{ marginTop: 16 }}>
+        {results.map((text, i) => (
+          <li key={i} style={{ marginBottom: 8 }}>
+            {text}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
-
-export default App;
