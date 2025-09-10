@@ -2,9 +2,21 @@
 
 use rusqlite::{params, Connection};
 use serde::Serialize;
+use directories::ProjectDirs;
+use std::path::PathBuf;
+
+fn app_db_path() -> Result<PathBuf, String> {
+    // 组织名/应用名你也可以改，这里会得到：%APPDATA%\KnoYoo\Desktop\notes.db
+    let proj = ProjectDirs::from("", "KnoYoo", "Desktop")
+        .ok_or_else(|| "cannot resolve app data dir".to_string())?;
+    let dir = proj.data_dir();
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("notes.db"))
+}
 
 fn open_db() -> Result<Connection, String> {
-    let conn = Connection::open("notes.db").map_err(|e| e.to_string())?;
+    let db_path = app_db_path()?;
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     conn.execute_batch(
         r#"
         PRAGMA foreign_keys = ON;
@@ -38,6 +50,7 @@ fn open_db() -> Result<Connection, String> {
     .map_err(|e| e.to_string())?;
     Ok(conn)
 }
+
 
 #[tauri::command]
 fn add_note(title: String, content: String) -> Result<i64, String> {
