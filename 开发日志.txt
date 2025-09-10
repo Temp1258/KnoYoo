@@ -1,0 +1,1575 @@
+1) 新建根仓库
+# 设定根目录
+$ROOT = 'D:\knoyoo'
+mkdir $ROOT -Force | Out-Null
+Set-Location $ROOT
+
+git init
+git branch -m main
+pnpm init   # 一路回车
+
+自检：Get-ChildItem -Name 应看到 .git 和 package.json
+
+
+2) 配置 workspace 与忽略
+@"
+packages:
+  - "apps/*"
+  - "packages/*"
+"@ | Set-Content -Encoding utf8 .\pnpm-workspace.yaml
+
+@"
+node_modules
+dist
+target
+.vscode
+.DS_Store
+"@ | Set-Content -Encoding utf8 .\.gitignore
+
+git add .
+git commit -m "chore: init repo + workspace"
+
+
+自检：Get-ChildItem -Name 里有 pnpm-workspace.yaml、.gitignore
+
+3) 生成桌面端（Tauri + React + TS）
+mkdir .\apps -Force
+cd .\apps
+pnpm dlx create-tauri-app@latest desktop
+
+
+交互选择：
+
+Identifier: com.knoyoo.desktop
+Language: TypeScript / JavaScript
+UI template: React
+UI flavor: TypeScript
+Package manager: pnpm（其他默认/回车）
+
+完成后会生成 apps\desktop\...
+
+4) 安装依赖 & 首次运行
+cd $ROOT
+pnpm install
+
+cd .\apps\desktop
+pnpm tauri dev
+
+自检：弹出 Tauri 窗口（Welcome to Tauri + React）= 成功 ✅
+
+
+先在本地确认 Git 身份（只需一次）
+cd D:\knoyoo
+git config --global user.name  "Temp1258"
+git config --global user.email "diwenliu99@gmail.com"
+
+之后在 GitHub 创建一个空仓库
+New Repository → Repository name 填 knoyoo → Visibility 自选（Private/ Public）→
+不勾选 “Add a README / .gitignore / license”（保持空仓库）→ Create.
+
+通过HTTPS推送：
+cd D:\knoyoo
+# 把远端地址换成你自己的（页面上复制）
+git remote add origin https://github.com/<你的用户名>/knoyoo.git
+# 第一次推送 main 分支，并把 upstream 绑定好
+git push -u origin main
+首次会弹出浏览器让你登录/授权，按提示完成即可。
+
+看看现在有哪些未提交的文件：
+cd D:\knoyoo
+git status
+
+预期会看到 apps/desktop 等一堆 Untracked files（未跟踪）。
+
+把新建的桌面端代码加入版本控制并提交：
+git add apps
+git add pnpm-lock.yaml
+git commit -m "feat: add Tauri + React desktop app scaffold"
+node_modules 会被 .gitignore 排除，不会提交；这是对的。
+
+推送到 GitHub
+git pull
+刷新 GitHub 页面
+
+
+小加固（可选，但推荐）：
+1. 给空目录放哨兵（防止未来有空目录不被 Git 记录）：
+ni .\apps\.gitkeep -Force | Out-Null
+ni .\packages\.gitkeep -Force | Out-Null
+git add apps\.gitkeep packages\.gitkeep
+git commit -m "chore: keep empty dirs"
+git push
+
+2. 忽略更多生成物（已经有 target/dist，再补一个常见缓存）：
+'**/.turbo' | Add-Content .gitignore
+git add .gitignore
+git commit -m "chore: ignore turbo cache"
+git push
+
+---------------------------------------------
+
+我已重建并提交了 monorepo 根（package.json、.gitignore、pnpm-workspace.yaml）。
+已用 Tauri 脚手架生成 apps/desktop，本地能 pnpm tauri dev 跑起来。
+已把 apps/desktop、pnpm-lock.yaml 等提交并推送到 GitHub。
+还创建了 .gitkeep 与 .gitignore 补充规则（CRLF 提醒是正常提示，忽略即可）。
+✅ 完成了 Sprint 1 / 第 0 里程碑：把桌面端骨架（Tauri + React + TS）跑通，并把仓库同步到 GitHub。
+
+🎯 下一个目标（Sprint 1 的剩余部分）：补齐 packages/core（Rust 核心） 和 packages/shared（TS 共享包），并在桌面端调用，形成“最小连通”。
+---------------------------------------------
+第 1 步：新建 packages/core（Rust 核心库）：
+cd D:\knoyoo
+mkdir .\packages -Force
+cd .\packages
+
+# 初始化 Rust 库
+cargo new core --lib
+
+
+# 写一个最小可用函数
+@'
+#[no_mangle]
+pub extern "C" fn add(a: i32, b: i32) -> i32 { a + b }
+'@ | Set-Content -Encoding utf8 .\core\src\lib.rs
+
+# 确保库类型支持后续 FFI（以后给前端/其他端调用）
+$toml = Get-Content .\core\Cargo.toml
+$toml += @'
+[lib]
+crate-type = ["rlib","cdylib","staticlib"]
+'@
+$toml | Set-Content -Encoding utf8 .\core\Cargo.toml
+
+把包名从 core 改为 knoyoo_core
+避免与标准库 core 同名造成歧义。
+# 把 Cargo.toml 顶部的 name 改掉
+(Get-Content .\Cargo.toml) `
+ -replace 'name\s*=\s*"core"', 'name = "knoyoo_core"' `
+ | Set-Content -Encoding utf8 .\Cargo.toml
+
+# 确保 [lib] 配置在文件里（如果你之前已加可跳过）
+Add-Content .\Cargo.toml @'
+[lib]
+crate-type = ["rlib","cdylib","staticlib"]
+'@
+
+出现了错误，这个错很常见：之前用 Add-Content 又在 Cargo.toml 末尾追加了一次 [lib]，导致 重复的 [lib] 区块。我们直接把 Cargo.toml 覆盖成一份“干净且正确”的内容即可。
+
+现在把 Cargo.toml 覆盖为正确版本：
+在 D:\knoyoo\packages\core 里执行这段（整段一次性粘贴）：
+@'
+[package]
+name = "knoyoo_core"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["rlib", "cdylib", "staticlib"]
+'@ | Set-Content -Encoding utf8 .\Cargo.toml
+说明：这会用最小必需配置覆盖 Cargo.toml，不会影响你的 src/lib.rs。
+重新编译验证：
+cargo clean
+cargo build
+预期：看到 Finished dev profile [unoptimized + debuginfo]，无红字报错 ✅。
+
+-----------------------------------
+目前补齐了补齐 packages/core（Rust 核心），
+接下来的小目标是：补齐packages/shared（TS 共享包），并在桌面端调用，形成“最小连通”。
+
+
+我们在朝什么方向发展？：
+当前 Sprint（基础设施连通）：
+完成 apps（桌面端）⇄ shared（前端通用）⇄ core（后续算法）的基本骨架与连通，确保多端/多包协作的“基本盘”稳定。
+
+下一个 Sprint（按 PRD 的最小功能）：
+1. 本地 SQLite + FTS5 的最小读写与搜索；
+2. “记录/检索”的最小界面（一个输入框 + 列表）；
+3. 把部分规则/打分放进 core（先放一个假实现），提供调用管道。
+----------------------------------------
+
+第 1 步：创建 packages/shared（TS 共享包）
+在 PowerShell 执行（整段依次运行即可）：
+
+【
+
+# 1) 新建目录并进入
+cd D:\knoyoo\packages
+mkdir shared\src -Force
+cd shared
+
+# 2) 初始化包
+pnpm init
+
+# 3) 写 package.json（最小可用：build + 类型声明）
+@'
+{
+  "name": "@knoyoo/shared",
+  "version": "0.0.1",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  }
+}
+'@ | Set-Content -Encoding utf8 package.json
+
+# 4) 写 tsconfig.json
+@'
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ESNext",
+    "declaration": true,
+    "outDir": "dist",
+    "strict": true,
+    "moduleResolution": "Bundler",
+    "skipLibCheck": true
+  },
+  "include": ["src"]
+}
+'@ | Set-Content -Encoding utf8 tsconfig.json
+
+# 5) 写最小导出函数
+@'
+export const hello = (name: string) => `Hello, ${name}!`;
+'@ | Set-Content -Encoding utf8 src\index.ts
+
+# 6) 安装 TypeScript 并首构建
+pnpm add -D typescript @types/node
+pnpm run build
+
+
+】
+✅ 自检：看到 dist/ 目录（里有 index.js 和 index.d.ts），无红字报错。
+
+
+第 2 步：让 desktop 能引入 @knoyoo/shared：
+# 1) 回到仓库根，让 workspace 识别到新包并建立 link
+cd D:\knoyoo
+pnpm install
+
+# 2) 再构建一次 shared（确保最新）
+pnpm --filter @knoyoo/shared run build
+
+
+
+编辑 D:\knoyoo\apps\desktop\src\App.tsx（用以下最小示例覆盖即可）：
+import { useState } from "react";
+import { hello } from "@knoyoo/shared";
+
+export default function App() {
+  const [name, setName] = useState("KnoYoo");
+  return (
+    <div style={{ padding: 24 }}>
+      <h1>{hello(name)}</h1>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Enter a name..."
+        style={{ padding: 8, borderRadius: 8 }}
+      />
+    </div>
+  );
+}
+
+运行验证：
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+✅ 预期：Tauri 窗口显示 “Hello, KnoYoo!”，输入框改文字，标题跟着变。
+
+发现了问题：
+desktop 并没有把 @knoyoo/shared 声明为依赖，所以 Vite 解析不到它。把依赖连上就好。
+
+
+解决问题开始：
+1) 把 shared 作为 desktop 的依赖（workspace link）
+# 在仓库根
+cd D:\knoyoo
+
+# 给 apps/desktop 增加依赖指向本地 workspace 包
+pnpm --filter desktop add @knoyoo/shared@workspace:*
+
+预期：命令会更新 apps/desktop/package.json 的 dependencies，出现：
+"@knoyoo/shared": "workspace:*"
+备注：用 workspace:* 是 pnpm 的本地工作区链接写法，表示引用同仓库里的包。
+
+2)（可选但推荐）让 shared 持续编译或先手动构建一次
+只手动构建一次（简单直接）：
+pnpm --filter @knoyoo/shared run build
+
+3) 重新跑桌面端
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+
+自检：窗口应正常启动，不再报 “@knoyoo/shared could not be resolved”。页面看到 Hello, KnoYoo!，输入框改文字，标题跟着变 ✅。
+
+
+问题解决！
+
+提交并推送（让远端也有 shared）：
+cd D:\knoyoo
+git add packages/shared apps/desktop/package.json
+git commit -m "chore: link @knoyoo/shared to desktop (workspace:*)"
+git push
+
+太棒啦，shared → desktop 已经连通 ✅。
+我们马上进入**“最小记录/检索（SQLite + FTS5）Demo”**，依旧走小步、每步可自检。
+
+目标：在桌面端输入一条文本保存到 SQLite；再用关键字检索（FTS5 全文搜索）并在界面列表展示。
+-----------------------------------------
+
+第 1 步：给 Tauri（Rust）加 SQLite 依赖
+
+在 D:\knoyoo\apps\desktop\src-tauri\Cargo.toml 追加依赖（整段覆盖/追加都行）：
+[dependencies]
+# … 你现有的依赖保留
+rusqlite = { version = "0.31", features = ["bundled", "unlock_notify"] }
+解释：bundled 会把 SQLite 源码一并编译，默认启用 FTS5（适合 Windows 开发环境）。
+自检：先只编译一次确保依赖能拉下来
+cd D:\knoyoo\apps\desktop\src-tauri
+cargo build
+出现 Finished dev profile … 即通过。
+
+
+第 2 步：在 Rust 里暴露两条命令：新增 & 搜索
+编辑 D:\knoyoo\apps\desktop\src-tauri\src\main.rs，把文件内容替换为下面的最小可用版本（整文件覆盖）：
+
+// src-tauri/src/main.rs
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use rusqlite::{params, Connection};
+
+fn open_db() -> Result<Connection, String> {
+    let conn = Connection::open("notes.db").map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          content TEXT NOT NULL
+        );
+        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(content);
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+#[tauri::command]
+fn add_note(content: String) -> Result<i64, String> {
+    let mut conn = open_db()?; // 需要可变
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // 1) 插入主表
+    tx.execute("INSERT INTO notes (content) VALUES (?1)", params![content])
+        .map_err(|e| e.to_string())?;
+    let id = tx.last_insert_rowid();
+
+    // 2) 同步到 FTS5（不要持有 stmt 变量，直接 execute 就不会和 commit 冲突）
+    tx.execute(
+        "INSERT INTO notes_fts(rowid, content) \
+         SELECT id, content FROM notes WHERE id = ?1",
+        params![id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[tauri::command]
+fn search_notes(query: String) -> Result<Vec<String>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare("SELECT content FROM notes_fts WHERE notes_fts MATCH ?1 LIMIT 20")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([query], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![add_note, search_notes])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+
+自检（只编译后端）：
+cd D:\knoyoo\apps\desktop\src-tauri
+cargo build
+
+看到 Finished dev profile … 就通过✅。
+通过即可（这一步不需要开窗口）。
+
+
+第 3 步：前端增加最小 UI（新增 & 搜索）
+编辑 D:\knoyoo\apps\desktop\src\App.tsx，用下面示例覆盖（保留你之前的 @knoyoo/shared 也行，我把它也顺手显示出来）：
+
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { hello } from "@knoyoo/shared";
+
+export default function App() {
+  const [name, setName] = useState("KnoYoo");
+  const [note, setNote] = useState("");
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<string[]>([]);
+  const [saving, setSaving] = useState(false);
+
+  async function onSave() {
+    if (!note.trim()) return;
+    setSaving(true);
+    try {
+      await invoke<number>("add_note", { content: note });
+      setNote("");
+    } catch (e) {
+      console.error(e);
+      alert("保存失败: " + e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onSearch() {
+    try {
+      const rows = await invoke<string[]>("search_notes", { query: q });
+      setResults(rows);
+    } catch (e) {
+      console.error(e);
+      alert("搜索失败: " + e);
+    }
+  }
+
+  return (
+    <div style={{ padding: 24, color: "#111", fontFamily: "system-ui" }}>
+      <h2>{hello(name)}</h2>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Enter a name..."
+        style={{ padding: 8, borderRadius: 8, marginBottom: 16 }}
+      />
+
+      <hr style={{ margin: "16px 0" }} />
+
+      <h3>新增记录</h3>
+      <textarea
+        value={note}
+        onChange={(e) => setNote(e.target.value)}
+        placeholder="输入要保存的文本..."
+        rows={3}
+        style={{ width: "100%", padding: 8, borderRadius: 8 }}
+      />
+      <div style={{ marginTop: 8 }}>
+        <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
+          {saving ? "保存中..." : "保存"}
+        </button>
+      </div>
+
+      <h3 style={{ marginTop: 24 }}>全文搜索（FTS5）</h3>
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder='关键字或 "短语" 或 a OR b'
+        style={{ padding: 8, borderRadius: 8, width: "100%" }}
+      />
+      <div style={{ marginTop: 8 }}>
+        <button onClick={onSearch} style={{ padding: "8px 12px" }}>
+          搜索
+        </button>
+      </div>
+
+      <ul style={{ marginTop: 16 }}>
+        {results.map((text, i) => (
+          <li key={i} style={{ marginBottom: 8 }}>
+            {text}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+第 4 步：跑起来做功能自检
+
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+
+在窗口里验证：
+
+1. “新增记录”输入任意文本 → 点“保存”（会创建/更新 notes.db 并写入 FTS5 虚表）。
+2. “全文搜索”输入关键字 → 点“搜索” → 下方列表出现匹配文本。
+3. 试试短语匹配：输入 "完整 短语"（带引号）或 词A OR 词B。
+
+若搜索时报错，通常是 FTS5 表未建好：重启应用或删除当前目录下的 notes.db 重新试（我们在 open_db() 会自动建表）。
+
+第 5 步：提交并推送
+
+cd D:\knoyoo
+git add apps/desktop/src-tauri/Cargo.toml apps/desktop/src-tauri/src/main.rs apps/desktop/src/App.tsx
+git commit -m "feat: sqlite + fts5 demo (add & search notes via tauri commands)"
+git push
+
+-------------------------------------
+🚀 已经把「新增 & 搜索（FTS5）」最小闭环跑通了。
+
+接下来我们把它升级到结构化记录 + 高亮片段，更贴近 PRD 的“记录/检索”：
+1. 表结构：id | title | content | created_at
+2. FTS5：使用 content='notes', content_rowid='id' + 触发器自动同步
+3. 搜索结果：返回 title + snippet，高亮命中词
+
+我把步骤拆得很小，每步都能自检。
+-----------------------------------------
+
+第 1 步｜升级数据库结构（Rust 后端）
+
+1) 修改 src-tauri/Cargo.toml
+之前已加过 rusqlite 就不用改了；没有的话保留：
+[dependencies]
+rusqlite = { version = "0.31", features = ["bundled", "unlock_notify"] }
+
+2) 覆盖 src-tauri/src/main.rs
+把你现有的内容替换为下面这份（包含表、FTS5、触发器、snippet/bm25 排序）：
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use rusqlite::{params, Connection};
+use serde::Serialize;
+
+fn open_db() -> Result<Connection, String> {
+    let conn = Connection::open("notes.db").map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+
+        -- 主表：结构化字段
+        CREATE TABLE IF NOT EXISTS notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+
+        -- FTS5 虚表，指向主表（content_rowid/id）
+        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+          USING fts5(title, content, content='notes', content_rowid='id');
+
+        -- 触发器：保持主表与 FTS5 同步
+        CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+          INSERT INTO notes_fts(rowid, title, content)
+            VALUES (new.id, new.title, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content)
+            VALUES('delete', old.id, old.title, old.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content)
+            VALUES('delete', old.id, old.title, old.content);
+          INSERT INTO notes_fts(rowid, title, content)
+            VALUES (new.id, new.title, new.content);
+        END;
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+#[tauri::command]
+fn add_note(title: String, content: String) -> Result<i64, String> {
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    tx.execute(
+        "INSERT INTO notes (title, content) VALUES (?1, ?2)",
+        params![title, content],
+    )
+    .map_err(|e| e.to_string())?;
+
+    let id = tx.last_insert_rowid();
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[derive(Serialize)]
+struct Hit {
+    id: i64,
+    title: String,
+    snippet: String,
+}
+
+#[tauri::command]
+fn search_notes(query: String) -> Result<Vec<Hit>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn.prepare(
+        // snippet(表, 列索引或名称, 开始标记, 结束标记, 省略号, 片段词数)
+        "SELECT n.id, n.title,
+                snippet(notes_fts, 'content', '[mark]', '[/mark]', ' … ', 12) AS snip
+           FROM notes_fts
+           JOIN notes n ON n.id = notes_fts.rowid
+          WHERE notes_fts MATCH ?1
+          ORDER BY bm25(notes_fts) ASC
+          LIMIT 50",
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([query], |row| {
+        Ok(Hit {
+            id: row.get(0)?,
+            title: row.get(1)?,
+            snippet: row.get(2)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![add_note, search_notes])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+自检：
+cd D:\knoyoo\apps\desktop\src-tauri
+cargo build
+
+看到 Finished dev profile … 即通过 ✅。
+如果你之前已经写入过老结构的 notes.db，想“干净迁移”，可以先关闭应用后删除项目根目录下的 notes.db 再跑（会自动重建）。
+
+
+第 2 步｜前端表单 & 高亮展示
+覆盖 apps/desktop/src/App.tsx（保留 @knoyoo/shared 的 hello 展示）：
+import { useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { hello } from "@knoyoo/shared";
+
+type Hit = { id: number; title: string; snippet: string };
+
+export default function App() {
+  const [name, setName] = useState("KnoYoo");
+
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<Hit[]>([]);
+
+  async function onSave() {
+    if (!title.trim() || !content.trim()) return;
+    setSaving(true);
+    try {
+      await invoke<number>("add_note", { title, content });
+      setTitle("");
+      setContent("");
+      alert("已保存！");
+    } catch (e) {
+      console.error(e);
+      alert("保存失败: " + e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onSearch() {
+    try {
+      const rows = await invoke<Hit[]>("search_notes", { query: q });
+      setResults(rows);
+    } catch (e) {
+      console.error(e);
+      alert("搜索失败: " + e);
+    }
+  }
+
+  const renderSnippet = (s: string) =>
+    ({ __html: s.replaceAll("[mark]", "<mark>").replaceAll("[/mark]", "</mark>") });
+
+  return (
+    <div style={{ padding: 24, fontFamily: "system-ui" }}>
+      <h2>{hello(name)}</h2>
+      <input
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        placeholder="Enter a name..."
+        style={{ padding: 8, borderRadius: 8, marginBottom: 16 }}
+      />
+
+      <hr style={{ margin: "16px 0" }} />
+
+      <h3>新增记录</h3>
+      <input
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="标题"
+        style={{ width: "100%", padding: 8, borderRadius: 8, marginBottom: 8 }}
+      />
+      <textarea
+        value={content}
+        onChange={(e) => setContent(e.target.value)}
+        placeholder="正文内容..."
+        rows={4}
+        style={{ width: "100%", padding: 8, borderRadius: 8 }}
+      />
+      <div style={{ marginTop: 8 }}>
+        <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
+          {saving ? "保存中..." : "保存"}
+        </button>
+      </div>
+
+      <h3 style={{ marginTop: 24 }}>全文搜索（FTS5）</h3>
+      <input
+        value={q}
+        onChange={(e) => setQ(e.target.value)}
+        placeholder='关键字 / "短语" / a OR b'
+        style={{ padding: 8, borderRadius: 8, width: "100%" }}
+      />
+      <div style={{ marginTop: 8 }}>
+        <button onClick={onSearch} style={{ padding: "8px 12px" }}>
+          搜索
+        </button>
+      </div>
+
+      <ul style={{ marginTop: 16, lineHeight: 1.6 }}>
+        {results.map((hit) => (
+          <li key={hit.id} style={{ marginBottom: 12 }}>
+            <div style={{ fontWeight: 600 }}>{hit.title}</div>
+            <div
+              dangerouslySetInnerHTML={renderSnippet(hit.snippet)}
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+
+自检：
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+
+新建：填“标题 + 正文”点【保存】→ 提示“已保存！”
+搜索：输入关键词或 "短语" → 列表显示命中片段，带 <mark> 高亮
+
+自检出问题：保存失败
+
+解决：这是正常现象：你之前已经用“老结构（只有 content 列）”跑过一次，所以磁盘里的 notes.db 里没有 title 列。现在后端换成了新结构（有 title / content / created_at），插入时就报 “table notes has no column named title”。
+
+方案｜删除旧库，自动重建（最省事）
+1. 先关掉应用窗口（确保 desktop.exe 退出）。
+2. 在 PowerShell 执行：
+# 找出 notes.db 的位置（通常在 apps/desktop 目录）
+Get-ChildItem -Path D:\knoyoo -Recurse -Filter notes.db
+# 删除（把下面路径替换成上一条查到的实际路径，如果就是在 apps\desktop 下，直接这样）
+Remove-Item -Force D:\knoyoo\apps\desktop\notes.db
+
+3. 重新运行：
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+新库会按你现在的 main.rs 自动建表 + 建 FTS5 + 触发器。再试 保存 → 搜索，OK ✅。
+
+提交代码：
+cd D:\knoyoo
+git add apps/desktop/src-tauri/src/main.rs apps/desktop/src/App.tsx
+git commit -m "feat: structured notes + FTS5 snippet highlight (reset db)"
+git push
+
+
+目前一切顺利！我们继续把“记录/检索”升级成一个可用的小工具：加完整 CRUD + 分页（先不改 DB 路径，等跑通再挪到 AppData）。
+
+A. 后端（Rust / Tauri）增加 CRUD + 分页
+在 D:\knoyoo\apps\desktop\src-tauri\src\main.rs 把文件替换为下面版本（保留你已有的表、FTS5、触发器；新增 list / update / delete 三个命令）：
+
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use rusqlite::{params, Connection};
+use serde::Serialize;
+
+fn open_db() -> Result<Connection, String> {
+    let conn = Connection::open("notes.db").map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+          USING fts5(title, content, content='notes', content_rowid='id');
+
+        CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+          INSERT INTO notes_fts(rowid, title, content)
+            VALUES (new.id, new.title, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content)
+            VALUES('delete', old.id, old.title, old.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content)
+            VALUES('delete', old.id, old.title, old.content);
+          INSERT INTO notes_fts(rowid, title, content)
+            VALUES (new.id, new.title, new.content);
+        END;
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+#[tauri::command]
+fn add_note(title: String, content: String) -> Result<i64, String> {
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO notes (title, content) VALUES (?1, ?2)",
+        params![title, content],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = tx.last_insert_rowid();
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+#[derive(Serialize)]
+struct Hit { id: i64, title: String, snippet: String }
+
+#[tauri::command]
+fn search_notes(query: String) -> Result<Vec<Hit>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT n.id, n.title,
+                snippet(notes_fts, 'content', '[mark]', '[/mark]', ' … ', 12) AS snip
+           FROM notes_fts
+           JOIN notes n ON n.id = notes_fts.rowid
+          WHERE notes_fts MATCH ?1
+          ORDER BY bm25(notes_fts) ASC
+          LIMIT 50",
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([query], |row| {
+        Ok(Hit { id: row.get(0)?, title: row.get(1)?, snippet: row.get(2)? })
+    }).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+    Ok(out)
+}
+
+#[derive(Serialize)]
+struct Note { id: i64, title: String, content: String, created_at: String }
+
+/// 分页列表：page 从 1 开始，page_size 默认 10
+#[tauri::command]
+fn list_notes(page: Option<u32>, page_size: Option<u32>) -> Result<Vec<Note>, String> {
+    let page = page.unwrap_or(1).max(1);
+    let size = page_size.unwrap_or(10).clamp(1, 100);
+    let offset = (page - 1) as i64 * size as i64;
+
+    let conn = open_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title, content, created_at
+           FROM notes
+          ORDER BY datetime(created_at) DESC
+          LIMIT ?1 OFFSET ?2",
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map(params![size as i64, offset], |row| {
+        Ok(Note {
+            id: row.get(0)?, title: row.get(1)?, content: row.get(2)?, created_at: row.get(3)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+    Ok(out)
+}
+
+#[tauri::command]
+fn update_note(id: i64, title: String, content: String) -> Result<(), String> {
+    let mut conn = open_db()?;
+    conn.execute(
+        "UPDATE notes SET title=?1, content=?2 WHERE id=?3",
+        params![title, content, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_note(id: i64) -> Result<(), String> {
+    let mut conn = open_db()?;
+    conn.execute("DELETE FROM notes WHERE id=?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            add_note, search_notes, list_notes, update_note, delete_note
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+自检：
+cd D:\knoyoo\apps\desktop\src-tauri
+cargo build
+Finished dev profile … 即通过。
+
+B. 前端：列表 + 删除 + 编辑（超简）
+把 D:\knoyoo\apps\desktop\src\App.tsx 替换为下面版本（保留搜索高亮；新增“最近 10 条”列表、删除、编辑）：
+
+import { useEffect, useState } from "react";
+import { invoke } from "@tauri-apps/api/core";
+import { hello } from "@knoyoo/shared";
+
+type Hit = { id: number; title: string; snippet: string };
+type Note = { id: number; title: string; content: string; created_at: string };
+
+export default function App() {
+  const [name, setName] = useState("KnoYoo");
+
+  const [title, setTitle] = useState("");
+  const [content, setContent] = useState("");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState<Hit[]>([]);
+  const [list, setList] = useState<Note[]>([]);
+  const [page, setPage] = useState(1);
+
+  useEffect(() => { refresh(); }, [page]);
+
+  async function refresh() {
+    const rows = await invoke<Note[]>("list_notes", { page, pageSize: 10 });
+    setList(rows);
+  }
+
+  async function onSave() {
+    if (!title.trim() || !content.trim()) return;
+    setSaving(true);
+    try {
+      if (editingId == null) {
+        await invoke<number>("add_note", { title, content });
+      } else {
+        await invoke("update_note", { id: editingId, title, content });
+        setEditingId(null);
+      }
+      setTitle("");
+      setContent("");
+      await refresh();
+      alert("已保存！");
+    } catch (e) {
+      console.error(e);
+      alert("保存失败: " + e);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function onEdit(n: Note) {
+    setEditingId(n.id);
+    setTitle(n.title);
+    setContent(n.content);
+  }
+
+  async function onDelete(id: number) {
+    if (!confirm("确认删除？")) return;
+    await invoke("delete_note", { id });
+    await refresh();
+  }
+
+  async function onSearch() {
+    try {
+      const rows = await invoke<Hit[]>("search_notes", { query: q });
+      setResults(rows);
+    } catch (e) {
+      console.error(e);
+      alert("搜索失败: " + e);
+    }
+  }
+
+  const renderSnippet = (s: string) =>
+    ({ __html: s.replaceAll("[mark]", "<mark>").replaceAll("[/mark]", "</mark>") });
+
+  return (
+    <div style={{ padding: 24, fontFamily: "system-ui" }}>
+      <h2>{hello(name)}</h2>
+      <input
+        value={name} onChange={(e) => setName(e.target.value)}
+        placeholder="Enter a name..." style={{ padding: 8, borderRadius: 8, marginBottom: 16 }}
+      />
+
+      <hr style={{ margin: "16px 0" }} />
+
+      <h3>{editingId ? "编辑记录" : "新增记录"}</h3>
+      <input
+        value={title} onChange={(e) => setTitle(e.target.value)} placeholder="标题"
+        style={{ width: "100%", padding: 8, borderRadius: 8, marginBottom: 8 }}
+      />
+      <textarea
+        value={content} onChange={(e) => setContent(e.target.value)} placeholder="正文内容..."
+        rows={4} style={{ width: "100%", padding: 8, borderRadius: 8 }}
+      />
+      <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+        <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
+          {saving ? "保存中..." : (editingId ? "更新" : "保存")}
+        </button>
+        {editingId && (
+          <button onClick={() => { setEditingId(null); setTitle(""); setContent(""); }}>
+            取消编辑
+          </button>
+        )}
+      </div>
+
+      <h3 style={{ marginTop: 24 }}>全文搜索（FTS5）</h3>
+      <input
+        value={q} onChange={(e) => setQ(e.target.value)} placeholder='关键字 / "短语" / a OR b'
+        style={{ padding: 8, borderRadius: 8, width: "100%" }}
+      />
+      <div style={{ marginTop: 8 }}>
+        <button onClick={onSearch} style={{ padding: "8px 12px" }}>搜索</button>
+      </div>
+      <ul style={{ marginTop: 16, lineHeight: 1.6 }}>
+        {results.map((hit) => (
+          <li key={hit.id} style={{ marginBottom: 12 }}>
+            <div style={{ fontWeight: 600 }}>{hit.title}</div>
+            <div dangerouslySetInnerHTML={renderSnippet(hit.snippet)} />
+          </li>
+        ))}
+      </ul>
+
+      <h3 style={{ marginTop: 24 }}>最近记录</h3>
+      <ul style={{ marginTop: 8 }}>
+        {list.map(n => (
+          <li key={n.id} style={{ marginBottom: 10 }}>
+            <div style={{ fontWeight: 600 }}>{n.title}</div>
+            <div style={{ fontSize: 12, opacity: 0.7 }}>{n.created_at}</div>
+            <div style={{ marginTop: 6, display: "flex", gap: 8 }}>
+              <button onClick={() => onEdit(n)}>编辑</button>
+              <button onClick={() => onDelete(n.id)}>删除</button>
+            </div>
+          </li>
+        ))}
+      </ul>
+      <div style={{ display: "flex", gap: 8 }}>
+        <button disabled={page === 1} onClick={() => setPage(p => Math.max(1, p - 1))}>上一页</button>
+        <button onClick={() => setPage(p => p + 1)}>下一页</button>
+        <button onClick={refresh}>刷新</button>
+      </div>
+    </div>
+  );
+}
+
+自检：
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+要求效果达到：
+1.  新增一条 → 出现在“最近记录”；
+2. 点击“编辑”→ 修改并“更新”；
+3. 点击“删除”→ 记录消失；
+4. “上一页/下一页”能切换分页；
+5. 搜索依旧可用并带高亮。
+
+发现中文搜索功能不完善，在全文搜索中输入了中文短语大那是并没有出现搜索出来过的已经保存的结果
+
+这是 FTS5 对中文没有分词 的老问题。默认 tokenizer（unicode61）对英文效果好，但中文因为没有空格，容易“一整个短语当成一个词”或“按单字切分”，导致我输入的“这是”匹配不到期望内容。
+
+为了先可用，我们做一个“混合检索”的落地版：
+1. 英文/含空格 → 用 FTS5（bm25 + snippet，高亮和排序都很好）
+2. 中文（含 CJK 字符） → 回退到 LIKE 子串匹配（先满足“能搜到”），并在后端生成简单 snippet，仍然返回带 [mark]…[/mark] 的高亮片段
+之后再升级为“中文分词器/Bigram 索引”（比如接入结巴或自定义 n-gram 分词）——那是下一阶段。
+
+一次性修改（只动后端 search_notes）
+用以下code将 D:\knoyoo\apps\desktop\src-tauri\src\main.rs 全部覆盖：
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use rusqlite::{params, Connection};
+use serde::Serialize;
+
+fn open_db() -> Result<Connection, String> {
+    let conn = Connection::open("notes.db").map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+          USING fts5(title, content, content='notes', content_rowid='id');
+
+        CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+          INSERT INTO notes_fts(rowid, title, content)
+            VALUES (new.id, new.title, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content)
+            VALUES('delete', old.id, old.title, old.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content)
+            VALUES('delete', old.id, old.title, old.content);
+          INSERT INTO notes_fts(rowid, title, content)
+            VALUES (new.id, new.title, new.content);
+        END;
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+
+#[tauri::command]
+fn add_note(title: String, content: String) -> Result<i64, String> {
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    tx.execute(
+        "INSERT INTO notes (title, content) VALUES (?1, ?2)",
+        params![title, content],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = tx.last_insert_rowid();
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
+
+
+
+
+
+
+
+
+#[derive(Serialize)]
+struct Hit {
+    id: i64,
+    title: String,
+    snippet: String,
+}
+
+fn has_cjk(s: &str) -> bool {
+    s.chars().any(|c|
+        ('\u{4E00}'..='\u{9FFF}').contains(&c)  // CJK Unified
+        || ('\u{3400}'..='\u{4DBF}').contains(&c) // Ext-A
+        || ('\u{20000}'..='\u{2A6DF}').contains(&c) // Ext-B
+        || ('\u{2A700}'..='\u{2B73F}').contains(&c) // Ext-C
+        || ('\u{2B740}'..='\u{2B81F}').contains(&c) // Ext-D
+        || ('\u{2B820}'..='\u{2CEAF}').contains(&c) // Ext-E
+        || ('\u{F900}'..='\u{FAFF}').contains(&c) // CJK Compatibility Ideographs
+    )
+}
+
+/// 生成一个非常简单的 snippet：命中位置左右各取一些字节（UTF-8 安全：基于 char 处理）
+fn make_snippet(text: &str, needle: &str, context: usize) -> String {
+    if let Some(pos) = text.find(needle) {
+        let start = text[..pos].chars().rev().take(context).collect::<Vec<_>>();
+        let end = text[pos + needle.len()..].chars().take(context).collect::<Vec<_>>();
+        let mut left = start.into_iter().rev().collect::<String>();
+        let mid = format!("[mark]{}[/mark]", needle);
+        let mut right = end.into_iter().collect::<String>();
+        // 省略号
+        if left.chars().count() == context { left = format!("…{}", left); }
+        if right.chars().count() == context { right = format!("{}…", right); }
+        format!("{left}{mid}{right}")
+    } else {
+        // 找不到就截取开头
+        text.chars().take(context * 2).collect::<String>()
+    }
+}
+
+#[tauri::command]
+fn search_notes(query: String) -> Result<Vec<Hit>, String> {
+    let conn = open_db()?;
+
+    if has_cjk(&query) {
+        // 中文：LIKE 回退（标题/正文都搜）
+        let like = format!("%{}%", query);
+        let mut stmt = conn.prepare(
+            "SELECT id, title, content
+               FROM notes
+              WHERE title LIKE ?1 OR content LIKE ?1
+              ORDER BY datetime(created_at) DESC
+              LIMIT 50",
+        ).map_err(|e| e.to_string())?;
+
+        let rows = stmt.query_map([like], |row| {
+            let id: i64 = row.get(0)?;
+            let title: String = row.get(1)?;
+            let content: String = row.get(2)?;
+            let snippet = make_snippet(&content, &query, 24);
+            Ok(Hit { id, title, snippet })
+        }).map_err(|e| e.to_string())?;
+
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        Ok(out)
+    } else {
+        // 英文/带空格：继续用 FTS5（bm25 + snippet）
+        let mut stmt = conn.prepare(
+            "SELECT n.id, n.title,
+                    snippet(notes_fts, 'content', '[mark]', '[/mark]', ' … ', 12) AS snip
+               FROM notes_fts
+               JOIN notes n ON n.id = notes_fts.rowid
+              WHERE notes_fts MATCH ?1
+              ORDER BY bm25(notes_fts) ASC
+              LIMIT 50",
+        ).map_err(|e| e.to_string())?;
+
+        let rows = stmt.query_map([query], |row| {
+            Ok(Hit { id: row.get(0)?, title: row.get(1)?, snippet: row.get(2)? })
+        }).map_err(|e| e.to_string())?;
+
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        Ok(out)
+    }
+}
+
+
+
+
+
+
+
+
+
+#[derive(Serialize)]
+struct Note { id: i64, title: String, content: String, created_at: String }
+
+/// 分页列表：page 从 1 开始，page_size 默认 10
+#[tauri::command]
+fn list_notes(page: Option<u32>, page_size: Option<u32>) -> Result<Vec<Note>, String> {
+    let page = page.unwrap_or(1).max(1);
+    let size = page_size.unwrap_or(10).clamp(1, 100);
+    let offset = (page - 1) as i64 * size as i64;
+
+    let conn = open_db()?;
+    let mut stmt = conn.prepare(
+        "SELECT id, title, content, created_at
+           FROM notes
+          ORDER BY datetime(created_at) DESC
+          LIMIT ?1 OFFSET ?2",
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map(params![size as i64, offset], |row| {
+        Ok(Note {
+            id: row.get(0)?, title: row.get(1)?, content: row.get(2)?, created_at: row.get(3)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+    Ok(out)
+}
+
+#[tauri::command]
+fn update_note(id: i64, title: String, content: String) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute(
+        "UPDATE notes SET title=?1, content=?2 WHERE id=?3",
+        params![title, content, id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_note(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute("DELETE FROM notes WHERE id=?1", params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+fn main() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .invoke_handler(tauri::generate_handler![
+            add_note, search_notes, list_notes, update_note, delete_note
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
+
+自检
+cd D:\knoyoo\apps\desktop\src-tauri
+cargo build
+
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+
+在中文输入框里搜索，比如：这是、标题、正文本 等，应能搜出；命中词会高亮。
+英文（或含空格的查询）仍走 FTS5，排序和片段如之前。
+
+一切正常！
+
+提交：
+cd D:\knoyoo
+git add apps/desktop/src-tauri/src/main.rs apps/desktop/src/App.tsx
+git commit -m "feat: CRUD + pagination; keep FTS5 search with snippet/bm25"
+git push
+
+提交成功！！
+
+-------------------------------------
+当前进度总结：
+已经把「本地知识小本儿」跑成了一个能用的桌面应用。先给一个一眼看懂的里程碑雷达图：
+1.  环境：Git / Node 22 + pnpm 10 / Rust stable ✅
+2. 仓库：pnpm monorepo（apps + packages），已推到 GitHub ✅
+3. 桌面端：apps/desktop（Tauri v2 + React + TS）能启动 ✅
+4. 共享包：@knoyoo/shared（TS）已编译并在前端使用 ✅
+5. 数据层：SQLite（notes.db）+ FTS5 虚表 + 同步触发器 ✅
+6. 后端 API：add_note / search_notes / list_notes / update_note / delete_note ✅
+7. 前端功能：新增/编辑/删除/分页列表 + 全文搜索（英文走 FTS5、中文走 LIKE 回退）+ 高亮 ✅
+
+目标分层（总目标 → 阶段目标 → 当前小目标）
+
+总目标：做出 KnoYoo 的“本地知识助理”桌面端雏形：可离线存储、全文检索、后续接 AI Agent。
+阶段目标（MVP）：一个可靠的本地应用，具备 CRUD + 中英检索 + 数据放到系统应用目录（便于安装/升级/备份），并且能打包分发。
+当前小目标（我们现在所在阶段）：
+把数据库从项目目录迁到系统 AppData（更规范，不怕误删、也便于之后打包），保持现有功能不变。
+---------------------------------------
+
+下面继续一步一步往前推进。我们只做一件事：把 DB 挪到 AppData。
+说明：这里用 directories crate 取到系统应用数据目录（Windows 就是 C:\Users\你\AppData\Roaming\…），自动创建 KnoYoo\Desktop 子目录并放 notes.db。
+
+第 1 步｜在后端加入 directories 依赖
+编辑 D:\knoyoo\apps\desktop\src-tauri\Cargo.toml，在 [dependencies] 里加入一行：
+directories = "5"
+（rusqlite 保持你现在的配置不变）
+
+第 2 步｜修改后端 open_db，让 DB 落到 AppData
+把 D:\knoyoo\apps\desktop\src-tauri\src\main.rs 里的 open_db() 替换为下面版本（其它函数保持不变）：
+
+use rusqlite::{params, Connection};
+use serde::Serialize;
+
+use directories::ProjectDirs;
+use std::path::PathBuf;
+
+fn app_db_path() -> Result<PathBuf, String> {
+    // 组织名/应用名你也可以改，这里会得到：%APPDATA%\KnoYoo\Desktop\notes.db
+    let proj = ProjectDirs::from("", "KnoYoo", "Desktop")
+        .ok_or_else(|| "cannot resolve app data dir".to_string())?;
+    let dir = proj.data_dir();
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("notes.db"))
+}
+
+fn open_db() -> Result<Connection, String> {
+    let db_path = app_db_path()?;
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        r#"
+        PRAGMA foreign_keys = ON;
+
+        CREATE TABLE IF NOT EXISTS notes (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          title TEXT NOT NULL,
+          content TEXT NOT NULL,
+          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );
+
+        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+          USING fts5(title, content, content='notes', content_rowid='id');
+
+        CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+          INSERT INTO notes_fts(rowid, title, content)
+            VALUES (new.id, new.title, new.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content)
+            VALUES('delete', old.id, old.title, old.content);
+        END;
+        CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+          INSERT INTO notes_fts(notes_fts, rowid, title, content)
+            VALUES('delete', old.id, old.title, old.content);
+          INSERT INTO notes_fts(rowid, title, content)
+            VALUES (new.id, new.title, new.content);
+        END;
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(conn)
+}
+小提示（可选迁移旧数据）：如果想把项目目录里旧的 apps/desktop/notes.db 一并搬过去，先关掉应用，然后手动复制到 %APPDATA%\KnoYoo\Desktop\notes.db 覆盖即可。
+
+自检：
+# 重新编译后端
+cd D:\knoyoo\apps\desktop\src-tauri
+cargo build
+
+# 启动应用
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+
+自检点：
+1. 新增/编辑/删除/分页正常；
+2. 英文/带空格搜索走 FTS5，高亮正常；
+3. 中文关键词走 LIKE 回退，也能搜到且高亮；
+4. DB 路径应已迁到 AppData：
+Write-Output $env:APPDATA
+Get-ChildItem "$env:APPDATA\KnoYoo\Desktop\notes.db"
+
+提交：
+cd D:\knoyoo
+git add apps/desktop/src-tauri/src/main.rs apps/desktop/src-tauri/Cargo.toml
+git commit -m "fix: add missing rusqlite/serde imports; app DB in AppData"
+git push
+
+Write-Output $env:APPDATA
+Get-ChildItem "$env:APPDATA\KnoYoo\Desktop\notes.db"
+这个代码报错：
+PS D:\knoyoo\apps\desktop> Write-Output $env:APPDATA
+C:\Users\wwlie\AppData\Roaming
+PS D:\knoyoo\apps\desktop> Get-ChildItem "$env:APPDATA\KnoYoo\Desktop\notes.db"
+Get-ChildItem : Cannot find path 'C:\Users\wwlie\AppData\Roaming\KnoYoo\Desktop\notes.db' because it
+does not exist.
+At line:1 char:1
++ Get-ChildItem "$env:APPDATA\KnoYoo\Desktop\notes.db"
++ ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : ObjectNotFound: (C:\Users\wwlie\...esktop\notes.db:String) [Get-ChildI
+   tem], ItemNotFoundException
+    + FullyQualifiedErrorId : PathNotFound,Microsoft.PowerShell.Commands.GetChildItemCommand
+
+开始修正：
+我认为这个是正常的，我们刚把路径迁到 AppData，看到“找不到文件”通常是因为还没触发真正创建（或路径跟我以为的不一样）。下面一步一步把真相“揪出来”，不跳步：
+
+两个快速自检：
+1. 运行应用并保存一次（触发写库）
+cd D:\knoyoo\apps\desktop
+pnpm tauri dev
+# 在界面里随便保存一条记录
+
+2. 在另一个 PowerShell 窗口里全盘搜 AppData 下的 notes.db：
+Get-ChildItem "$env:APPDATA" -Recurse -Filter notes.db -ErrorAction SilentlyContinue |
+  Select-Object FullName
+得到：
+FullName
+--------
+C:\Users\wwlie\AppData\Roaming\KnoYoo\Desktop\data\notes.db
+这个就是APPDATA的数据库位置
+
+
+-------------------------------------------
+重新梳理：
+🔭 总目标（来自 PRD & 商业计划）：
+1. 打造 知遇（KnoYoo）：一个 个人成长导航器
+	a. 功能闭环：记录 → 成长树 → 行业树对标 → 周/3月/6月/1年计划 → 复盘 → 报告/激励
+	b. 多端：iOS App + 桌面（Win/macOS，Tauri+React）
+	c. 技术核心：Rust Core（打分/对标/计划引擎），本地 DB SQLite + FTS5，离线优先，可选云同步
+2. 商业目标：ToC 订阅制（Free → Pro），未来扩展到校园/团队合作
+
+🎯 当前阶段目标（Sprint 1–2，前 4 周）
+根据 20 周节奏计划：
+✅ Monorepo 框架（pnpm workspace + Rust core + Tauri desktop）
+✅ apps/desktop 脚手架（React + Tauri）
+✅ packages/core（Rust lib 基础函数）
+✅ packages/shared（TS SDK，已被前端调用）
+✅ SQLite + FTS5 后端接通，Rust API 跑通
+✅ 前端 UI 雏形（新增记录 + 搜索展示）
+✅ 中文 FTS5 优化，搜索 & 高亮成功
+🟨 数据文件迁移到 %APPDATA%，已定位 notes.db 路径，但还未加持久化/迁移逻辑
+🟨 git 提交时出现 Cargo.lock / pnpm-lock.yaml 改动未提交，需要清理
+验收目标：
+1. 本地 DB 创建成功（可验证 notes.db 存在）
+2. 新增记录 + 搜索（英文/中文）功能可用
+3. GitHub repo 代码库 干净且可复现
+
+
+🚦 我现在的位置
+👉 我处在 Sprint 2（Wk3–Wk4）末尾，也就是“记录/导入 & 检索”的最后阶段。
+1. 框架搭建已完成 ✔️
+2. 记录 & 检索的核心闭环已基本可跑 ✔️
+3. 还差的就是：确认 DB 存储正常、提交代码库保持干净。
+一旦这些完成，我就可以进入 Sprint 3（成长树 & 行业树 v1） 的开发。
+-------------------------------------------
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
