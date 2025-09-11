@@ -2,6 +2,11 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { hello } from "@knoyoo/shared";
 
+
+
+
+
+
 type Hit = { id: number; title: string; snippet: string };
 type Note = { id: number; title: string; content: string; created_at: string };
 
@@ -72,6 +77,27 @@ export default function App() {
   const renderSnippet = (s: string) =>
     ({ __html: s.replaceAll("[mark]", "<mark>").replaceAll("[/mark]", "</mark>") });
 
+  // ✅ 移到组件内部
+  const onExport = async () => {
+    try {
+      const res = await invoke<{ path: string; count: number }>("export_notes_jsonl");
+      alert(`已导出 ${res.count} 条到：\n${res.path}`);
+    } catch (e: any) {
+      alert("导出失败: " + e);
+    }
+  };
+
+  // ✅ 移到组件内部，并在成功后调用 refresh()
+  const onImport = async () => {
+    try {
+      const n = await invoke<number>("import_notes_jsonl");
+      await refresh();            // 现在拿得到 refresh 了
+      alert(`已导入 ${n} 条`);
+    } catch (e: any) {
+      alert("导入失败: " + e);
+    }
+  };
+
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
       <h2>{hello(name)}</h2>
@@ -120,6 +146,12 @@ export default function App() {
       </ul>
 
       <h3 style={{ marginTop: 24 }}>最近记录</h3>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
+        <h3 style={{ margin: 0 }}>最近记录</h3>
+        <button onClick={onExport}>导出 JSONL</button>
+        <button onClick={onImport}>导入 JSONL</button>
+      </div>
+
       <ul style={{ marginTop: 8 }}>
         {list.map(n => (
           <li key={n.id} style={{ marginBottom: 10 }}>
