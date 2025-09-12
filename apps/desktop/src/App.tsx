@@ -4,9 +4,6 @@ import { hello } from "@knoyoo/shared";
 
 
 
-
-
-
 type Hit = { id: number; title: string; snippet: string };
 type Note = { id: number; title: string; content: string; created_at: string };
 
@@ -66,7 +63,9 @@ export default function App() {
 
   async function onSearch() {
     try {
-      const rows = await invoke<Hit[]>("search_notes", { query: q });
+      const q2 = q.trim();
+      if (!q2) { setResults([]); return; }
+      const rows = await invoke<Hit[]>("search_notes", { query: q2 });
       setResults(rows);
     } catch (e) {
       console.error(e);
@@ -88,15 +87,16 @@ export default function App() {
   };
 
   // ✅ 移到组件内部，并在成功后调用 refresh()
-  const onImport = async () => {
+  async function onImport() {
     try {
-      const n = await invoke<number>("import_notes_jsonl");
-      await refresh();            // 现在拿得到 refresh 了
-      alert(`已导入 ${n} 条`);
+      const res = await invoke<[number, number]>("import_notes_jsonl");
+      const [inserted, ignored] = res;
+      alert(`已导入：${inserted} 条；忽略：${ignored} 条（已存在的重复）`);
+      await refresh();
     } catch (e: any) {
       alert("导入失败: " + e);
     }
-  };
+  }
 
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
