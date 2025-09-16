@@ -652,7 +652,7 @@ fn list_plan_tasks(horizon: Option<String>, status: Option<String>) -> Result<Ve
 
 #[tauri::command]
 fn update_plan_status(id: i64, status: String) -> Result<(), String> {
-    let mut conn = open_db()?;
+    let conn = open_db()?;
     conn.execute(
         "UPDATE plan_task SET status=?1 WHERE id=?2",
         rusqlite::params![status, id],
@@ -662,7 +662,7 @@ fn update_plan_status(id: i64, status: String) -> Result<(), String> {
 
 #[tauri::command]
 fn delete_plan_task(id: i64) -> Result<(), String> {
-    let mut conn = open_db()?;
+    let conn = open_db()?;
     conn.execute("DELETE FROM plan_task WHERE id=?1", rusqlite::params![id])
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -670,7 +670,7 @@ fn delete_plan_task(id: i64) -> Result<(), String> {
 
 #[tauri::command]
 fn update_plan_task(id: i64, title: String, minutes: i64, due: Option<String>) -> Result<(), String> {
-    let mut conn = open_db()?;
+    let conn = open_db()?;
     conn.execute(
         "UPDATE plan_task SET title=?1, minutes=?2, due=?3 WHERE id=?4",
         rusqlite::params![title, minutes, due, id],
