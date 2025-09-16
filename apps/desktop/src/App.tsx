@@ -32,7 +32,17 @@ export default function App() {
     setSaving(true);
     try {
       if (editingId == null) {
-        await invoke<number>("add_note", { title, content });
+        const id = await invoke<number>("add_note", { title, content });
+        const hits = await invoke<Array<{ skill_id: number; name: string; delta: number; new_mastery: number }>>(
+          "classify_and_update",
+          { noteId: id }
+        );
+        if (Array.isArray(hits) && hits.length > 0) {
+          const msg = hits.map(h => `${h.name} +${h.delta} → ${h.new_mastery}`).join("，");
+          alert(`已自动归类：${msg}`);
+        } else {
+          alert("未命中任何技能（可增补行业树关键词或稍后用 AI 分类升级）");
+        }
       } else {
         await invoke("update_note", { id: editingId, title, content });
         setEditingId(null);
@@ -96,6 +106,64 @@ export default function App() {
     } catch (e: any) {
       alert("导入失败: " + e);
     }
+  }
+
+  // 放在组件里其它 state 后面
+  type PlanTask = {
+    id: number;
+    skill_id?: number | null;
+    title: string;
+    minutes: number;
+    due?: string | null;
+    status: string;
+    horizon: string;
+  };
+
+  const [plans, setPlans] = useState<PlanTask[]>([]);
+  const [planHorizon, setPlanHorizon] = useState<"WEEK" | "QTR">("WEEK");
+  const [planFilter, setPlanFilter] = useState<"ALL" | "TODO" | "DONE">("ALL");
+
+  async function loadPlans(h?: "WEEK" | "QTR", s?: "ALL" | "TODO" | "DONE") {
+    const horizon = h ?? planHorizon;
+    const status = (s ?? planFilter) === "ALL" ? null : (s ?? planFilter);
+    const rows = await invoke<PlanTask[]>("list_plan_tasks", {
+      horizon, status
+    });
+    setPlans(rows);
+  }
+
+  async function onSeedIndustry() {
+    const n = await invoke<number>("seed_industry_v1");
+    alert(`行业树种子写入：${n} 项`);
+  }
+
+  async function onGenerate(h: "WEEK" | "QTR") {
+    await invoke<PlanTask[]>("generate_plan", { horizon: h });
+    await loadPlans(h, planFilter);
+    alert(h === "WEEK" ? "已生成周计划" : "已生成三月计划");
+  }
+
+  async function toggleDone(t: PlanTask) {
+    const next = t.status === "DONE" ? "TODO" : "DONE";
+    await invoke("update_plan_status", { id: t.id, status: next });
+    await loadPlans();
+  }
+
+  useEffect(() => { loadPlans(); }, []);
+
+  // ---- 周报简版区块 ----
+  type WeekReport = {
+    start: string; end: string;
+    tasks_done: number; minutes_done: number;
+    new_notes: number; avg_mastery: number;
+    top_gaps: [string, number, number, number][];
+  };
+
+  const [report, setReport] = useState<WeekReport | null>(null);
+
+  async function loadWeekReport() {
+    const r = await invoke<WeekReport>("report_week_summary");
+    setReport(r);
   }
 
   return (
@@ -169,6 +237,97 @@ export default function App() {
         <button onClick={() => setPage(p => p + 1)}>下一页</button>
         <button onClick={refresh}>刷新</button>
       </div>
+
+      {/* ---- 计划区块（新增） ---- */}
+      <h3 style={{ marginTop: 24 }}>计划</h3>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <button onClick={onSeedIndustry}>初始化行业树种子</button>
+        <button onClick={() => onGenerate("WEEK")}>生成周计划</button>
+        <button onClick={() => onGenerate("QTR")}>生成三月计划</button>
+
+        <button onClick={async () => {
+          const n = await invoke<number>("cleanup_plan_duplicates", { horizon: planHorizon });
+          alert(`已清理重复：${n} 条`);
+          await loadPlans();
+        }}>清理重复</button>
+
+        <select
+          value={planHorizon}
+          onChange={(e) => { const v = e.target.value as "WEEK" | "QTR"; setPlanHorizon(v); loadPlans(v, planFilter); }}
+          style={{ marginLeft: 12 }}
+        >
+          <option value="WEEK">WEEK</option>
+          <option value="QTR">QTR</option>
+        </select>
+
+        <select
+          value={planFilter}
+          onChange={(e) => { const v = e.target.value as "ALL"|"TODO"|"DONE"; setPlanFilter(v); loadPlans(planHorizon, v); }}
+        >
+          <option value="ALL">全部</option>
+          <option value="TODO">TODO</option>
+          <option value="DONE">DONE</option>
+        </select>
+
+        <button onClick={() => loadPlans()}>刷新</button>
+      </div>
+
+      <ul style={{ marginTop: 8 }}>
+        {plans.map(t => (
+          <li key={t.id} style={{ marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
+            <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggleDone(t)} />
+            <div style={{ flex: 1 }}>
+              <div style={{ fontWeight: 600 }}>{t.title}</div>
+              <div style={{ fontSize: 12, opacity: 0.7 }}>
+                {t.horizon} · {t.minutes} 分钟{t.due ? ` · 截止 ${t.due}` : ""}
+              </div>
+            </div>
+            <span style={{
+              fontSize: 12,
+              padding: "2px 6px",
+              borderRadius: 6,
+              background: t.status === "DONE" ? "#e6ffed" : "#fffbe6",
+              border: "1px solid #ddd"
+            }}>
+              {t.status}
+            </span>
+            <button onClick={async () => {
+              const title = window.prompt("新标题：", t.title) ?? t.title;
+              const minutesStr = window.prompt("分钟数：", String(t.minutes)) ?? String(t.minutes);
+              const due = window.prompt("截止日期(YYYY-MM-DD，可留空)：", t.due ?? "") ?? (t.due ?? "");
+              const minutes = parseInt(minutesStr || "0", 10) || 0;
+              await invoke("update_plan_task", { id: t.id, title, minutes, due: due || null });
+              await loadPlans();
+            }}>编辑</button>
+            <button onClick={async () => {
+              if (confirm("删除这条任务？")) {
+                await invoke("delete_plan_task", { id: t.id });
+                await loadPlans();
+              }
+            }} style={{ marginLeft: 6 }}>删除</button>
+          </li>
+        ))}
+      </ul>
+
+      {/* ---- 周报简版区块 ---- */}
+      <h3 style={{ marginTop: 24 }}>周报简版</h3>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <button onClick={loadWeekReport}>生成本周简报</button>
+      </div>
+      {report && (
+        <div style={{ lineHeight: 1.6 }}>
+          <div>统计范围：{report.start} ~ {report.end}</div>
+          <div>完成任务：{report.tasks_done} 个（约 {report.minutes_done} 分钟）</div>
+          <div>新增笔记：{report.new_notes} 条</div>
+          <div>当前平均掌握度：{report.avg_mastery.toFixed(1)}</div>
+          <div style={{ marginTop: 8, fontWeight: 600 }}>短板 Top5：</div>
+          <ol>
+            {report.top_gaps.map(([name, req, m, gap], i) => (
+              <li key={i}>{name}：要求 {req}，当前 {m}，差距 {gap}</li>
+            ))}
+          </ol>
+        </div>
+      )}
     </div>
   );
 }

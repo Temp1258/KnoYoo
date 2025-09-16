@@ -1,11 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Serialize, Deserialize};
 use directories::ProjectDirs;
 use std::path::PathBuf;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
+use chrono::{Local, Duration};
 
 
 
@@ -13,9 +14,11 @@ use std::io::{BufRead, BufReader, Write};
 fn app_data_dir() -> Result<PathBuf, String> {
     let proj = ProjectDirs::from("", "KnoYoo", "Desktop")
         .ok_or_else(|| "cannot resolve app data dir".to_string())?;
-    let dir = proj.data_dir(); // %APPDATA%\KnoYoo\Desktop\data
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    Ok(dir.to_path_buf())
+    // %APPDATA%\KnoYoo\Desktop\data
+    let base = proj.data_dir();
+    let dir = base.join("data");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
 }
 
 fn app_db_path() -> Result<PathBuf, String> {
@@ -68,6 +71,70 @@ fn open_db() -> Result<Connection, String> {
         -- 再加唯一索引防止后续再产生重复
         CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_dedupe
           ON notes(title, content, created_at);
+
+        -- 行业能力树
+        CREATE TABLE IF NOT EXISTS industry_skill (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          parent_id INTEGER,
+          name TEXT NOT NULL,
+          level INTEGER NOT NULL, -- 能力层级
+          importance INTEGER NOT NULL DEFAULT 3, -- 重要性 1-5
+          FOREIGN KEY(parent_id) REFERENCES industry_skill(id)
+        );
+
+        -- 个人成长树节点
+        CREATE TABLE IF NOT EXISTS growth_node (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          skill_id INTEGER NOT NULL,
+          mastery INTEGER NOT NULL DEFAULT 0, -- 掌握度 0-100
+          FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
+        );
+
+        -- 笔记与技能映射
+        CREATE TABLE IF NOT EXISTS note_skill_map (
+          note_id INTEGER NOT NULL,
+          skill_id INTEGER NOT NULL,
+          weight INTEGER NOT NULL DEFAULT 1,
+          PRIMARY KEY(note_id, skill_id),
+          FOREIGN KEY(note_id) REFERENCES notes(id),
+          FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
+        );
+
+        -- 计划任务
+        CREATE TABLE IF NOT EXISTS plan_task (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          horizon TEXT NOT NULL, -- 'WEEK'|'QTR'
+          skill_id INTEGER,
+          title TEXT NOT NULL,
+          minutes INTEGER NOT NULL DEFAULT 0,
+          due TEXT, -- 截止时间
+          status TEXT NOT NULL DEFAULT 'TODO',
+          FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
+        );
+
+        -- 能力差距视图（占位，gap=required_level-mastery，importance 参与优先级）
+        CREATE VIEW IF NOT EXISTS v_skill_gap AS
+        SELECT
+          s.id AS skill_id,
+          s.name,
+          s.level AS required_level,
+          s.importance,
+          COALESCE(g.mastery, 0) AS mastery,
+          (s.level - COALESCE(g.mastery, 0)) AS gap
+        FROM industry_skill s
+        LEFT JOIN growth_node g ON s.id = g.skill_id;
+
+        -- —— 清理与约束（新增） ——
+        -- 1) growth_node：每个 skill 只保留一个节点
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_growth_unique ON growth_node(skill_id);
+        -- 2) plan_task：只允许每个 (horizon, skill_id) 存在一条“未完成”任务（利用部分唯一索引）
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_open_unique
+          ON plan_task(horizon, skill_id)
+          WHERE status <> 'DONE';
+        -- 3) 查询性能小索引
+        CREATE INDEX IF NOT EXISTS idx_plan_hsd ON plan_task(horizon, status, due);
+        CREATE INDEX IF NOT EXISTS idx_note_skill_note ON note_skill_map(note_id);
+        CREATE INDEX IF NOT EXISTS idx_note_skill_skill ON note_skill_map(skill_id);
         "#,
     )
     .map_err(|e| e.to_string())?;
@@ -140,11 +207,17 @@ fn make_snippet(text: &str, needle: &str, context: usize) -> String {
 fn search_notes(query: String) -> Result<Vec<Hit>, String> {
     let conn = open_db()?;
 
-    let need_like = has_cjk(&query) || has_digit_or_symbol(&query) || query.chars().count() <= 2;
+    // 判定：中文 / 含数字或符号 / 超短词 → 直接 LIKE
+    let need_like_primary = has_cjk(&query) || has_digit_or_symbol(&query) || query.chars().count() <= 2;
 
-    if need_like {
-        // 中文/含数字或符号/超短词：回退 LIKE（标题/正文皆搜）
-        let like = format!("%{}%", query);
+    // 小工具：是否是“纯 ASCII 英数单词”（例如 SVM、NLP、AI，不含空格）
+    fn is_ascii_alnum_word(s: &str) -> bool {
+        !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric())
+    }
+
+    // LIKE 路径（标题/正文都搜），带简单片段
+    let like_search = |conn: &Connection, q: &str| -> Result<Vec<Hit>, String> {
+        let like = format!("%{}%", q);
         let mut stmt = conn.prepare(
             "SELECT id, title, content
                FROM notes
@@ -157,35 +230,45 @@ fn search_notes(query: String) -> Result<Vec<Hit>, String> {
             let id: i64 = row.get(0)?;
             let title: String = row.get(1)?;
             let content: String = row.get(2)?;
-            let snippet = make_snippet(&content, &query, 24);
+            let snippet = make_snippet(&content, q, 24);
             Ok(Hit { id, title, snippet })
         }).map_err(|e| e.to_string())?;
 
         let mut out = Vec::new();
         for r in rows { out.push(r.map_err(|e| e.to_string())?); }
         Ok(out)
-    } else {
-        // 英文/可分词：FTS5，优先 content 的 snippet，为空再用 title
-        let mut stmt = conn.prepare(
-            "SELECT n.id, n.title,
-                    /* 优先从 content(1) 抽取 snippet，若空再回退到 title(0) */
-                    COALESCE(NULLIF(snippet(notes_fts, 1, '[mark]', '[/mark]', ' … ', 12), ''),
-                             snippet(notes_fts, 0, '[mark]', '[/mark]', ' … ', 12)) AS snip
-               FROM notes_fts
-               JOIN notes n ON n.id = notes_fts.rowid
-              WHERE notes_fts MATCH ?1
-              ORDER BY bm25(notes_fts) ASC
-              LIMIT 50",
-        ).map_err(|e| e.to_string())?;
+    };
 
-        let rows = stmt.query_map([query], |row| {
-            Ok(Hit { id: row.get(0)?, title: row.get(1)?, snippet: row.get(2)? })
-        }).map_err(|e| e.to_string())?;
-
-        let mut out = Vec::new();
-        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
-        Ok(out)
+    if need_like_primary {
+        // 直接 LIKE
+        return like_search(&conn, &query);
     }
+
+    // 首选 FTS5（英文/可分词）
+    let mut stmt = conn.prepare(
+        "SELECT n.id, n.title,
+                COALESCE(NULLIF(snippet(notes_fts, 1, '[mark]', '[/mark]', ' … ', 12), ''),
+                         snippet(notes_fts, 0, '[mark]', '[/mark]', ' … ', 12)) AS snip
+           FROM notes_fts
+           JOIN notes n ON n.id = notes_fts.rowid
+          WHERE notes_fts MATCH ?1
+          ORDER BY bm25(notes_fts) ASC
+          LIMIT 50",
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([&query], |row| {
+        Ok(Hit { id: row.get(0)?, title: row.get(1)?, snippet: row.get(2)? })
+    }).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+
+    // ⭐ 关键补救：若 FTS5 空且查询是纯 ASCII 单词（如 SVM），再回退 LIKE
+    if out.is_empty() && is_ascii_alnum_word(&query) {
+        return like_search(&conn, &query);
+    }
+
+    Ok(out)
 }
 
 
@@ -330,8 +413,377 @@ fn import_notes_jsonl() -> Result<(u32, u32), String> {
     Ok((inserted, ignored))
 }
 
+#[tauri::command]
+fn seed_industry_v1() -> Result<u32, String> {
+    // 示例种子（可后续扩充/调整）
+    let skills: Vec<(Option<i64>, &'static str, i64, i64)> = vec![
+        (None, "数据分析",   1, 5),
+        (None, "机器学习",   1, 5),
+        (None, "深度学习",   1, 4),
+        (None, "数据工程",   1, 4),
+        (None, "AI 产品",    1, 4),
+        (None, "大模型",     1, 4),
+        (None, "Prompt 工程",1, 3),
+        (None, "数据可视化", 1, 3),
+        (None, "数据治理",   1, 3),
+        (None, "NLP",       1, 3),
+        (None, "CV",        1, 3),
+        (None, "推荐系统",   1, 3),
+        (None, "知识图谱",   1, 2),
+        (None, "AI 安全",    1, 2),
+        (None, "AI 法律伦理",1, 2),
+    ];
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut count = 0u32;
+    for (parent_id, name, level, importance) in skills {
+        tx.execute(
+            "INSERT OR IGNORE INTO industry_skill (parent_id, name, level, importance) VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![parent_id, name, level, importance],
+        ).map_err(|e| e.to_string())?;
+        count += 1;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(count)
+}
 
+#[derive(Serialize)]
+struct ClassifyHit {
+    skill_id: i64,
+    name: String,
+    delta: i64,
+    new_mastery: i64,
+}
 
+#[tauri::command]
+fn classify_and_update(note_id: i64) -> Result<Vec<ClassifyHit>, String> {
+    let conn = open_db()?;
+
+    // 取笔记内容
+    let mut stmt = conn.prepare("SELECT title, content FROM notes WHERE id=?1")
+        .map_err(|e| e.to_string())?;
+    let (title, content): (String, String) = stmt
+        .query_row(rusqlite::params![note_id], |row| Ok((row.get(0)?, row.get(1)?)))
+        .map_err(|e| e.to_string())?;
+    let text = format!("{} {}", title, content);
+
+    // 遍历技能
+    let mut skill_stmt = conn.prepare("SELECT id, name FROM industry_skill")
+        .map_err(|e| e.to_string())?;
+    let skills = skill_stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?;
+
+    let mut hits: Vec<ClassifyHit> = Vec::new();
+    for s in skills {
+        let (skill_id, name) = s.map_err(|e| e.to_string())?;
+        if text.contains(&name) {
+            // 写入映射表
+            conn.execute(
+                "INSERT OR IGNORE INTO note_skill_map (note_id, skill_id, weight) VALUES (?1, ?2, 1)",
+                rusqlite::params![note_id, skill_id],
+            ).map_err(|e| e.to_string())?;
+
+            // mastery +10（如无则插入）
+            let delta: i64 = 10;
+            let updated = conn.execute(
+                "UPDATE growth_node SET mastery = MIN(mastery+?2,100) WHERE skill_id=?1",
+                rusqlite::params![skill_id, delta],
+            ).map_err(|e| e.to_string())?;
+            if updated == 0 {
+                conn.execute(
+                    "INSERT INTO growth_node (skill_id, mastery) VALUES (?1, ?2)",
+                    rusqlite::params![skill_id, delta],
+                ).map_err(|e| e.to_string())?;
+            }
+
+            // 取最新 mastery
+            let new_mastery: i64 = conn.query_row(
+                "SELECT mastery FROM growth_node WHERE skill_id=?1",
+                [skill_id],
+                |r| r.get(0),
+            ).map_err(|e| e.to_string())?;
+
+            hits.push(ClassifyHit { skill_id, name, delta, new_mastery });
+        }
+    }
+
+    Ok(hits)
+}
+
+#[derive(Serialize)]
+struct PlanTaskOut {
+    id: i64,
+    skill_id: Option<i64>,
+    title: String,
+    minutes: i64,
+    due: Option<String>,
+    status: String,
+}
+
+#[tauri::command]
+fn generate_plan(horizon: String) -> Result<Vec<PlanTaskOut>, String> {
+    use chrono::{Local, Duration};
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+
+    // WEEK → 7 天；QTR → 12 周
+    let today = Local::now().date_naive();
+    let (slots, step_days) = match horizon.as_str() {
+        "QTR" => (12, 7),
+        _     => (7, 1),
+    };
+    let mut assigned = 0usize;
+
+    {
+        let mut stmt = tx.prepare(
+            "SELECT s.id, s.name, s.importance, COALESCE(g.mastery,0) as mastery, s.level
+               FROM industry_skill s
+               LEFT JOIN growth_node g ON s.id = g.skill_id
+              ORDER BY (s.level - COALESCE(g.mastery,0)) * s.importance DESC, s.importance DESC
+              LIMIT 5"
+        ).map_err(|e| e.to_string())?;
+
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let skill_id: i64 = row.get(0).map_err(|e| e.to_string())?;
+            let name: String = row.get(1).map_err(|e| e.to_string())?;
+            let importance: i64 = row.get(2).map_err(|e| e.to_string())?;
+            let mastery: i64 = row.get(3).map_err(|e| e.to_string())?;
+            let level: i64 = row.get(4).map_err(|e| e.to_string())?;
+            let gap = level - mastery;
+            if gap <= 0 { continue; }
+
+            // ⭐ 去重：若已存在同 horizon+skill 的未完成任务（且截止日在今天及以后），就跳过
+            let exists: Option<i64> = tx.query_row(
+                "SELECT id FROM plan_task
+                  WHERE horizon=?1 AND skill_id=?2
+                    AND status<>'DONE'
+                    AND (due IS NULL OR due >= date('now'))
+                  LIMIT 1",
+                rusqlite::params![&horizon, skill_id],
+                |r| r.get(0),
+            ).optional().map_err(|e| e.to_string())?;
+            if exists.is_some() {
+                continue; // 已有未完成任务：不再重复插入
+            }
+
+            let minutes = 60 * importance.min(gap);
+            let title = format!("提升{}（差距{}）", name, gap);
+
+            // 分散 due
+            let slot = assigned % slots;
+            let due = today + Duration::days((slot * step_days) as i64);
+            let due_str = due.format("%Y-%m-%d").to_string();
+            assigned += 1;
+
+            tx.execute(
+                "INSERT INTO plan_task (horizon, skill_id, title, minutes, due, status)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'TODO')",
+                rusqlite::params![&horizon, skill_id, &title, minutes, &due_str],
+            ).map_err(|e| e.to_string())?;
+
+            let id = tx.last_insert_rowid();
+            out.push(PlanTaskOut {
+                id,
+                skill_id: Some(skill_id),
+                title,
+                minutes,
+                due: Some(due_str),
+                status: "TODO".to_string(),
+            });
+        }
+    }
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(out)
+}
+
+#[derive(Serialize)]
+struct PlanTask {
+    id: i64,
+    skill_id: Option<i64>,
+    title: String,
+    minutes: i64,
+    due: Option<String>,
+    status: String,
+    horizon: String,
+}
+
+#[tauri::command]
+fn list_plan_tasks(horizon: Option<String>, status: Option<String>) -> Result<Vec<PlanTask>, String> {
+    let conn = open_db()?;
+    let (mut sql, mut args): (String, Vec<(usize, String)>) = (
+        "SELECT id, skill_id, title, minutes, due, status, horizon
+           FROM plan_task".to_string(),
+        vec![]
+    );
+    let mut where_clause: Vec<String> = vec![];
+    if let Some(h) = horizon.as_ref() {
+        where_clause.push("horizon = ?1".to_string());
+        args.push((1, h.clone()));
+    }
+    if let Some(s) = status.as_ref() {
+        where_clause.push(format!("status = ?{}", args.len() + 1));
+        args.push((args.len() + 1, s.clone()));
+    }
+    if !where_clause.is_empty() {
+        sql.push_str(" WHERE ");
+        sql.push_str(&where_clause.join(" AND "));
+    }
+    sql.push_str(" ORDER BY COALESCE(due,'9999-12-31') ASC, id DESC LIMIT 200");
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let rows = stmt.query_map(
+        rusqlite::params_from_iter(args.iter().map(|(_, v)| v)),
+        |row| Ok(PlanTask {
+            id: row.get(0)?, skill_id: row.get(1)?,
+            title: row.get(2)?, minutes: row.get(3)?,
+            due: row.get(4)?, status: row.get(5)?, horizon: row.get(6)?,
+        })
+    ).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+    Ok(out)
+}
+
+#[tauri::command]
+fn update_plan_status(id: i64, status: String) -> Result<(), String> {
+    let mut conn = open_db()?;
+    conn.execute(
+        "UPDATE plan_task SET status=?1 WHERE id=?2",
+        rusqlite::params![status, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_plan_task(id: i64) -> Result<(), String> {
+    let mut conn = open_db()?;
+    conn.execute("DELETE FROM plan_task WHERE id=?1", rusqlite::params![id])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn update_plan_task(id: i64, title: String, minutes: i64, due: Option<String>) -> Result<(), String> {
+    let mut conn = open_db()?;
+    conn.execute(
+        "UPDATE plan_task SET title=?1, minutes=?2, due=?3 WHERE id=?4",
+        rusqlite::params![title, minutes, due, id],
+    ).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct WeekReport {
+    start: String,
+    end: String,
+    tasks_done: i64,
+    minutes_done: i64,
+    new_notes: i64,
+    avg_mastery: f64,
+    top_gaps: Vec<(String, i64, i64, i64)>, // name, required_level, mastery, gap
+}
+
+#[tauri::command]
+fn report_week_summary() -> Result<WeekReport, String> {
+    let conn = open_db()?;
+
+    // 本周窗口：今天往前 6 天
+    let end = Local::now().date_naive();
+    let start = end - Duration::days(6);
+    let start_s = start.format("%Y-%m-%d").to_string();
+    let end_s   = end.format("%Y-%m-%d").to_string();
+
+    // 1) 本周完成任务数 / 总分钟
+    let (tasks_done, minutes_done):(i64,i64) = conn.query_row(
+        "SELECT COUNT(*), COALESCE(SUM(minutes),0)
+           FROM plan_task
+          WHERE status='DONE' AND due IS NOT NULL
+            AND due >= ?1 AND due <= ?2",
+        rusqlite::params![&start_s, &end_s],
+        |r| Ok((r.get(0)?, r.get(1)?))
+    ).unwrap_or((0,0));
+
+    // 2) 近 7 天新增笔记
+    let new_notes: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM notes WHERE datetime(created_at) >= datetime(?1 || 'T00:00:00Z')",
+        [&start_s],
+        |r| r.get(0)
+    ).unwrap_or(0);
+
+    // 3) 当前平均 mastery
+    let avg_mastery: f64 = conn.query_row(
+        "SELECT COALESCE(AVG(mastery),0.0) FROM growth_node",
+        [],
+        |r| r.get(0)
+    ).unwrap_or(0.0);
+
+    // 4) 短板 Top5（gap*importance）
+    let mut stmt4 = conn.prepare(
+        "SELECT s.name, s.level AS required_level, COALESCE(g.mastery,0) as mastery,
+                (s.level-COALESCE(g.mastery,0)) AS gap
+           FROM industry_skill s
+           LEFT JOIN growth_node g ON s.id = g.skill_id
+          ORDER BY (s.level-COALESCE(g.mastery,0))*s.importance DESC, s.importance DESC
+          LIMIT 5"
+    ).map_err(|e| e.to_string())?;
+    let rows = stmt4.query_map([], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, i64>(1)?,
+            row.get::<_, i64>(2)?,
+            row.get::<_, i64>(3)?,
+        ))
+    }).map_err(|e| e.to_string())?;
+    let mut top_gaps = Vec::new();
+    for r in rows { top_gaps.push(r.map_err(|e| e.to_string())?); }
+
+    Ok(WeekReport{ start: start_s, end: end_s, tasks_done, minutes_done, new_notes, avg_mastery, top_gaps })
+}
+
+#[tauri::command]
+fn cleanup_plan_duplicates(horizon: Option<String>) -> Result<u32, String> {
+    // 删除“未完成”的重复计划：对 (horizon, skill_id) 只保留 id 最大的那条（最近生成的）
+    let conn = open_db()?;
+
+    let (sql, params): (String, Vec<String>) = if let Some(h) = horizon {
+        (
+            "DELETE FROM plan_task
+              WHERE status <> 'DONE'
+                AND horizon = ?1
+                AND id NOT IN (
+                  SELECT MAX(id) FROM plan_task
+                   WHERE status <> 'DONE' AND horizon = ?1
+                   GROUP BY horizon, skill_id
+                )".to_string(),
+            vec![h],
+        )
+    } else {
+        (
+            "DELETE FROM plan_task
+              WHERE status <> 'DONE'
+                AND id NOT IN (
+                  SELECT MAX(id) FROM plan_task
+                   WHERE status <> 'DONE'
+                   GROUP BY horizon, skill_id
+                )".to_string(),
+            vec![],
+        )
+    };
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let changed = if params.is_empty() {
+        stmt.execute([]).map_err(|e| e.to_string())?
+    } else {
+        stmt.execute(rusqlite::params![params[0]]).map_err(|e| e.to_string())?
+    };
+    Ok(changed as u32)
+}
 
 
 fn main() {
@@ -339,8 +791,11 @@ fn main() {
         .plugin(tauri_plugin_opener::init())
         .invoke_handler(tauri::generate_handler![
             add_note, search_notes, list_notes, update_note, delete_note,
-            export_notes_jsonl, import_notes_jsonl
-          ])
+            export_notes_jsonl, import_notes_jsonl, seed_industry_v1,
+            classify_and_update, generate_plan,
+            list_plan_tasks, update_plan_status, report_week_summary,
+            delete_plan_task, update_plan_task, cleanup_plan_duplicates
+        ])
           
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
