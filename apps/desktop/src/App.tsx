@@ -37,6 +37,93 @@ function DebugCounts() {
   );
 }
 
+type SkillGapRow = { name: string; required_level: number; mastery: number; gap: number };
+
+function RadarPanel() {
+  const [data, setData] = useState<SkillGapRow[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [msg, setMsg] = useState("");
+
+  async function load() {
+    setLoading(true);
+    setMsg("");
+    try {
+      const res = (await invoke("list_skill_gaps", { limit: 8 })) as SkillGapRow[];
+      setData(res);
+    } catch (e: any) {
+      setMsg(String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  // 简单雷达：把 required_level(1~5) 映射到 0~100（*20），mastery 已经是 0~100
+  const N = Math.max(3, data.length);
+  const cx = 140, cy = 140, R = 110;
+
+  function polar(r: number, i: number) {
+    const ang = -Math.PI / 2 + (2 * Math.PI * i) / N;
+    return [cx + r * Math.cos(ang), cy + r * Math.sin(ang)];
+  }
+
+  const reqPoints = data.map((d, i) => {
+    const r = Math.max(0, Math.min(100, d.required_level * 20)) * (R / 100);
+    const [x, y] = polar(r, i);
+    return `${x},${y}`;
+  }).join(" ");
+
+  const masPoints = data.map((d, i) => {
+    const r = Math.max(0, Math.min(100, d.mastery)) * (R / 100);
+    const [x, y] = polar(r, i);
+    return `${x},${y}`;
+  }).join(" ");
+
+  return (
+    <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 12, marginTop: 16 }}>
+      <h2 style={{ margin: "0 0 8px" }}>能力雷达（Top-8 差距）</h2>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+        <button onClick={load} disabled={loading}>刷新</button>
+        {msg && <div style={{ fontSize: 12, opacity: 0.8 }}>{msg}</div>}
+      </div>
+
+      <svg width={280} height={280} viewBox="0 0 280 280">
+        {/* 圆环网格 */}
+        {[0.25, 0.5, 0.75, 1].map((p, idx) => (
+          <circle key={idx} cx={cx} cy={cy} r={R * p} fill="none" stroke="#eee" />
+        ))}
+        {/* 轴线 + 标签 */}
+        {data.map((d, i) => {
+          const [x, y] = polar(R, i);
+          const [lx, ly] = polar(R + 16, i);
+          return (
+            <g key={i}>
+              <line x1={cx} y1={cy} x2={x} y2={y} stroke="#eee" />
+              <text x={lx} y={ly} fontSize={10} textAnchor="middle" dominantBaseline="middle">
+                {d.name}
+              </text>
+            </g>
+          );
+        })}
+        {/* required 多边形（半透明边框） */}
+        {data.length >= 3 && (
+          <polygon points={reqPoints} fill="none" stroke="#999" strokeDasharray="4 3" />
+        )}
+        {/* mastery 多边形（实心） */}
+        {data.length >= 3 && (
+          <polygon points={masPoints} fill="rgba(33,150,243,0.25)" stroke="#2196f3" />
+        )}
+        {/* 中心点 */}
+        <circle cx={cx} cy={cy} r={2} fill="#999" />
+      </svg>
+
+      <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
+        灰色虚线 = 要求（L1~L5→×20），蓝色 = 当前掌握（0~100）。
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   const [name, setName] = useState("KnoYoo");
 
@@ -480,6 +567,7 @@ export default function App() {
       )}
       <DebugCounts />
       <PlanPanel />
+      <RadarPanel />
     </div>
   );
 }

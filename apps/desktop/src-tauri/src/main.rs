@@ -898,6 +898,45 @@ fn fix_schema_required_level() -> Result<String, String> {
     Ok("ok".into())
 }
 
+#[derive(Serialize)]
+struct SkillGap {
+    name: String,
+    required_level: i64, // 1~5
+    mastery: i64,        // 0~100
+    gap: i64,            // required_level - mastery
+}
+
+#[tauri::command]
+fn list_skill_gaps(limit: Option<i64>) -> Result<Vec<SkillGap>, String> {
+    let conn = open_db()?;
+    let lim = limit.unwrap_or(8).clamp(1, 50);
+    let mut stmt = conn.prepare(
+        "SELECT s.name,
+                s.required_level,
+                COALESCE(g.mastery, 0) AS mastery,
+                (s.required_level - COALESCE(g.mastery, 0)) AS gap,
+                s.importance
+           FROM industry_skill s
+           LEFT JOIN growth_node g ON s.id = g.skill_id
+          ORDER BY (s.required_level - COALESCE(g.mastery, 0)) * s.importance DESC,
+                   s.importance DESC
+          LIMIT ?1"
+    ).map_err(|e| e.to_string())?;
+
+    let rows = stmt.query_map([lim], |row| {
+        Ok(SkillGap {
+            name: row.get(0)?,
+            required_level: row.get(1)?,
+            mastery: row.get(2)?,
+            gap: row.get(3)?,
+        })
+    }).map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+    Ok(out)
+}
+
 
 fn main() {
     tauri::Builder::default()
@@ -908,9 +947,8 @@ fn main() {
             classify_and_update, generate_plan,
             list_plan_tasks, update_plan_status, report_week_summary,
             delete_plan_task, update_plan_task, cleanup_plan_duplicates,
-            debug_counts,
-            fix_schema_required_level,
-            backfill_growth_nodes
+            debug_counts, backfill_growth_nodes, fix_schema_required_level,
+            list_skill_gaps
           ])
           
         .run(tauri::generate_context!())
