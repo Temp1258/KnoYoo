@@ -21,3 +21,12 @@ Thumbs.db
 !apps/desktop/src/**
 !apps/desktop/src-tauri/
 !apps/desktop/src-tauri/**
+
+# keep source tracked
+!apps/
+!apps/desktop/
+!apps/desktop/src/
+!apps/desktop/src/**
+!apps/desktop/src-tauri/
+!apps/desktop/src-tauri/**
+
