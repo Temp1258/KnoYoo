@@ -302,7 +302,17 @@ export default function App() {
       try {
         const args = onlyTodo ? { horizon, status: "TODO" } : { horizon };
         const res = (await invoke("list_plan_tasks", args)) as PlanTask[];
-        setTasks(res);
+        const sorted = [...res].sort((a, b) => {
+          const today = new Date().toISOString().slice(0,10);
+          const aOver = a.status !== "DONE" && a.due && a.due < today;
+          const bOver = b.status !== "DONE" && b.due && b.due < today;
+          if (aOver !== bOver) return aOver ? -1 : 1;               // 逾期优先
+          if (a.status !== b.status) return a.status === "DONE" ? 1 : -1; // DONE 往后
+          const ad = a.due ?? "9999-12-31";
+          const bd = b.due ?? "9999-12-31";
+          return ad.localeCompare(bd);                               // 其余按 due 升序
+        });
+        setTasks(sorted);
       } catch (e: any) {
         setMsg(String(e));
       } finally {
