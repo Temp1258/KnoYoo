@@ -2,10 +2,40 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { hello } from "@knoyoo/shared";
 
+// 给控制台用的临时桥
+declare global {
+  interface Window {
+    tauriInvoke?: (cmd: string, args?: any) => Promise<any>;
+  }
+}
+window.tauriInvoke = (cmd, args) => invoke(cmd, args);
 
 
 type Hit = { id: number; title: string; snippet: string };
 type Note = { id: number; title: string; content: string; created_at: string };
+
+function DebugCounts() {
+  const [msg, setMsg] = useState<string>("");
+
+  async function handleClick() {
+    try {
+      const res = await invoke("debug_counts") as {industry:number; growth:number; plans:number};
+      setMsg(`industry=${res.industry}, growth=${res.growth}, plans=${res.plans}`);
+      alert(msg || JSON.stringify(res));
+    } catch (e:any) {
+      setMsg(String(e));
+      alert(String(e));
+      console.error(e);
+    }
+  }
+
+  return (
+    <div style={{marginTop: 12}}>
+      <button onClick={handleClick}>Debug counts</button>
+      {msg && <div style={{marginTop: 8}}>{msg}</div>}
+    </div>
+  );
+}
 
 export default function App() {
   const [name, setName] = useState("KnoYoo");
@@ -328,6 +358,7 @@ export default function App() {
           </ol>
         </div>
       )}
+      <DebugCounts />
     </div>
   );
 }

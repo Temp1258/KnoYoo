@@ -835,6 +835,69 @@ fn debug_counts() -> Result<Counts, String> {
     Ok(Counts { industry, growth, plans })
 }
 
+#[tauri::command]
+fn backfill_growth_nodes() -> Result<u32, String> {
+    let conn = open_db()?;
+    // 为没有成长节点的技能补 0 分的 mastery
+    let changed = conn.execute(
+        "INSERT INTO growth_node (skill_id, mastery)
+         SELECT s.id, 0
+           FROM industry_skill s
+      LEFT JOIN growth_node g ON g.skill_id = s.id
+          WHERE g.skill_id IS NULL",
+        [],
+    ).map_err(|e| e.to_string())?;
+    Ok(changed as u32)
+}
+
+#[tauri::command]
+fn fix_schema_required_level() -> Result<String, String> {
+    let conn = open_db()?;
+
+    // 1) 检查列名
+    let mut has_required = false;
+    let mut has_level = false;
+    {
+        let mut stmt = conn.prepare("PRAGMA table_info(industry_skill)")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(1))
+            .map_err(|e| e.to_string())?;
+        for r in rows {
+            let name = r.map_err(|e| e.to_string())?;
+            if name == "required_level" { has_required = true; }
+            if name == "level" { has_level = true; }
+        }
+    }
+
+    // 2) 如仍是 level → 改名为 required_level
+    if !has_required && has_level {
+        conn.execute(
+            "ALTER TABLE industry_skill RENAME COLUMN level TO required_level",
+            [],
+        ).map_err(|e| format!("rename column failed: {}", e))?;
+    }
+
+    // 3) 视图可能老版本引用了 level，统一重建
+    conn.execute("DROP VIEW IF EXISTS v_skill_gap", [])
+        .map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        r#"
+        CREATE VIEW IF NOT EXISTS v_skill_gap AS
+        SELECT
+          s.id AS skill_id,
+          s.name,
+          s.required_level,
+          s.importance,
+          COALESCE(g.mastery, 0) AS mastery,
+          (s.required_level - COALESCE(g.mastery, 0)) AS gap
+        FROM industry_skill s
+        LEFT JOIN growth_node g ON s.id = g.skill_id;
+        "#,
+    ).map_err(|e| e.to_string())?;
+
+    Ok("ok".into())
+}
+
 
 fn main() {
     tauri::Builder::default()
@@ -845,7 +908,9 @@ fn main() {
             classify_and_update, generate_plan,
             list_plan_tasks, update_plan_status, report_week_summary,
             delete_plan_task, update_plan_task, cleanup_plan_duplicates,
-            debug_counts
+            debug_counts,
+            fix_schema_required_level,
+            backfill_growth_nodes
           ])
           
         .run(tauri::generate_context!())
