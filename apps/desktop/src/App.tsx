@@ -228,12 +228,12 @@ export default function App() {
   // 放在组件里其它 state 后面
   type PlanTask = {
     id: number;
-    skill_id?: number | null;
+    skill_id: number | null;
     title: string;
     minutes: number;
-    due?: string | null;
-    status: string;
-    horizon: string;
+    due: string | null;
+    status: "TODO" | "DONE";
+    horizon: "WEEK" | "QTR";
   };
 
   const [plans, setPlans] = useState<PlanTask[]>([]);
@@ -289,6 +289,12 @@ export default function App() {
     const [loading, setLoading] = useState(false);
     const [msg, setMsg] = useState("");
 
+    // 编辑状态
+    const [editId, setEditId] = useState<number | null>(null);
+    const [eTitle, setETitle] = useState("");
+    const [eMinutes, setEMinutes] = useState<string>("");
+    const [eDue, setEDue] = useState<string>("");
+
     async function load() {
       setLoading(true);
       setMsg("");
@@ -301,10 +307,7 @@ export default function App() {
         setLoading(false);
       }
     }
-
-    useEffect(() => {
-      load();
-    }, [horizon]);
+    useEffect(() => { load(); }, [horizon]);
 
     async function gen(h: "WEEK" | "QTR") {
       setLoading(true);
@@ -330,28 +333,39 @@ export default function App() {
       await load();
     }
 
+    // 进入编辑
+    function startEdit(t: PlanTask) {
+      setEditId(t.id);
+      setETitle(t.title);
+      setEMinutes(String(t.minutes ?? 0));
+      setEDue(t.due ?? "");
+    }
+    // 取消编辑
+    function cancelEdit() {
+      setEditId(null);
+      setETitle("");
+      setEMinutes("");
+      setEDue("");
+    }
+    // 保存编辑
+    async function saveEdit(id: number) {
+      const minutes = Number.parseInt(eMinutes || "0", 10);
+      const due = eDue.trim() === "" ? null : eDue.trim(); // 允许清空 due
+      await invoke("update_plan_task", { id, title: eTitle, minutes, due });
+      cancelEdit();
+      await load();
+    }
+
     return (
       <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 12, marginTop: 16 }}>
         <h2 style={{ margin: "0 0 8px" }}>计划</h2>
 
         <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
           <label>
-            <input
-              type="radio"
-              value="WEEK"
-              checked={horizon === "WEEK"}
-              onChange={() => setHorizon("WEEK")}
-            />{" "}
-            WEEK
+            <input type="radio" value="WEEK" checked={horizon === "WEEK"} onChange={() => setHorizon("WEEK")} /> WEEK
           </label>
           <label>
-            <input
-              type="radio"
-              value="QTR"
-              checked={horizon === "QTR"}
-              onChange={() => setHorizon("QTR")}
-            />{" "}
-            QTR
+            <input type="radio" value="QTR" checked={horizon === "QTR"} onChange={() => setHorizon("QTR")} /> QTR
           </label>
 
           <button onClick={() => gen("WEEK")} disabled={loading}>生成周计划</button>
@@ -360,42 +374,87 @@ export default function App() {
         </div>
 
         {msg && <div style={{ marginBottom: 8, fontSize: 12, opacity: 0.8 }}>{msg}</div>}
+
         {loading ? (
           <div>Loading…</div>
         ) : (
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            {tasks.map((t) => (
-              <li
-                key={t.id}
-                style={{
-                  display: "grid",
-                  gridTemplateColumns: "auto 1fr auto auto",
-                  gap: 8,
-                  alignItems: "center",
-                  padding: "8px 0",
-                  borderBottom: "1px solid #f0f0f0",
-                }}
-              >
-                <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggle(t)} />
-                <div>
-                  <div
-                    style={{
-                      fontWeight: 600,
-                      textDecoration: t.status === "DONE" ? "line-through" : "none",
-                    }}
-                  >
-                    {t.title}
+            {tasks.map((t) => {
+              const editing = editId === t.id;
+              return (
+                <li
+                  key={t.id}
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "auto 1fr auto auto",
+                    gap: 8,
+                    alignItems: "center",
+                    padding: "8px 0",
+                    borderBottom: "1px solid #f0f0f0",
+                  }}
+                >
+                  <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggle(t)} />
+
+                  {/* 内容区 */}
+                  <div>
+                    {!editing ? (
+                      <>
+                        <div style={{ fontWeight: 600, textDecoration: t.status === "DONE" ? "line-through" : "none" }}>
+                          {t.title}
+                        </div>
+                        <div style={{ fontSize: 12, opacity: 0.8 }}>
+                          {`min: ${t.minutes ?? "-"}`}
+                          {t.due ? ` • due: ${t.due}` : ""}
+                          {typeof t.skill_id === "number" ? ` • skill: ${t.skill_id}` : ""}
+                        </div>
+                      </>
+                    ) : (
+                      <div style={{ display: "grid", gap: 6 }}>
+                        <input
+                          value={eTitle}
+                          onChange={(e) => setETitle(e.target.value)}
+                          placeholder="title"
+                          style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
+                        />
+                        <div style={{ display: "flex", gap: 8 }}>
+                          <input
+                            type="number"
+                            min={0}
+                            value={eMinutes}
+                            onChange={(e) => setEMinutes(e.target.value)}
+                            placeholder="minutes"
+                            style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd", width: 120 }}
+                          />
+                          <input
+                            type="date"
+                            value={eDue}
+                            onChange={(e) => setEDue(e.target.value)}
+                            style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
+                          />
+                        </div>
+                      </div>
+                    )}
                   </div>
-                  <div style={{ fontSize: 12, opacity: 0.8 }}>
-                    {t.minutes ? `min: ${t.minutes}` : "min: -"}
-                    {t.due ? ` • due: ${t.due}` : ""}
-                    {typeof t.skill_id === "number" ? ` • skill: ${t.skill_id}` : ""}
+
+                  <span style={{ fontSize: 12, opacity: 0.7 }}>{t.horizon}</span>
+
+                  {/* 操作区 */}
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {!editing ? (
+                      <>
+                        <button onClick={() => startEdit(t)}>编辑</button>
+                        <button onClick={() => del(t)}>删除</button>
+                      </>
+                    ) : (
+                      <>
+                        <button onClick={() => saveEdit(t.id)}>保存</button>
+                        <button onClick={cancelEdit}>取消</button>
+                      </>
+                    )}
                   </div>
-                </div>
-                <span style={{ fontSize: 12, opacity: 0.7 }}>{t.horizon}</span>
-                <button onClick={() => del(t)}>删除</button>
-              </li>
-            ))}
+                </li>
+              );
+            })}
             {tasks.length === 0 && <li style={{ opacity: 0.6, padding: "8px 0" }}>暂无任务</li>}
           </ul>
         )}
