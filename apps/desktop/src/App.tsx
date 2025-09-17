@@ -376,9 +376,9 @@ export default function App() {
     const todayStr = () => new Date().toISOString().slice(0, 10);
     const isOverdue = (t: PlanTask) => t.due != null && t.status !== "DONE" && t.due < todayStr();
 
-    async function load() {
+    async function load(preserveMsg = false) {
       setLoading(true);
-      setMsg("");
+      if (!preserveMsg) setMsg("");
       try {
         const args = onlyTodo ? { horizon, status: "TODO" } : { horizon };
         const res = (await invoke("list_plan_tasks", args)) as PlanTask[];
@@ -404,11 +404,28 @@ export default function App() {
 
     async function gen(h: "WEEK" | "QTR") {
       setLoading(true);
-      setMsg("");
       try {
         const created = (await invoke("generate_plan", { horizon: h })) as any[];
-        setMsg(`生成 ${Array.isArray(created) ? created.length : 0} 条`);
-        await load();
+        const n = Array.isArray(created) ? created.length : 0;
+
+        let tip = "";
+        if (n === 0) {
+          const open = (await invoke("list_plan_tasks", { horizon: h, status: "TODO" })) as PlanTask[];
+          const gaps = (await invoke("list_skill_gaps", { limit: 5 })) as SkillGapRow[];
+          const hasGap = gaps.some(g => g.gap > 0);
+
+          const reasons: string[] = [];
+          if (open.length > 0) reasons.push(`该周期已有未完成任务 ${open.length} 条`);
+          if (!hasGap) reasons.push("当前无明显能力差距（已满足或掌握度≥要求）");
+          if (reasons.length === 0) reasons.push("可能被去重规则或唯一索引拦截");
+
+          tip = "未生成新任务：" + reasons.join("；");
+        } else {
+          tip = `生成 ${n} 条`;
+        }
+
+        await load(true);   // 刷新列表，但“保留消息”
+        setMsg(tip);        // 刷新后再设置提示，避免被清空
       } catch (e: any) {
         setMsg(String(e));
       } finally {
@@ -419,8 +436,9 @@ export default function App() {
     async function cleanupDup() {
       try {
         const n = (await invoke("cleanup_plan_duplicates", { horizon })) as number;
-        setMsg(`清理重复：${n}`);
-        await load();
+        const tip = `清理重复：${n}`;
+        await load(true);
+        setMsg(tip);
       } catch (e: any) {
         setMsg(String(e));
       }
@@ -583,7 +601,7 @@ export default function App() {
           <button onClick={() => gen("WEEK")} disabled={loading}>生成周计划</button>
           <button onClick={() => gen("QTR")} disabled={loading}>生成三月计划</button>
           <button onClick={cleanupDup} disabled={loading}>清理重复</button>
-          <button onClick={load} disabled={loading}>刷新</button>
+          <button onClick={() => load()} disabled={loading}>刷新</button>
 
           <label style={{ marginLeft: 8 }}>
             <input
