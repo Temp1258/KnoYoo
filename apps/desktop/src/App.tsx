@@ -288,6 +288,7 @@ export default function App() {
     const [tasks, setTasks] = useState<PlanTask[]>([]);
     const [loading, setLoading] = useState(false);
     const [msg, setMsg] = useState("");
+    const [onlyTodo, setOnlyTodo] = useState(false);
 
     // 编辑状态
     const [editId, setEditId] = useState<number | null>(null);
@@ -299,7 +300,8 @@ export default function App() {
       setLoading(true);
       setMsg("");
       try {
-        const res = (await invoke("list_plan_tasks", { horizon })) as PlanTask[];
+        const args = onlyTodo ? { horizon, status: "TODO" } : { horizon };
+        const res = (await invoke("list_plan_tasks", args)) as PlanTask[];
         setTasks(res);
       } catch (e: any) {
         setMsg(String(e));
@@ -307,7 +309,7 @@ export default function App() {
         setLoading(false);
       }
     }
-    useEffect(() => { load(); }, [horizon]);
+    useEffect(() => { load(); }, [horizon, onlyTodo]);
 
     async function gen(h: "WEEK" | "QTR") {
       setLoading(true);
@@ -356,6 +358,12 @@ export default function App() {
       await load();
     }
 
+    function isOverdue(t: PlanTask) {
+      if (!t.due || t.status === "DONE") return false;
+      const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+      return t.due < today;
+    }
+
     return (
       <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 12, marginTop: 16 }}>
         <h2 style={{ margin: "0 0 8px" }}>计划</h2>
@@ -371,6 +379,13 @@ export default function App() {
           <button onClick={() => gen("WEEK")} disabled={loading}>生成周计划</button>
           <button onClick={() => gen("QTR")} disabled={loading}>生成三月计划</button>
           <button onClick={load} disabled={loading}>刷新</button>
+          <label style={{ marginLeft: 8 }}>
+            <input
+              type="checkbox"
+              checked={onlyTodo}
+              onChange={(e) => setOnlyTodo(e.target.checked)}
+            /> 只看未完成
+          </label>
         </div>
 
         {msg && <div style={{ marginBottom: 8, fontSize: 12, opacity: 0.8 }}>{msg}</div>}
@@ -404,7 +419,12 @@ export default function App() {
                         </div>
                         <div style={{ fontSize: 12, opacity: 0.8 }}>
                           {`min: ${t.minutes ?? "-"}`}
-                          {t.due ? ` • due: ${t.due}` : ""}
+                          {t.due ? (
+                            <>
+                              {" • due: "}
+                              <span style={{ color: isOverdue(t) ? "#d32f2f" : "inherit" }}>{t.due}</span>
+                            </>
+                          ) : ""}
                           {typeof t.skill_id === "number" ? ` • skill: ${t.skill_id}` : ""}
                         </div>
                       </>
@@ -535,75 +555,8 @@ export default function App() {
       </div>
 
       {/* ---- 计划区块（新增） ---- */}
-      <h3 style={{ marginTop: 24 }}>计划</h3>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-        <button onClick={onSeedIndustry}>初始化行业树种子</button>
-        <button onClick={() => onGenerate("WEEK")}>生成周计划</button>
-        <button onClick={() => onGenerate("QTR")}>生成三月计划</button>
-
-        <button onClick={async () => {
-          const n = await invoke<number>("cleanup_plan_duplicates", { horizon: planHorizon });
-          alert(`已清理重复：${n} 条`);
-          await loadPlans();
-        }}>清理重复</button>
-
-        <select
-          value={planHorizon}
-          onChange={(e) => { const v = e.target.value as "WEEK" | "QTR"; setPlanHorizon(v); loadPlans(v, planFilter); }}
-          style={{ marginLeft: 12 }}
-        >
-          <option value="WEEK">WEEK</option>
-          <option value="QTR">QTR</option>
-        </select>
-
-        <select
-          value={planFilter}
-          onChange={(e) => { const v = e.target.value as "ALL"|"TODO"|"DONE"; setPlanFilter(v); loadPlans(planHorizon, v); }}
-        >
-          <option value="ALL">全部</option>
-          <option value="TODO">TODO</option>
-          <option value="DONE">DONE</option>
-        </select>
-
-        <button onClick={() => loadPlans()}>刷新</button>
-      </div>
-
-      <ul style={{ marginTop: 8 }}>
-        {plans.map(t => (
-          <li key={t.id} style={{ marginBottom: 10, display: "flex", gap: 8, alignItems: "center" }}>
-            <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggleDone(t)} />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontWeight: 600 }}>{t.title}</div>
-              <div style={{ fontSize: 12, opacity: 0.7 }}>
-                {t.horizon} · {t.minutes} 分钟{t.due ? ` · 截止 ${t.due}` : ""}
-              </div>
-            </div>
-            <span style={{
-              fontSize: 12,
-              padding: "2px 6px",
-              borderRadius: 6,
-              background: t.status === "DONE" ? "#e6ffed" : "#fffbe6",
-              border: "1px solid #ddd"
-            }}>
-              {t.status}
-            </span>
-            <button onClick={async () => {
-              const title = window.prompt("新标题：", t.title) ?? t.title;
-              const minutesStr = window.prompt("分钟数：", String(t.minutes)) ?? String(t.minutes);
-              const due = window.prompt("截止日期(YYYY-MM-DD，可留空)：", t.due ?? "") ?? (t.due ?? "");
-              const minutes = parseInt(minutesStr || "0", 10) || 0;
-              await invoke("update_plan_task", { id: t.id, title, minutes, due: due || null });
-              await loadPlans();
-            }}>编辑</button>
-            <button onClick={async () => {
-              if (confirm("删除这条任务？")) {
-                await invoke("delete_plan_task", { id: t.id });
-                await loadPlans();
-              }
-            }} style={{ marginLeft: 6 }}>删除</button>
-          </li>
-        ))}
-      </ul>
+      {/* 旧计划区块已删除，仅保留新 PlanPanel */}
+      <PlanPanel />
 
       {/* ---- 周报简版区块 ---- */}
       <h3 style={{ marginTop: 24 }}>周报简版</h3>
@@ -625,7 +578,6 @@ export default function App() {
         </div>
       )}
       <DebugCounts />
-      <PlanPanel />
       <RadarPanel />
     </div>
   );
