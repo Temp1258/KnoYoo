@@ -362,6 +362,7 @@ export default function App() {
 
     const [horizon, setHorizon] = useState<"WEEK" | "QTR">("WEEK");
     const [onlyTodo, setOnlyTodo] = useState(false);
+    const [grouped, setGrouped] = useState(true); // 默认分组显示
     const [tasks, setTasks] = useState<PlanTask[]>([]);
     const [loading, setLoading] = useState(false);
     const [msg, setMsg] = useState("");
@@ -456,6 +457,117 @@ export default function App() {
       await load();
     }
 
+    function renderRow(t: PlanTask) {
+      const editing = editId === t.id;
+      return (
+        <li
+          key={t.id}
+          style={{
+            display: "grid",
+            gridTemplateColumns: "auto 1fr auto auto",
+            gap: 8,
+            alignItems: "center",
+            padding: "8px 0",
+            borderBottom: "1px solid #f0f0f0",
+          }}
+        >
+          <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggle(t)} />
+
+          <div>
+            {!editing ? (
+              <>
+                <div style={{ fontWeight: 600, textDecoration: t.status === "DONE" ? "line-through" : "none" }}>
+                  {t.title}
+                </div>
+                <div style={{ fontSize: 12, opacity: 0.8 }}>
+                  {`min: ${t.minutes ?? "-"}`}
+                  {t.due ? (
+                    <>
+                      {" • due: "}
+                      <span style={{ color: isOverdue(t) ? "#d32f2f" : "inherit" }}>{t.due}</span>
+                    </>
+                  ) : ""}
+                  {typeof t.skill_id === "number" ? ` • skill: ${t.skill_id}` : ""}
+                </div>
+              </>
+            ) : (
+              <div style={{ display: "grid", gap: 6 }}>
+                <input
+                  value={eTitle}
+                  onChange={(e) => setETitle(e.target.value)}
+                  placeholder="title"
+                  style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
+                />
+                <div style={{ display: "flex", gap: 8 }}>
+                  <input
+                    type="number"
+                    min={0}
+                    value={eMinutes}
+                    onChange={(e) => setEMinutes(e.target.value)}
+                    placeholder="minutes"
+                    style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd", width: 120 }}
+                  />
+                  <input
+                    type="date"
+                    value={eDue}
+                    onChange={(e) => setEDue(e.target.value)}
+                    style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          <span style={{ fontSize: 12, opacity: 0.7 }}>{t.horizon}</span>
+
+          <div style={{ display: "flex", gap: 6 }}>
+            {!editing ? (
+              <>
+                <button onClick={() => startEdit(t)}>编辑</button>
+                <button onClick={() => del(t)}>删除</button>
+              </>
+            ) : (
+              <>
+                <button onClick={() => saveEdit(t.id)}>保存</button>
+                <button onClick={cancelEdit}>取消</button>
+              </>
+            )}
+          </div>
+        </li>
+      );
+    }
+
+    function groupTasks(list: PlanTask[]): Array<[string, PlanTask[]]> {
+      const today = new Date().toISOString().slice(0, 10);              // YYYY-MM-DD
+      const endOfWeek = new Date(Date.now() + 6 * 86400000).toISOString().slice(0, 10);
+
+      const buckets: Record<string, PlanTask[]> = {
+        overdue: [], today: [], week: [], later: [], nodue: [], done: []
+      };
+
+      for (const t of list) {
+        if (t.status === "DONE") { buckets.done.push(t); continue; }
+        if (!t.due) { buckets.nodue.push(t); continue; }
+        if (t.due < today) buckets.overdue.push(t);
+        else if (t.due === today) buckets.today.push(t);
+        else if (t.due <= endOfWeek) buckets.week.push(t);
+        else buckets.later.push(t);
+      }
+
+      const order: Array<[keyof typeof buckets, string]> = [
+        ["overdue", "逾期"],
+        ["today",   "今天"],
+        ["week",    "本周"],
+        ["later",   "以后"],
+        ["nodue",   "无截止"],
+        ["done",    "已完成"],
+      ];
+
+      return order
+        .filter(([k]) => !(onlyTodo && k === "done"))
+        .map(([k, label]) => [label, buckets[k]]);
+    }
+
     return (
       <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 12, marginTop: 16 }}>
         <h2 style={{ margin: "0 0 8px" }}>计划</h2>
@@ -480,93 +592,38 @@ export default function App() {
               onChange={(e) => setOnlyTodo(e.target.checked)}
             /> 只看未完成
           </label>
+          <label style={{ marginLeft: 8 }}>
+            <input
+              type="checkbox"
+              checked={grouped}
+              onChange={(e) => setGrouped(e.target.checked)}
+            /> 分组显示
+          </label>
         </div>
 
         {msg && <div style={{ marginBottom: 8, fontSize: 12, opacity: 0.8 }}>{msg}</div>}
 
         {loading ? (
           <div>Loading…</div>
+        ) : grouped ? (
+          <>
+            {groupTasks(tasks).map(([label, items]) =>
+              items.length === 0 ? null : (
+                <div key={label} style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 12, opacity: 0.7, margin: "6px 0" }}>
+                    {label} · {items.length}
+                  </div>
+                  <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+                    {items.map((t) => renderRow(t))}
+                  </ul>
+                </div>
+              )
+            )}
+            {tasks.length === 0 && <div style={{ opacity: 0.6, padding: "8px 0" }}>暂无任务</div>}
+          </>
         ) : (
           <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            {tasks.map((t) => {
-              const editing = editId === t.id;
-              return (
-                <li
-                  key={t.id}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "auto 1fr auto auto",
-                    gap: 8,
-                    alignItems: "center",
-                    padding: "8px 0",
-                    borderBottom: "1px solid #f0f0f0",
-                  }}
-                >
-                  <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggle(t)} />
-
-                  <div>
-                    {!editing ? (
-                      <>
-                        <div style={{ fontWeight: 600, textDecoration: t.status === "DONE" ? "line-through" : "none" }}>
-                          {t.title}
-                        </div>
-                        <div style={{ fontSize: 12, opacity: 0.8 }}>
-                          {`min: ${t.minutes ?? "-"}`}
-                          {t.due ? (
-                            <>
-                              {" • due: "}
-                              <span style={{ color: isOverdue(t) ? "#d32f2f" : "inherit" }}>{t.due}</span>
-                            </>
-                          ) : ""}
-                          {typeof t.skill_id === "number" ? ` • skill: ${t.skill_id}` : ""}
-                        </div>
-                      </>
-                    ) : (
-                      <div style={{ display: "grid", gap: 6 }}>
-                        <input
-                          value={eTitle}
-                          onChange={(e) => setETitle(e.target.value)}
-                          placeholder="title"
-                          style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
-                        />
-                        <div style={{ display: "flex", gap: 8 }}>
-                          <input
-                            type="number"
-                            min={0}
-                            value={eMinutes}
-                            onChange={(e) => setEMinutes(e.target.value)}
-                            placeholder="minutes"
-                            style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd", width: 120 }}
-                          />
-                          <input
-                            type="date"
-                            value={eDue}
-                            onChange={(e) => setEDue(e.target.value)}
-                            style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
-                          />
-                        </div>
-                      </div>
-                    )}
-                  </div>
-
-                  <span style={{ fontSize: 12, opacity: 0.7 }}>{t.horizon}</span>
-
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {!editing ? (
-                      <>
-                        <button onClick={() => startEdit(t)}>编辑</button>
-                        <button onClick={() => del(t)}>删除</button>
-                      </>
-                    ) : (
-                      <>
-                        <button onClick={() => saveEdit(t.id)}>保存</button>
-                        <button onClick={cancelEdit}>取消</button>
-                      </>
-                    )}
-                  </div>
-                </li>
-              );
-            })}
+            {tasks.map((t) => renderRow(t))}
             {tasks.length === 0 && <li style={{ opacity: 0.6, padding: "8px 0" }}>暂无任务</li>}
           </ul>
         )}
