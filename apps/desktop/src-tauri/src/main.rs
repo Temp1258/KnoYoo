@@ -31,113 +31,145 @@ fn app_db_path() -> Result<PathBuf, String> {
 
 fn open_db() -> Result<Connection, String> {
     let db_path = app_db_path()?;
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    let mut conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     conn.execute_batch(
         r#"
-        PRAGMA foreign_keys = ON;
+    PRAGMA foreign_keys = ON;
 
-        CREATE TABLE IF NOT EXISTS notes (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          title TEXT NOT NULL,
-          content TEXT NOT NULL,
-          created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-        );
+    -- 笔记主表 + FTS5 + 触发器
+    CREATE TABLE IF NOT EXISTS notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
 
-        CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
-          USING fts5(title, content, content='notes', content_rowid='id');
+    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+      USING fts5(title, content, content='notes', content_rowid='id');
 
-        CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
-          INSERT INTO notes_fts(rowid, title, content)
-            VALUES (new.id, new.title, new.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
-          INSERT INTO notes_fts(notes_fts, rowid, title, content)
-            VALUES('delete', old.id, old.title, old.content);
-        END;
-        CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
-          INSERT INTO notes_fts(notes_fts, rowid, title, content)
-            VALUES('delete', old.id, old.title, old.content);
-          INSERT INTO notes_fts(rowid, title, content)
-            VALUES (new.id, new.title, new.content);
-        END;
+    CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+      INSERT INTO notes_fts(rowid, title, content)
+        VALUES (new.id, new.title, new.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, content)
+        VALUES('delete', old.id, old.title, old.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, content)
+        VALUES('delete', old.id, old.title, old.content);
+      INSERT INTO notes_fts(rowid, title, content)
+        VALUES (new.id, new.title, new.content);
+    END;
 
-        -- 先删除历史重复：相同(title, content, created_at)仅保留最小id那条
-        DELETE FROM notes
-        WHERE id NOT IN (
-          SELECT MIN(id) FROM notes
-          GROUP BY title, content, created_at
-        );
+    -- 先删历史重复，再加唯一索引（避免导入造成重复）
+    DELETE FROM notes
+    WHERE id NOT IN (
+      SELECT MIN(id) FROM notes
+      GROUP BY title, content, created_at
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_dedupe
+      ON notes(title, content, created_at);
 
-        -- 再加唯一索引防止后续再产生重复
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_dedupe
-          ON notes(title, content, created_at);
+    -- === Sprint4 计划引擎最小数据面（唯一保留版本） ===
+    CREATE TABLE IF NOT EXISTS industry_skill (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      parent_id INTEGER REFERENCES industry_skill(id) ON DELETE SET NULL,
+      name TEXT NOT NULL UNIQUE,
+      required_level INTEGER NOT NULL DEFAULT 3, -- L1~L5 -> 1~5
+      importance INTEGER NOT NULL DEFAULT 3      -- 1~5
+    );
 
-        -- 行业能力树
-        CREATE TABLE IF NOT EXISTS industry_skill (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          parent_id INTEGER,
-          name TEXT NOT NULL,
-          level INTEGER NOT NULL, -- 能力层级
-          importance INTEGER NOT NULL DEFAULT 3, -- 重要性 1-5
-          FOREIGN KEY(parent_id) REFERENCES industry_skill(id)
-        );
+    CREATE TABLE IF NOT EXISTS growth_node (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      skill_id INTEGER NOT NULL REFERENCES industry_skill(id) ON DELETE CASCADE,
+      mastery INTEGER NOT NULL DEFAULT 0,        -- 0~100
+      updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
 
-        -- 个人成长树节点
-        CREATE TABLE IF NOT EXISTS growth_node (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          skill_id INTEGER NOT NULL,
-          mastery INTEGER NOT NULL DEFAULT 0, -- 掌握度 0-100
-          FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
-        );
+    CREATE TABLE IF NOT EXISTS plan_task (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      horizon TEXT NOT NULL CHECK (horizon IN ('WEEK','QTR')),
+      skill_id INTEGER REFERENCES industry_skill(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      minutes INTEGER,                            -- 周任务才用；季度里程碑可为 NULL
+      due TEXT,                                   -- ISO8601，可为空
+      status TEXT NOT NULL DEFAULT 'TODO' CHECK (status IN ('TODO','DONE'))
+    );
 
-        -- 笔记与技能映射
-        CREATE TABLE IF NOT EXISTS note_skill_map (
-          note_id INTEGER NOT NULL,
-          skill_id INTEGER NOT NULL,
-          weight INTEGER NOT NULL DEFAULT 1,
-          PRIMARY KEY(note_id, skill_id),
-          FOREIGN KEY(note_id) REFERENCES notes(id),
-          FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
-        );
+    -- 笔记与技能映射（保留）
+    CREATE TABLE IF NOT EXISTS note_skill_map (
+      note_id INTEGER NOT NULL,
+      skill_id INTEGER NOT NULL,
+      weight INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY(note_id, skill_id),
+      FOREIGN KEY(note_id) REFERENCES notes(id),
+      FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
+    );
 
-        -- 计划任务
-        CREATE TABLE IF NOT EXISTS plan_task (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          horizon TEXT NOT NULL, -- 'WEEK'|'QTR'
-          skill_id INTEGER,
-          title TEXT NOT NULL,
-          minutes INTEGER NOT NULL DEFAULT 0,
-          due TEXT, -- 截止时间
-          status TEXT NOT NULL DEFAULT 'TODO',
-          FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
-        );
+    -- 能力差距视图（统一用 required_level）
+    CREATE VIEW IF NOT EXISTS v_skill_gap AS
+    SELECT
+      s.id AS skill_id,
+      s.name,
+      s.required_level,
+      s.importance,
+      COALESCE(g.mastery, 0) AS mastery,
+      (s.required_level - COALESCE(g.mastery, 0)) AS gap
+    FROM industry_skill s
+    LEFT JOIN growth_node g ON s.id = g.skill_id;
 
-        -- 能力差距视图（占位，gap=required_level-mastery，importance 参与优先级）
-        CREATE VIEW IF NOT EXISTS v_skill_gap AS
-        SELECT
-          s.id AS skill_id,
-          s.name,
-          s.level AS required_level,
-          s.importance,
-          COALESCE(g.mastery, 0) AS mastery,
-          (s.level - COALESCE(g.mastery, 0)) AS gap
-        FROM industry_skill s
-        LEFT JOIN growth_node g ON s.id = g.skill_id;
-
-        -- —— 清理与约束（新增） ——
-        -- 1) growth_node：每个 skill 只保留一个节点
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_growth_unique ON growth_node(skill_id);
-        -- 2) plan_task：只允许每个 (horizon, skill_id) 存在一条“未完成”任务（利用部分唯一索引）
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_open_unique
-          ON plan_task(horizon, skill_id)
-          WHERE status <> 'DONE';
-        -- 3) 查询性能小索引
-        CREATE INDEX IF NOT EXISTS idx_plan_hsd ON plan_task(horizon, status, due);
-        CREATE INDEX IF NOT EXISTS idx_note_skill_note ON note_skill_map(note_id);
-        CREATE INDEX IF NOT EXISTS idx_note_skill_skill ON note_skill_map(skill_id);
-        "#,
+    -- 约束与索引
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_growth_unique ON growth_node(skill_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_open_unique
+      ON plan_task(horizon, skill_id)
+      WHERE status <> 'DONE';
+    CREATE INDEX IF NOT EXISTS idx_plan_hsd ON plan_task(horizon, status, due);
+    CREATE INDEX IF NOT EXISTS idx_note_skill_note ON note_skill_map(note_id);
+    CREATE INDEX IF NOT EXISTS idx_note_skill_skill ON note_skill_map(skill_id);
+    "#,
     )
     .map_err(|e| e.to_string())?;
+    // 首次启动自动写入行业树 v1（迷你 12 项示例）
+    {
+        let cnt: i64 = conn
+            .query_row("SELECT COUNT(1) FROM industry_skill", [], |r| r.get::<_, i64>(0))
+            .unwrap_or(0);
+
+        if cnt == 0 {
+            // name, required_level(L1~L5 -> 1~5), importance(1~5)
+            // Data/AI 方向的最小能力集（正式版本见文档：v1 约 40±5 项，这里先放 12 项示例）
+            let skills = [
+                ("Python 基础",            3, 5),
+                ("Python 数据分析",        3, 5),
+                ("SQL/数据库",            3, 5),
+                ("概率统计",               3, 4),
+                ("机器学习基础",           3, 5),
+                ("特征工程",               3, 4),
+                ("模型评估与调参",         3, 4),
+                ("深度学习基础",           2, 3),
+                ("NLP 基础",               2, 3),
+                ("数据可视化",             3, 3),
+                ("Git/工程协作",           3, 4),
+                ("MLOps/部署基础",         2, 3),
+            ];
+            let tx = conn.transaction().map_err(|e| e.to_string())?;
+            for (name, req, imp) in skills {
+                tx.execute(
+                    "INSERT OR IGNORE INTO industry_skill(name, required_level, importance) VALUES (?1,?2,?3)",
+                    params![name, req, imp],
+                ).map_err(|e| e.to_string())?;
+                // 建立对应的成长节点（mastery 初始为 0）
+                tx.execute(
+                    "INSERT INTO growth_node(skill_id, mastery)
+                     SELECT id, 0 FROM industry_skill WHERE name=?1
+                     ON CONFLICT DO NOTHING",
+                    params![name],
+                ).map_err(|e| e.to_string())?;
+            }
+            tx.commit().map_err(|e| e.to_string())?;
+        }
+    }
     Ok(conn)
 }
 
@@ -245,23 +277,23 @@ fn search_notes(query: String) -> Result<Vec<Hit>, String> {
     }
 
     // 首选 FTS5（英文/可分词）
-    let mut stmt = conn.prepare(
-        "SELECT n.id, n.title,
-                COALESCE(NULLIF(snippet(notes_fts, 1, '[mark]', '[/mark]', ' … ', 12), ''),
-                         snippet(notes_fts, 0, '[mark]', '[/mark]', ' … ', 12)) AS snip
-           FROM notes_fts
-           JOIN notes n ON n.id = notes_fts.rowid
-          WHERE notes_fts MATCH ?1
-          ORDER BY bm25(notes_fts) ASC
-          LIMIT 50",
-    ).map_err(|e| e.to_string())?;
+        let mut stmt = conn.prepare(
+            "SELECT n.id, n.title,
+                    COALESCE(NULLIF(snippet(notes_fts, 1, '[mark]', '[/mark]', ' … ', 12), ''),
+                             snippet(notes_fts, 0, '[mark]', '[/mark]', ' … ', 12)) AS snip
+               FROM notes_fts
+               JOIN notes n ON n.id = notes_fts.rowid
+              WHERE notes_fts MATCH ?1
+              ORDER BY bm25(notes_fts) ASC
+              LIMIT 50",
+        ).map_err(|e| e.to_string())?;
 
     let rows = stmt.query_map([&query], |row| {
-        Ok(Hit { id: row.get(0)?, title: row.get(1)?, snippet: row.get(2)? })
-    }).map_err(|e| e.to_string())?;
+            Ok(Hit { id: row.get(0)?, title: row.get(1)?, snippet: row.get(2)? })
+        }).map_err(|e| e.to_string())?;
 
-    let mut out = Vec::new();
-    for r in rows { out.push(r.map_err(|e| e.to_string())?); }
+        let mut out = Vec::new();
+        for r in rows { out.push(r.map_err(|e| e.to_string())?); }
 
     // ⭐ 关键补救：若 FTS5 空且查询是纯 ASCII 单词（如 SVM），再回退 LIKE
     if out.is_empty() && is_ascii_alnum_word(&query) {
@@ -438,7 +470,7 @@ fn seed_industry_v1() -> Result<u32, String> {
     let mut count = 0u32;
     for (parent_id, name, level, importance) in skills {
         tx.execute(
-            "INSERT OR IGNORE INTO industry_skill (parent_id, name, level, importance) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT OR IGNORE INTO industry_skill (parent_id, name, required_level, importance) VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![parent_id, name, level, importance],
         ).map_err(|e| e.to_string())?;
         count += 1;
@@ -538,10 +570,10 @@ fn generate_plan(horizon: String) -> Result<Vec<PlanTaskOut>, String> {
 
     {
         let mut stmt = tx.prepare(
-            "SELECT s.id, s.name, s.importance, COALESCE(g.mastery,0) as mastery, s.level
+            "SELECT s.id, s.name, s.importance, COALESCE(g.mastery,0) as mastery, s.required_level
                FROM industry_skill s
                LEFT JOIN growth_node g ON s.id = g.skill_id
-              ORDER BY (s.level - COALESCE(g.mastery,0)) * s.importance DESC, s.importance DESC
+              ORDER BY (s.required_level - COALESCE(g.mastery,0)) * s.importance DESC, s.importance DESC
               LIMIT 5"
         ).map_err(|e| e.to_string())?;
 
@@ -552,8 +584,8 @@ fn generate_plan(horizon: String) -> Result<Vec<PlanTaskOut>, String> {
             let name: String = row.get(1).map_err(|e| e.to_string())?;
             let importance: i64 = row.get(2).map_err(|e| e.to_string())?;
             let mastery: i64 = row.get(3).map_err(|e| e.to_string())?;
-            let level: i64 = row.get(4).map_err(|e| e.to_string())?;
-            let gap = level - mastery;
+            let required_level: i64 = row.get(4).map_err(|e| e.to_string())?;
+            let gap = required_level - mastery;
             if gap <= 0 { continue; }
 
             // ⭐ 去重：若已存在同 horizon+skill 的未完成任务（且截止日在今天及以后），就跳过
@@ -725,11 +757,11 @@ fn report_week_summary() -> Result<WeekReport, String> {
 
     // 4) 短板 Top5（gap*importance）
     let mut stmt4 = conn.prepare(
-        "SELECT s.name, s.level AS required_level, COALESCE(g.mastery,0) as mastery,
-                (s.level-COALESCE(g.mastery,0)) AS gap
+        "SELECT s.name, s.required_level, COALESCE(g.mastery,0) as mastery,
+                (s.required_level-COALESCE(g.mastery,0)) AS gap
            FROM industry_skill s
            LEFT JOIN growth_node g ON s.id = g.skill_id
-          ORDER BY (s.level-COALESCE(g.mastery,0))*s.importance DESC, s.importance DESC
+          ORDER BY (s.required_level-COALESCE(g.mastery,0))*s.importance DESC, s.importance DESC
           LIMIT 5"
     ).map_err(|e| e.to_string())?;
     let rows = stmt4.query_map([], |row| {
@@ -785,6 +817,24 @@ fn cleanup_plan_duplicates(horizon: Option<String>) -> Result<u32, String> {
     Ok(changed as u32)
 }
 
+#[derive(Serialize)]
+struct Counts { industry: i64, growth: i64, plans: i64 }
+
+#[tauri::command]
+fn debug_counts() -> Result<Counts, String> {
+    let conn = open_db()?;
+    let industry: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM industry_skill", [], |r| r.get::<_, i64>(0)
+    ).unwrap_or(0);
+    let growth: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM growth_node", [], |r| r.get::<_, i64>(0)
+    ).unwrap_or(0);
+    let plans: i64 = conn.query_row(
+        "SELECT COUNT(1) FROM plan_task", [], |r| r.get::<_, i64>(0)
+    ).unwrap_or(0);
+    Ok(Counts { industry, growth, plans })
+}
+
 
 fn main() {
     tauri::Builder::default()
@@ -794,8 +844,9 @@ fn main() {
             export_notes_jsonl, import_notes_jsonl, seed_industry_v1,
             classify_and_update, generate_plan,
             list_plan_tasks, update_plan_status, report_week_summary,
-            delete_plan_task, update_plan_task, cleanup_plan_duplicates
-        ])
+            delete_plan_task, update_plan_task, cleanup_plan_duplicates,
+            debug_counts
+          ])
           
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
