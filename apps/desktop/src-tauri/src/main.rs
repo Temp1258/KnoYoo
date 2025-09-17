@@ -593,7 +593,6 @@ fn generate_plan(horizon: String) -> Result<Vec<PlanTaskOut>, String> {
                 "SELECT id FROM plan_task
                   WHERE horizon=?1 AND skill_id=?2
                     AND status<>'DONE'
-                    AND (due IS NULL OR due >= date('now'))
                   LIMIT 1",
                 rusqlite::params![&horizon, skill_id],
                 |r| r.get(0),
@@ -611,21 +610,32 @@ fn generate_plan(horizon: String) -> Result<Vec<PlanTaskOut>, String> {
             let due_str = due.format("%Y-%m-%d").to_string();
             assigned += 1;
 
-            tx.execute(
+            match tx.execute(
                 "INSERT INTO plan_task (horizon, skill_id, title, minutes, due, status)
                  VALUES (?1, ?2, ?3, ?4, ?5, 'TODO')",
                 rusqlite::params![&horizon, skill_id, &title, minutes, &due_str],
-            ).map_err(|e| e.to_string())?;
-
-            let id = tx.last_insert_rowid();
-            out.push(PlanTaskOut {
-                id,
-                skill_id: Some(skill_id),
-                title,
-                minutes,
-                due: Some(due_str),
-                status: "TODO".to_string(),
-            });
+            ) {
+                Ok(_) => {
+                    let id = tx.last_insert_rowid();
+                    out.push(PlanTaskOut {
+                        id,
+                        skill_id: Some(skill_id),
+                        title,
+                        minutes,
+                        due: Some(due_str),
+                        status: "TODO".to_string(),
+                    });
+                }
+                Err(e) => {
+                    let msg = e.to_string();
+                    if msg.contains("UNIQUE constraint failed") {
+                        // 已被唯一索引拦截（例如存在逾期未完成任务），跳过即可
+                        continue;
+                    } else {
+                        return Err(msg);
+                    }
+                }
+            }
         }
     }
 
