@@ -283,18 +283,97 @@ export default function App() {
     setReport(r);
   }
 
+  function WeekReportPanel() {
+    const [rep, setRep] = useState<WeekReport | null>(null);
+    const [loading, setLoading] = useState(false);
+    const [msg, setMsg] = useState("");
+
+    async function load() {
+      setLoading(true);
+      setMsg("");
+      try {
+        const r = await invoke<WeekReport>("report_week_summary");
+        setRep(r);
+      } catch (e: any) {
+        setMsg(String(e));
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    async function saveAsNote() {
+      if (!rep) return;
+      const title = `周报 ${rep.start}~${rep.end}`;
+      const lines = [
+        `- 完成任务：${rep.tasks_done}`,
+        `- 投入分钟：${rep.minutes_done}`,
+        `- 新增笔记：${rep.new_notes}`,
+        `- 平均掌握度：${rep.avg_mastery.toFixed(1)}`,
+        "",
+        "短板 Top5：",
+        ...rep.top_gaps.map(([name, req, mastery, gap]) => `- ${name}｜要求${req}｜当前${mastery}｜差距${gap}`),
+      ];
+      const content = lines.join("\n");
+      try {
+        const id = (await invoke("add_note", { title, content })) as number;
+        setMsg(`已保存为笔记 #${id}`);
+      } catch (e: any) {
+        setMsg(String(e));
+      }
+    }
+
+    return (
+      <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 12, marginTop: 16 }}>
+        <h2 style={{ margin: "0 0 8px" }}>周报简版</h2>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <button onClick={load} disabled={loading}>刷新</button>
+          <button onClick={saveAsNote} disabled={loading || !rep}>保存为笔记</button>
+          {msg && <div style={{ fontSize: 12, opacity: 0.8 }}>{msg}</div>}
+        </div>
+        {rep && (
+          <div style={{ lineHeight: 1.6 }}>
+            <div>统计范围：{rep.start} ~ {rep.end}</div>
+            <div>完成任务：{rep.tasks_done} 个（约 {rep.minutes_done} 分钟）</div>
+            <div>新增笔记：{rep.new_notes} 条</div>
+            <div>当前平均掌握度：{rep.avg_mastery.toFixed(1)}</div>
+            <div style={{ marginTop: 8, fontWeight: 600 }}>短板 Top5：</div>
+            <ol>
+              {rep.top_gaps.map(([name, req, m, gap], i) => (
+                <li key={i}>{name}：要求 {req}，当前 {m}，差距 {gap}</li>
+              ))}
+            </ol>
+          </div>
+        )}
+      </div>
+    );
+  }
+
   function PlanPanel() {
+    // 放在组件内部，避免和外部类型重名冲突
+    type PlanTask = {
+      id: number;
+      skill_id: number | null;
+      title: string;
+      minutes: number;
+      due: string | null;
+      status: "TODO" | "DONE";
+      horizon: "WEEK" | "QTR";
+    };
+
     const [horizon, setHorizon] = useState<"WEEK" | "QTR">("WEEK");
+    const [onlyTodo, setOnlyTodo] = useState(false);
     const [tasks, setTasks] = useState<PlanTask[]>([]);
     const [loading, setLoading] = useState(false);
     const [msg, setMsg] = useState("");
-    const [onlyTodo, setOnlyTodo] = useState(false);
 
-    // 编辑状态
+    // 编辑态
     const [editId, setEditId] = useState<number | null>(null);
     const [eTitle, setETitle] = useState("");
-    const [eMinutes, setEMinutes] = useState<string>("");
-    const [eDue, setEDue] = useState<string>("");
+    const [eMinutes, setEMinutes] = useState("");
+    const [eDue, setEDue] = useState("");
+
+    const todayStr = () => new Date().toISOString().slice(0, 10);
+    const isOverdue = (t: PlanTask) => t.due != null && t.status !== "DONE" && t.due < todayStr();
 
     async function load() {
       setLoading(true);
@@ -302,16 +381,17 @@ export default function App() {
       try {
         const args = onlyTodo ? { horizon, status: "TODO" } : { horizon };
         const res = (await invoke("list_plan_tasks", args)) as PlanTask[];
+
+        // 排序：逾期优先 → 其它按 due 升序 → DONE 最后
         const sorted = [...res].sort((a, b) => {
-          const today = new Date().toISOString().slice(0,10);
-          const aOver = a.status !== "DONE" && a.due && a.due < today;
-          const bOver = b.status !== "DONE" && b.due && b.due < today;
-          if (aOver !== bOver) return aOver ? -1 : 1;               // 逾期优先
-          if (a.status !== b.status) return a.status === "DONE" ? 1 : -1; // DONE 往后
+          const aOver = isOverdue(a), bOver = isOverdue(b);
+          if (aOver !== bOver) return aOver ? -1 : 1;
+          if (a.status !== b.status) return a.status === "DONE" ? 1 : -1;
           const ad = a.due ?? "9999-12-31";
           const bd = b.due ?? "9999-12-31";
-          return ad.localeCompare(bd);                               // 其余按 due 升序
+          return ad.localeCompare(bd);
         });
+
         setTasks(sorted);
       } catch (e: any) {
         setMsg(String(e));
@@ -325,12 +405,23 @@ export default function App() {
       setLoading(true);
       setMsg("");
       try {
-        const res = (await invoke("generate_plan", { horizon: h })) as any[];
-        setMsg(`生成 ${Array.isArray(res) ? res.length : 0} 条计划`);
+        const created = (await invoke("generate_plan", { horizon: h })) as any[];
+        setMsg(`生成 ${Array.isArray(created) ? created.length : 0} 条`);
         await load();
       } catch (e: any) {
         setMsg(String(e));
+      } finally {
         setLoading(false);
+      }
+    }
+
+    async function cleanupDup() {
+      try {
+        const n = (await invoke("cleanup_plan_duplicates", { horizon })) as number;
+        setMsg(`清理重复：${n}`);
+        await load();
+      } catch (e: any) {
+        setMsg(String(e));
       }
     }
 
@@ -345,33 +436,24 @@ export default function App() {
       await load();
     }
 
-    // 进入编辑
     function startEdit(t: PlanTask) {
       setEditId(t.id);
       setETitle(t.title);
       setEMinutes(String(t.minutes ?? 0));
       setEDue(t.due ?? "");
     }
-    // 取消编辑
     function cancelEdit() {
       setEditId(null);
       setETitle("");
       setEMinutes("");
       setEDue("");
     }
-    // 保存编辑
     async function saveEdit(id: number) {
       const minutes = Number.parseInt(eMinutes || "0", 10);
-      const due = eDue.trim() === "" ? null : eDue.trim(); // 允许清空 due
+      const due = eDue.trim() === "" ? null : eDue.trim();
       await invoke("update_plan_task", { id, title: eTitle, minutes, due });
       cancelEdit();
       await load();
-    }
-
-    function isOverdue(t: PlanTask) {
-      if (!t.due || t.status === "DONE") return false;
-      const today = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-      return t.due < today;
     }
 
     return (
@@ -388,7 +470,9 @@ export default function App() {
 
           <button onClick={() => gen("WEEK")} disabled={loading}>生成周计划</button>
           <button onClick={() => gen("QTR")} disabled={loading}>生成三月计划</button>
+          <button onClick={cleanupDup} disabled={loading}>清理重复</button>
           <button onClick={load} disabled={loading}>刷新</button>
+
           <label style={{ marginLeft: 8 }}>
             <input
               type="checkbox"
@@ -420,7 +504,6 @@ export default function App() {
                 >
                   <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggle(t)} />
 
-                  {/* 内容区 */}
                   <div>
                     {!editing ? (
                       <>
@@ -468,7 +551,6 @@ export default function App() {
 
                   <span style={{ fontSize: 12, opacity: 0.7 }}>{t.horizon}</span>
 
-                  {/* 操作区 */}
                   <div style={{ display: "flex", gap: 6 }}>
                     {!editing ? (
                       <>
@@ -565,7 +647,6 @@ export default function App() {
       </div>
 
       {/* ---- 计划区块（新增） ---- */}
-      {/* 旧计划区块已删除，仅保留新 PlanPanel */}
       <PlanPanel />
 
       {/* ---- 周报简版区块 ---- */}
