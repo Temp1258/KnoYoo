@@ -196,6 +196,126 @@ export default function App() {
     setReport(r);
   }
 
+  function PlanPanel() {
+    const [horizon, setHorizon] = useState<"WEEK" | "QTR">("WEEK");
+    const [tasks, setTasks] = useState<PlanTask[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [msg, setMsg] = useState("");
+
+    async function load() {
+      setLoading(true);
+      setMsg("");
+      try {
+        const res = (await invoke("list_plan_tasks", { horizon })) as PlanTask[];
+        setTasks(res);
+      } catch (e: any) {
+        setMsg(String(e));
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    useEffect(() => {
+      load();
+    }, [horizon]);
+
+    async function gen(h: "WEEK" | "QTR") {
+      setLoading(true);
+      setMsg("");
+      try {
+        const res = (await invoke("generate_plan", { horizon: h })) as any[];
+        setMsg(`生成 ${Array.isArray(res) ? res.length : 0} 条计划`);
+        await load();
+      } catch (e: any) {
+        setMsg(String(e));
+        setLoading(false);
+      }
+    }
+
+    async function toggle(t: PlanTask) {
+      const next = t.status === "DONE" ? "TODO" : "DONE";
+      await invoke("update_plan_status", { id: t.id, status: next });
+      await load();
+    }
+
+    async function del(t: PlanTask) {
+      await invoke("delete_plan_task", { id: t.id });
+      await load();
+    }
+
+    return (
+      <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 12, marginTop: 16 }}>
+        <h2 style={{ margin: "0 0 8px" }}>计划</h2>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
+          <label>
+            <input
+              type="radio"
+              value="WEEK"
+              checked={horizon === "WEEK"}
+              onChange={() => setHorizon("WEEK")}
+            />{" "}
+            WEEK
+          </label>
+          <label>
+            <input
+              type="radio"
+              value="QTR"
+              checked={horizon === "QTR"}
+              onChange={() => setHorizon("QTR")}
+            />{" "}
+            QTR
+          </label>
+
+          <button onClick={() => gen("WEEK")} disabled={loading}>生成周计划</button>
+          <button onClick={() => gen("QTR")} disabled={loading}>生成三月计划</button>
+          <button onClick={load} disabled={loading}>刷新</button>
+        </div>
+
+        {msg && <div style={{ marginBottom: 8, fontSize: 12, opacity: 0.8 }}>{msg}</div>}
+        {loading ? (
+          <div>Loading…</div>
+        ) : (
+          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+            {tasks.map((t) => (
+              <li
+                key={t.id}
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "auto 1fr auto auto",
+                  gap: 8,
+                  alignItems: "center",
+                  padding: "8px 0",
+                  borderBottom: "1px solid #f0f0f0",
+                }}
+              >
+                <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggle(t)} />
+                <div>
+                  <div
+                    style={{
+                      fontWeight: 600,
+                      textDecoration: t.status === "DONE" ? "line-through" : "none",
+                    }}
+                  >
+                    {t.title}
+                  </div>
+                  <div style={{ fontSize: 12, opacity: 0.8 }}>
+                    {t.minutes ? `min: ${t.minutes}` : "min: -"}
+                    {t.due ? ` • due: ${t.due}` : ""}
+                    {typeof t.skill_id === "number" ? ` • skill: ${t.skill_id}` : ""}
+                  </div>
+                </div>
+                <span style={{ fontSize: 12, opacity: 0.7 }}>{t.horizon}</span>
+                <button onClick={() => del(t)}>删除</button>
+              </li>
+            ))}
+            {tasks.length === 0 && <li style={{ opacity: 0.6, padding: "8px 0" }}>暂无任务</li>}
+          </ul>
+        )}
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
       <h2>{hello(name)}</h2>
@@ -359,6 +479,7 @@ export default function App() {
         </div>
       )}
       <DebugCounts />
+      <PlanPanel />
     </div>
   );
 }
