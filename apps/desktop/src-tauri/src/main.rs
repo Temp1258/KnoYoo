@@ -1215,6 +1215,49 @@ fn fix_notes_delete_cascade() -> Result<&'static str, String> {
     Ok("ok")
 }
 
+#[tauri::command]
+fn add_plan_task(
+    horizon: String,
+    skill_id: Option<i64>,
+    title: String,
+    minutes: Option<i64>,
+    due: Option<String>,
+) -> Result<i64, String> {
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // 如果绑定了技能，且已存在同 horizon 的“未完成”任务，避免重复
+    if let Some(sid) = skill_id {
+        let exists: Option<i64> = tx.query_row(
+            "SELECT id FROM plan_task
+             WHERE horizon=?1 AND skill_id=?2
+               AND status<>'DONE'
+             LIMIT 1",
+            rusqlite::params![&horizon, sid],
+            |r| r.get(0),
+        ).optional().map_err(|e| e.to_string())?;
+        if exists.is_some() {
+            return Err(format!("该周期已存在此技能的未完成任务（skill_id={}）。", sid));
+        }
+    }
+
+    tx.execute(
+        "INSERT INTO plan_task (horizon, skill_id, title, minutes, due, status)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'TODO')",
+        rusqlite::params![
+            &horizon,
+            &skill_id,
+            &title,
+            minutes.unwrap_or(60),
+            &due
+        ],
+    ).map_err(|e| e.to_string())?;
+
+    let id = tx.last_insert_rowid();
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(id)
+}
+
 
 fn main() {
     tauri::Builder::default()
@@ -1227,7 +1270,8 @@ fn main() {
             delete_plan_task, update_plan_task, cleanup_plan_duplicates,
             debug_counts, backfill_growth_nodes, fix_schema_required_level,
             list_skill_gaps, classify_note_embed, fix_skill_name_unique,
-            fix_notes_delete_cascade
+            fix_notes_delete_cascade,
+            add_plan_task
           ])
           
         .run(tauri::generate_context!())

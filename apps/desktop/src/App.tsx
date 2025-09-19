@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { hello } from "@knoyoo/shared";
 
@@ -44,6 +44,16 @@ function RadarPanel() {
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
 
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [tip, setTip] = useState<{ x: number; y: number; html: string } | null>(null);
+
+  function showTip(e: React.MouseEvent, html: string) {
+    const r = wrapRef.current?.getBoundingClientRect();
+    if (!r) return;
+    setTip({ x: e.clientX - r.left + 8, y: e.clientY - r.top + 8, html });
+  }
+  function hideTip() { setTip(null); }
+
   async function load() {
     setLoading(true);
     setMsg("");
@@ -80,13 +90,7 @@ function RadarPanel() {
   }).join(" ");
 
   return (
-    <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 12, marginTop: 16 }}>
-      <h2 style={{ margin: "0 0 8px" }}>能力雷达（Top-8 差距）</h2>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 8 }}>
-        <button onClick={load} disabled={loading}>刷新</button>
-        {msg && <div style={{ fontSize: 12, opacity: 0.8 }}>{msg}</div>}
-      </div>
-
+    <div ref={wrapRef} style={{ position: "relative", width: 280, height: 280 }}>
       <svg width={280} height={280} viewBox="0 0 280 280">
         {/* 圆环网格 */}
         {[0.25, 0.5, 0.75, 1].map((p, idx) => (
@@ -115,11 +119,52 @@ function RadarPanel() {
         )}
         {/* 中心点 */}
         <circle cx={cx} cy={cy} r={2} fill="#999" />
+        {/* 交互圆点和透明命中圈 */}
+        {data.map((d, i) => {
+          const req = Math.max(0, Math.min(100, d.required_level * 20)) * (R / 100);
+          const mas = Math.max(0, Math.min(100, d.mastery)) * (R / 100);
+          const [xReq, yReq] = polar(req, i);
+          const [xMas, yMas] = polar(mas, i);
+          const tipReq = `${d.name}<br/>要求：${d.required_level * 20}`;
+          const tipMas = `${d.name}<br/>掌握：${Math.round(d.mastery)}`;
+          return (
+            <g key={`pts-${i}`}>
+              <circle cx={xReq} cy={yReq} r={3} fill="#999" />
+              <circle cx={xMas} cy={yMas} r={3} fill="#2196f3" />
+              <circle
+                cx={xReq} cy={yReq} r={10} fill="transparent"
+                onMouseEnter={(e) => showTip(e, tipReq)}
+                onMouseMove={(e) => showTip(e, tipReq)}
+                onMouseLeave={hideTip}
+              />
+              <circle
+                cx={xMas} cy={yMas} r={10} fill="transparent"
+                onMouseEnter={(e) => showTip(e, tipMas)}
+                onMouseMove={(e) => showTip(e, tipMas)}
+                onMouseLeave={hideTip}
+              />
+            </g>
+          );
+        })}
       </svg>
-
-      <div style={{ fontSize: 12, opacity: 0.8, marginTop: 6 }}>
-        灰色虚线 = 要求（L1~L5→×20），蓝色 = 当前掌握（0~100）。
-      </div>
+      {tip && (
+        <div
+          style={{
+            position: "absolute",
+            left: tip.x, top: tip.y,
+            background: "rgba(0,0,0,0.75)",
+            color: "#fff",
+            fontSize: 12,
+            padding: "6px 8px",
+            borderRadius: 6,
+            pointerEvents: "none",
+            maxWidth: 180,
+            lineHeight: 1.4,
+            boxShadow: "0 6px 16px rgba(0,0,0,0.2)"
+          }}
+          dangerouslySetInnerHTML={{ __html: tip.html }}
+        />
+      )}
     </div>
   );
 }
@@ -186,6 +231,23 @@ export default function App() {
     if (!confirm("确认删除？")) return;
     await invoke("delete_note", { id });
     await refresh();
+  }
+
+  async function aiClassifyLocal(noteId: number) {
+    try {
+      const hits = await invoke<Array<{ skill_id:number; name:string; delta:number; new_mastery:number }>>(
+        "classify_note_embed", { noteId }
+      );
+      if (Array.isArray(hits) && hits.length > 0) {
+        const msg = hits.map(h => `${h.name} +${h.delta} → ${h.new_mastery}`).join("，");
+        alert("AI归类（本地）：" + msg);
+      } else {
+        alert("AI未找到明显匹配（分数低于阈值）");
+      }
+    } catch (e:any) {
+      alert("AI归类失败：" + String(e));
+      console.error(e);
+    }
   }
 
   async function onSearch() {
@@ -373,6 +435,10 @@ export default function App() {
     const [eMinutes, setEMinutes] = useState("");
     const [eDue, setEDue] = useState("");
 
+    const [newTitle, setNewTitle] = useState("");
+    const [newMinutes, setNewMinutes] = useState<number>(60);
+    const [newDue, setNewDue] = useState<string>(""); // 形如 "2025-09-19"
+
     const todayStr = () => new Date().toISOString().slice(0, 10);
     const isOverdue = (t: PlanTask) => t.due != null && t.status !== "DONE" && t.due < todayStr();
 
@@ -473,6 +539,24 @@ export default function App() {
       await invoke("update_plan_task", { id, title: eTitle, minutes, due });
       cancelEdit();
       await load();
+    }
+
+    async function onAddPlanQuick() {
+      const t = newTitle.trim();
+      if (!t) { alert("标题必填"); return; }
+      try {
+        await invoke<number>("add_plan_task", {
+          horizon: horizon,
+          skillId: null,           // 若后续想支持绑定具体 skill，可在此传 id
+          title: t,
+          minutes: newMinutes || 60,
+          due: newDue || null
+        });
+        setNewTitle(""); setNewMinutes(60); setNewDue("");
+        await load();
+      } catch (e:any) {
+        alert("新增失败：" + String(e));
+      }
     }
 
     function renderRow(t: PlanTask) {
@@ -619,6 +703,29 @@ export default function App() {
           </label>
         </div>
 
+        <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "8px 0" }}>
+          <input
+            value={newTitle}
+            onChange={(e) => setNewTitle(e.target.value)}
+            placeholder="新增任务标题..."
+            style={{ padding: 6, borderRadius: 6, width: 240 }}
+          />
+          <input
+            type="number"
+            value={newMinutes}
+            onChange={(e) => setNewMinutes(parseInt(e.target.value || "0", 10))}
+            placeholder="分钟"
+            style={{ width: 90, padding: 6, borderRadius: 6 }}
+          />
+          <input
+            type="date"
+            value={newDue}
+            onChange={(e) => setNewDue(e.target.value)}
+            style={{ padding: 6, borderRadius: 6 }}
+          />
+          <button onClick={onAddPlanQuick}>新增</button>
+        </div>
+
         {msg && <div style={{ marginBottom: 8, fontSize: 12, opacity: 0.8 }}>{msg}</div>}
 
         {loading ? (
@@ -711,6 +818,7 @@ export default function App() {
             <div style={{ marginTop: 6, display: "flex", gap: 8 }}>
               <button onClick={() => onEdit(n)}>编辑</button>
               <button onClick={() => onDelete(n.id)}>删除</button>
+              <button onClick={() => aiClassifyLocal(n.id)}>AI归类（本地）</button>
             </div>
           </li>
         ))}
