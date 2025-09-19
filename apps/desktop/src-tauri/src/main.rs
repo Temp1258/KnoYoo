@@ -8,6 +8,7 @@ use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use chrono::{Local, Duration};
 use std::collections::HashSet;
+use std::collections::HashMap;
 
 
 
@@ -128,6 +129,12 @@ fn open_db() -> Result<Connection, String> {
     CREATE INDEX IF NOT EXISTS idx_plan_hsd ON plan_task(horizon, status, due);
     CREATE INDEX IF NOT EXISTS idx_note_skill_note ON note_skill_map(note_id);
     CREATE INDEX IF NOT EXISTS idx_note_skill_skill ON note_skill_map(skill_id);
+
+    -- 应用配置（AI 等）
+    CREATE TABLE IF NOT EXISTS app_kv (
+      key TEXT PRIMARY KEY,
+      val TEXT NOT NULL
+    );
     "#,
     )
     .map_err(|e| e.to_string())?;
@@ -1258,6 +1265,53 @@ fn add_plan_task(
     Ok(id)
 }
 
+/// 读取 AI 配置：返回 {provider, api_base, api_key, model}
+#[tauri::command]
+fn get_ai_config() -> Result<HashMap<String, String>, String> {
+    let conn = open_db()?;
+    let mut out = HashMap::new();
+    let keys = ["provider", "api_base", "api_key", "model"];
+    for k in keys {
+        let v: Option<String> = conn
+            .query_row("SELECT val FROM app_kv WHERE key=?1", [k], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        if let Some(vv) = v { out.insert(k.to_string(), vv); }
+    }
+    Ok(out)
+}
+
+/// 写入 AI 配置：传 {provider?, api_base?, api_key?, model?}，仅更新提供的键
+#[tauri::command]
+fn set_ai_config(cfg: HashMap<String, String>) -> Result<(), String> {
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    for (k, v) in cfg {
+        tx.execute(
+            "INSERT INTO app_kv(key, val) VALUES(?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET val=excluded.val",
+            rusqlite::params![k, v],
+        ).map_err(|e| e.to_string())?;
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 冒烟自检（不联外网）：若配置齐全返回 "ok"，否则返回提示字符串
+#[tauri::command]
+fn ai_smoketest() -> Result<String, String> {
+    let cfg = get_ai_config()?;
+    let provider = cfg.get("provider").cloned().unwrap_or_default();
+    let api_key  = cfg.get("api_key").cloned().unwrap_or_default();
+    if provider.is_empty() {
+        return Ok("provider is empty".to_string());
+    }
+    if api_key.is_empty() {
+        return Ok("api_key is empty".to_string());
+    }
+    // 这里先不发请求，之后再接真实 API
+    Ok("ok".to_string())
+}
 
 fn main() {
     tauri::Builder::default()
@@ -1271,7 +1325,8 @@ fn main() {
             debug_counts, backfill_growth_nodes, fix_schema_required_level,
             list_skill_gaps, classify_note_embed, fix_skill_name_unique,
             fix_notes_delete_cascade,
-            add_plan_task
+            add_plan_task,
+            get_ai_config, set_ai_config, ai_smoketest
           ])
           
         .run(tauri::generate_context!())

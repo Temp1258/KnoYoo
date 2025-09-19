@@ -186,6 +186,10 @@ export default function App() {
   const [showAddNote, setShowAddNote] = useState(false);
   // 整个计划面板的显示/隐藏
   const [showPlans, setShowPlans] = useState(true);
+  const [showAISettings, setShowAISettings] = useState(false);
+  type AIConfig = { provider?: string; api_base?: string; api_key?: string; model?: string };
+  const [aiCfg, setAiCfg] = useState<AIConfig>({});
+  const [aiMsg, setAiMsg] = useState("");
 
   useEffect(() => { refresh(); }, [page]);
 
@@ -777,6 +781,35 @@ export default function App() {
     );
   }
 
+  async function loadAIConfig() {
+    try {
+      const cfg = await invoke<AIConfig>("get_ai_config");
+      setAiCfg(cfg || {});
+    } catch (e: any) {
+      setAiMsg(String(e));
+    }
+  }
+
+  async function saveAIConfig() {
+    try {
+      await invoke("set_ai_config", { cfg: aiCfg });
+      setAiMsg("已保存");
+    } catch (e: any) {
+      setAiMsg(String(e));
+    }
+  }
+
+  async function smokeAI() {
+    try {
+      const r = await invoke<string>("ai_smoketest");
+      setAiMsg(r);
+      alert(r);
+    } catch (e: any) {
+      setAiMsg(String(e));
+      alert(String(e));
+    }
+  }
+
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
       <h2>{hello(name)}</h2>
@@ -784,6 +817,57 @@ export default function App() {
         value={name} onChange={(e) => setName(e.target.value)}
         placeholder="Enter a name..." style={{ padding: 8, borderRadius: 8, marginBottom: 16 }}
       />
+      <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+        <button onClick={async () => { setShowAISettings(v => !v); if (!showAISettings) await loadAIConfig(); }}>
+          {showAISettings ? "收起 AI 设置" : "AI 设置"}
+        </button>
+        {aiMsg && <div style={{ fontSize: 12, opacity: 0.8 }}>{aiMsg}</div>}
+      </div>
+      {showAISettings && (
+        <div style={{ marginTop: 8, padding: 12, border: "1px dashed #ddd", borderRadius: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 8, columnGap: 8, alignItems: "center" }}>
+            <div>Provider</div>
+            <select
+              value={aiCfg.provider || ""}
+              onChange={e => setAiCfg({ ...aiCfg, provider: e.target.value })}
+            >
+              <option value="">（未设置）</option>
+              <option value="openai">OpenAI / 兼容</option>
+              <option value="deepseek">DeepSeek</option>
+              <option value="silicon">SiliconCloud</option>
+              <option value="anthropic">Anthropic</option>
+              <option value="ollama">Ollama（本地）</option>
+            </select>
+
+            <div>API Base</div>
+            <input
+              placeholder="https://api.openai.com/v1 或兼容地址"
+              value={aiCfg.api_base || ""}
+              onChange={e => setAiCfg({ ...aiCfg, api_base: e.target.value })}
+            />
+
+            <div>API Key</div>
+            <input
+              placeholder="sk-..."
+              value={aiCfg.api_key || ""}
+              onChange={e => setAiCfg({ ...aiCfg, api_key: e.target.value })}
+              style={{ fontFamily: "monospace" }}
+            />
+
+            <div>Model</div>
+            <input
+              placeholder="如 gpt-4o-mini / deepseek-chat / claude-3-5-sonnet 等"
+              value={aiCfg.model || ""}
+              onChange={e => setAiCfg({ ...aiCfg, model: e.target.value })}
+            />
+          </div>
+
+          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+            <button onClick={saveAIConfig}>保存</button>
+            <button onClick={smokeAI}>冒烟自检</button>
+          </div>
+        </div>
+      )}
 
       {/* ---- 全文搜索区块移到顶部 ---- */}
       <h3>全文搜索（FTS5）</h3>
