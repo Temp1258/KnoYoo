@@ -182,6 +182,11 @@ export default function App() {
   const [list, setList] = useState<Note[]>([]);
   const [page, setPage] = useState(1);
 
+  // 顶部“新增记录”折叠
+  const [showAddNote, setShowAddNote] = useState(false);
+  // 整个计划面板的显示/隐藏
+  const [showPlans, setShowPlans] = useState(true);
+
   useEffect(() => { refresh(); }, [page]);
 
   async function refresh() {
@@ -438,6 +443,9 @@ export default function App() {
     const [newTitle, setNewTitle] = useState("");
     const [newMinutes, setNewMinutes] = useState<number>(60);
     const [newDue, setNewDue] = useState<string>(""); // 形如 "2025-09-19"
+
+    // 新增计划的折叠
+    const [showAddPlan, setShowAddPlan] = useState(false);
 
     const todayStr = () => new Date().toISOString().slice(0, 10);
     const isOverdue = (t: PlanTask) => t.due != null && t.status !== "DONE" && t.due < todayStr();
@@ -703,28 +711,41 @@ export default function App() {
           </label>
         </div>
 
+        {/* 顶部工具条（筛选你已有的保持不动），在它后面加一个“新增计划”按钮 */}
         <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "8px 0" }}>
-          <input
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="新增任务标题..."
-            style={{ padding: 6, borderRadius: 6, width: 240 }}
-          />
-          <input
-            type="number"
-            value={newMinutes}
-            onChange={(e) => setNewMinutes(parseInt(e.target.value || "0", 10))}
-            placeholder="分钟"
-            style={{ width: 90, padding: 6, borderRadius: 6 }}
-          />
-          <input
-            type="date"
-            value={newDue}
-            onChange={(e) => setNewDue(e.target.value)}
-            style={{ padding: 6, borderRadius: 6 }}
-          />
-          <button onClick={onAddPlanQuick}>新增</button>
+          <button onClick={() => setShowAddPlan(v => !v)}>
+            {showAddPlan ? "收起新增计划" : "新增计划"}
+          </button>
         </div>
+
+        {/* 折叠表单，仅在展开时渲染 */}
+        {showAddPlan && (
+          <div style={{
+            display: "flex", gap: 8, alignItems: "center",
+            margin: "8px 0", padding: 8, border: "1px dashed #ddd", borderRadius: 8
+          }}>
+            <input
+              value={newTitle}
+              onChange={(e) => setNewTitle(e.target.value)}
+              placeholder="新增任务标题..."
+              style={{ padding: 6, borderRadius: 6, width: 240 }}
+            />
+            <input
+              type="number"
+              value={newMinutes}
+              onChange={(e) => setNewMinutes(parseInt(e.target.value || "0", 10))}
+              placeholder="分钟"
+              style={{ width: 90, padding: 6, borderRadius: 6 }}
+            />
+            <input
+              type="date"
+              value={newDue}
+              onChange={(e) => setNewDue(e.target.value)}
+              style={{ padding: 6, borderRadius: 6 }}
+            />
+            <button onClick={onAddPlanQuick}>新增</button>
+          </div>
+        )}
 
         {msg && <div style={{ marginBottom: 8, fontSize: 12, opacity: 0.8 }}>{msg}</div>}
 
@@ -764,29 +785,8 @@ export default function App() {
         placeholder="Enter a name..." style={{ padding: 8, borderRadius: 8, marginBottom: 16 }}
       />
 
-      <hr style={{ margin: "16px 0" }} />
-
-      <h3>{editingId ? "编辑记录" : "新增记录"}</h3>
-      <input
-        value={title} onChange={(e) => setTitle(e.target.value)} placeholder="标题"
-        style={{ width: "100%", padding: 8, borderRadius: 8, marginBottom: 8 }}
-      />
-      <textarea
-        value={content} onChange={(e) => setContent(e.target.value)} placeholder="正文内容..."
-        rows={4} style={{ width: "100%", padding: 8, borderRadius: 8 }}
-      />
-      <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-        <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
-          {saving ? "保存中..." : (editingId ? "更新" : "保存")}
-        </button>
-        {editingId && (
-          <button onClick={() => { setEditingId(null); setTitle(""); setContent(""); }}>
-            取消编辑
-          </button>
-        )}
-      </div>
-
-      <h3 style={{ marginTop: 24 }}>全文搜索（FTS5）</h3>
+      {/* ---- 全文搜索区块移到顶部 ---- */}
+      <h3>全文搜索（FTS5）</h3>
       <input
         value={q} onChange={(e) => setQ(e.target.value)} placeholder='关键字 / "短语" / a OR b'
         style={{ padding: 8, borderRadius: 8, width: "100%" }}
@@ -803,13 +803,13 @@ export default function App() {
         ))}
       </ul>
 
+      {/* ---- 最近记录区块 ---- */}
       <h3 style={{ marginTop: 24 }}>最近记录</h3>
       <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
         <h3 style={{ margin: 0 }}>最近记录</h3>
         <button onClick={onExport}>导出 JSONL</button>
         <button onClick={onImport}>导入 JSONL</button>
       </div>
-
       <ul style={{ marginTop: 8 }}>
         {list.map(n => (
           <li key={n.id} style={{ marginBottom: 10 }}>
@@ -829,8 +829,49 @@ export default function App() {
         <button onClick={refresh}>刷新</button>
       </div>
 
-      {/* ---- 计划区块（新增） ---- */}
-      <PlanPanel />
+      {/* ---- 新增记录折叠按钮 ---- */}
+      <div style={{ marginTop: 24 }}>
+        <button onClick={() => setShowAddNote(v => !v)}>
+          {showAddNote ? "收起新增记录" : "新增记录"}
+        </button>
+      </div>
+      {/* ---- 新增/编辑表单折叠区块 ---- */}
+      {showAddNote && (
+        <div style={{ marginTop: 12 }}>
+          <h3>{editingId ? "编辑记录" : "新增记录"}</h3>
+          <input
+            value={title} onChange={(e) => setTitle(e.target.value)} placeholder="标题"
+            style={{ width: "100%", padding: 8, borderRadius: 8, marginBottom: 8 }}
+          />
+          <textarea
+            value={content} onChange={(e) => setContent(e.target.value)} placeholder="正文内容..."
+            rows={4} style={{ width: "100%", padding: 8, borderRadius: 8 }}
+          />
+          <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+            <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
+              {saving ? "保存中..." : (editingId ? "更新" : "保存")}
+            </button>
+            {editingId && (
+              <button onClick={() => { setEditingId(null); setTitle(""); setContent(""); }}>
+                取消编辑
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* ---- 计划区块卡片包裹+可折叠 ---- */}
+      <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
+        <div style={{
+          display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8
+        }}>
+          <h3 style={{ margin: 0 }}>计划</h3>
+          <button onClick={() => setShowPlans(v => !v)}>
+            {showPlans ? "隐藏" : "显示"}
+          </button>
+        </div>
+        {showPlans && <PlanPanel />}
+      </div>
 
       {/* ---- 周报简版区块 ---- */}
       <h3 style={{ marginTop: 24 }}>周报简版</h3>
