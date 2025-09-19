@@ -354,9 +354,25 @@ fn update_note(id: i64, title: String, content: String) -> Result<(), String> {
 
 #[tauri::command]
 fn delete_note(id: i64) -> Result<(), String> {
-    let conn = open_db()?;
-    conn.execute("DELETE FROM notes WHERE id=?1", params![id])
-        .map_err(|e| e.to_string())?;
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // 先删映射，避免外键挡住删除 notes
+    tx.execute(
+        "DELETE FROM note_skill_map WHERE note_id=?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+
+    // 再删笔记本身
+    tx.execute(
+        "DELETE FROM notes WHERE id=?1",
+        rusqlite::params![id],
+    ).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+
+    // 删除后重算 mastery，雷达/统计会即时回落
+    recompute_mastery(&conn)?;
     Ok(())
 }
 
@@ -539,7 +555,10 @@ fn classify_and_update(note_id: i64) -> Result<Vec<ClassifyHit>, String> {
             }
         }
     }
-
+    recompute_mastery(&conn)?;
+    if hits.is_empty() {
+        return Ok(vec![]);
+    }
     Ok(hits)
 }
 
@@ -634,6 +653,10 @@ fn classify_note_embed(note_id: i64) -> Result<Vec<ClassifyHit>, String> {
     }
 
     tx.commit().map_err(|e| e.to_string())?;
+    recompute_mastery(&conn)?;
+    if hits.is_empty() {
+        return Ok(vec![]);
+    }
     Ok(hits)
 }
 
@@ -1134,6 +1157,64 @@ fn fix_skill_name_unique() -> Result<i64, String> {
     Ok(dup)
 }
 
+fn recompute_mastery(conn: &rusqlite::Connection) -> Result<(), String> {
+    // 用 SQL 事务（BEGIN/COMMIT）而不是 Rust 的 conn.transaction()，
+    // 这样签名保持 &Connection，调用处无需改。
+    conn.execute_batch(r#"
+      BEGIN;
+
+      -- 基于 note_skill_map 全量聚合，算出每个技能的 mastery（权重×10，上限100）
+      WITH agg AS (
+        SELECT skill_id, MIN(100, COALESCE(SUM(weight * 10), 0)) AS m
+        FROM note_skill_map
+        GROUP BY skill_id
+      )
+      -- 把结果“左联到行业技能”，确保没有映射的技能 mastery=0 也会被写入
+      INSERT INTO growth_node (skill_id, mastery)
+      SELECT s.id,
+             COALESCE(a.m, 0)
+      FROM industry_skill s
+      LEFT JOIN agg a ON a.skill_id = s.id
+      ON CONFLICT(skill_id) DO UPDATE SET mastery = excluded.mastery;
+
+      COMMIT;
+    "#).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn fix_notes_delete_cascade() -> Result<&'static str, String> {
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // 用“重建表”方式为 note_skill_map(note_id) 加 ON DELETE CASCADE
+    tx.execute_batch(r#"
+      PRAGMA foreign_keys=OFF;
+
+      CREATE TABLE IF NOT EXISTS _note_skill_map_new (
+        note_id INTEGER NOT NULL,
+        skill_id INTEGER NOT NULL,
+        weight INTEGER NOT NULL DEFAULT 1,
+        PRIMARY KEY(note_id, skill_id),
+        FOREIGN KEY(note_id) REFERENCES notes(id) ON DELETE CASCADE,
+        FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
+      );
+
+      INSERT OR IGNORE INTO _note_skill_map_new(note_id, skill_id, weight)
+      SELECT note_id, skill_id, weight FROM note_skill_map;
+
+      DROP TABLE note_skill_map;
+      ALTER TABLE _note_skill_map_new RENAME TO note_skill_map;
+
+      CREATE INDEX IF NOT EXISTS idx_note_skill_note ON note_skill_map(note_id);
+      CREATE INDEX IF NOT EXISTS idx_note_skill_skill ON note_skill_map(skill_id);
+
+      PRAGMA foreign_keys=ON;
+    "#).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok("ok")
+}
+
 
 fn main() {
     tauri::Builder::default()
@@ -1145,7 +1226,8 @@ fn main() {
             list_plan_tasks, update_plan_status, report_week_summary,
             delete_plan_task, update_plan_task, cleanup_plan_duplicates,
             debug_counts, backfill_growth_nodes, fix_schema_required_level,
-            list_skill_gaps, classify_note_embed, fix_skill_name_unique
+            list_skill_gaps, classify_note_embed, fix_skill_name_unique,
+            fix_notes_delete_cascade
           ])
           
         .run(tauri::generate_context!())
