@@ -7,6 +7,7 @@ use std::path::PathBuf;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 use chrono::{Local, Duration};
+use std::collections::HashSet;
 
 
 
@@ -500,45 +501,139 @@ fn classify_and_update(note_id: i64) -> Result<Vec<ClassifyHit>, String> {
     let text = format!("{} {}", title, content);
 
     // 遍历技能
-    let mut skill_stmt = conn.prepare("SELECT id, name FROM industry_skill")
-        .map_err(|e| e.to_string())?;
-    let skills = skill_stmt.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?)))
-        .map_err(|e| e.to_string())?;
+    let mut skill_stmt = conn.prepare(
+        "SELECT MIN(id) AS id, name FROM industry_skill GROUP BY name"
+    ).map_err(|e| e.to_string())?;
+    let skills = skill_stmt.query_map([], |row| Ok((
+        row.get::<_, i64>(0)?,
+        row.get::<_, String>(1)?,
+    ))).map_err(|e| e.to_string())?;
 
     let mut hits: Vec<ClassifyHit> = Vec::new();
     for s in skills {
         let (skill_id, name) = s.map_err(|e| e.to_string())?;
         if text.contains(&name) {
-            // 写入映射表
-            conn.execute(
+            // 只有首次建立映射时才加分
+            let inserted = conn.execute(
                 "INSERT OR IGNORE INTO note_skill_map (note_id, skill_id, weight) VALUES (?1, ?2, 1)",
                 rusqlite::params![note_id, skill_id],
             ).map_err(|e| e.to_string())?;
+            if inserted > 0 {
+                let delta: i64 = 10;
+                let updated = conn.execute(
+                    "UPDATE growth_node SET mastery = MIN(mastery+?2,100) WHERE skill_id=?1",
+                    rusqlite::params![skill_id, delta],
+                ).map_err(|e| e.to_string())?;
+                if updated == 0 {
+                    conn.execute(
+                        "INSERT INTO growth_node (skill_id, mastery) VALUES (?1, ?2)",
+                        rusqlite::params![skill_id, delta],
+                    ).map_err(|e| e.to_string())?;
+                }
+                let new_mastery: i64 = conn.query_row(
+                    "SELECT mastery FROM growth_node WHERE skill_id=?1",
+                    [skill_id],
+                    |r| r.get(0),
+                ).map_err(|e| e.to_string())?;
+                hits.push(ClassifyHit { skill_id, name, delta, new_mastery });
+            }
+        }
+    }
 
-            // mastery +10（如无则插入）
-            let delta: i64 = 10;
-            let updated = conn.execute(
+    Ok(hits)
+}
+
+// 工具函数：bigrams & similarity_score
+fn bigrams(s: &str) -> HashSet<String> {
+    let chars: Vec<char> = s.chars().collect();
+    let mut set = HashSet::new();
+    if chars.len() < 2 { return set; }
+    for i in 0..(chars.len() - 1) {
+        let bg: String = [chars[i], chars[i + 1]].iter().collect();
+        set.insert(bg);
+    }
+    set
+}
+
+fn similarity_score(note: &str, skill: &str) -> i64 {
+    // 直接包含给高分
+    if !skill.is_empty() && note.contains(skill) {
+        return 95;
+    }
+    // 限制长度避免过慢
+    let note_cut: String = note.chars().take(2000).collect();
+    let a = bigrams(&note_cut);
+    let b = bigrams(skill);
+    if a.is_empty() || b.is_empty() { return 0; }
+    let inter = a.intersection(&b).count() as f64;
+    let union = (a.len() + b.len()) as f64 - inter;
+    if union <= 0.0 { return 0; }
+    let score = (inter / union * 100.0).round() as i64;
+    score.clamp(0, 100)
+}
+
+#[tauri::command]
+fn classify_note_embed(note_id: i64) -> Result<Vec<ClassifyHit>, String> {
+    let mut conn = open_db()?;
+
+    let (title, content): (String, String) = conn.query_row(
+        "SELECT title, content FROM notes WHERE id=?1",
+        rusqlite::params![note_id],
+        |r| Ok((r.get(0)?, r.get(1)?))
+    ).map_err(|e| e.to_string())?;
+    let text = format!("{} {}", title, content);
+
+    // —— 评分（对每个名字只保留最小 id）——
+    let mut scored: Vec<(i64, String, i64)> = Vec::new();
+    {
+        let mut stmt = conn.prepare(
+            "SELECT MIN(id) AS id, name FROM industry_skill GROUP BY name"
+        ).map_err(|e| e.to_string())?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map_err(|e| e.to_string())?;
+
+        for row in rows {
+            let (sid, name) = row.map_err(|e| e.to_string())?;
+            let score = similarity_score(&text, &name);
+            scored.push((sid, name, score));
+        }
+    }
+
+    scored.sort_by(|a, b| b.2.cmp(&a.2));
+    let picked: Vec<(i64, String, i64)> =
+        scored.into_iter().filter(|(_, _, s)| *s >= 60).take(5).collect();
+
+    // —— 只对“首次命中”的映射加分；已命中过不再加 —— 
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+    let mut hits: Vec<ClassifyHit> = Vec::new();
+
+    for (skill_id, name, score) in picked {
+        let inserted = tx.execute(
+            "INSERT OR IGNORE INTO note_skill_map (note_id, skill_id, weight) VALUES (?1, ?2, 1)",
+            rusqlite::params![note_id, skill_id],
+        ).map_err(|e| e.to_string())?;
+        if inserted > 0 {
+            let delta: i64 = (score / 10).clamp(5, 20);
+            let updated = tx.execute(
                 "UPDATE growth_node SET mastery = MIN(mastery+?2,100) WHERE skill_id=?1",
                 rusqlite::params![skill_id, delta],
             ).map_err(|e| e.to_string())?;
             if updated == 0 {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO growth_node (skill_id, mastery) VALUES (?1, ?2)",
                     rusqlite::params![skill_id, delta],
                 ).map_err(|e| e.to_string())?;
             }
-
-            // 取最新 mastery
-            let new_mastery: i64 = conn.query_row(
+            let new_mastery: i64 = tx.query_row(
                 "SELECT mastery FROM growth_node WHERE skill_id=?1",
-                [skill_id],
+                rusqlite::params![skill_id],
                 |r| r.get(0),
             ).map_err(|e| e.to_string())?;
-
             hits.push(ClassifyHit { skill_id, name, delta, new_mastery });
         }
     }
 
+    tx.commit().map_err(|e| e.to_string())?;
     Ok(hits)
 }
 
@@ -947,6 +1042,98 @@ fn list_skill_gaps(limit: Option<i64>) -> Result<Vec<SkillGap>, String> {
     Ok(out)
 }
 
+#[tauri::command]
+fn fix_skill_name_unique() -> Result<i64, String> {
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // 统计有多少个重名（>1）
+    let dup: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM (
+           SELECT name, COUNT(*) c FROM industry_skill GROUP BY name HAVING c > 1
+         )",
+        [],
+        |r| r.get(0),
+    ).unwrap_or(0);
+
+    // 建映射：每个 name 取最小 id 为 keep_id
+    tx.execute_batch(r#"
+      CREATE TEMP TABLE IF NOT EXISTS name_to_keep AS
+        SELECT name, MIN(id) AS keep_id FROM industry_skill GROUP BY name;
+
+      -- 合并 growth_node（同名取 mastery 最大值）
+      CREATE TEMP TABLE IF NOT EXISTS tmp_g AS
+        SELECT k.keep_id AS skill_id, MAX(COALESCE(g.mastery,0)) AS mastery
+        FROM name_to_keep k
+        LEFT JOIN industry_skill s ON s.name = k.name
+        LEFT JOIN growth_node g ON g.skill_id = s.id
+        GROUP BY k.keep_id;
+
+      -- 更新 plan_task 的 skill_id
+      UPDATE plan_task
+      SET skill_id = (
+        SELECT k.keep_id
+        FROM industry_skill s JOIN name_to_keep k ON s.name = k.name
+        WHERE s.id = plan_task.skill_id
+      )
+      WHERE skill_id IS NOT NULL;
+
+      -- 合并 note_skill_map（先把合并后的映射插入，避免主键冲突）
+      INSERT OR IGNORE INTO note_skill_map(note_id, skill_id, weight)
+      SELECT nsm.note_id, k.keep_id, MAX(nsm.weight)
+      FROM note_skill_map nsm
+      JOIN industry_skill s ON nsm.skill_id = s.id
+      JOIN name_to_keep k ON s.name = k.name
+      GROUP BY nsm.note_id, k.keep_id;
+
+      -- 删除旧的映射（指向非 keep_id 的）
+      DELETE FROM note_skill_map
+      WHERE (note_id, skill_id) IN (
+        SELECT nsm.note_id, nsm.skill_id
+        FROM note_skill_map nsm
+        JOIN industry_skill s ON nsm.skill_id = s.id
+        JOIN name_to_keep k ON s.name = k.name
+        WHERE nsm.skill_id <> k.keep_id
+      );
+
+      -- 清掉非 keep 的 growth_node，再用 tmp_g 回填（取更大 mastery）
+      DELETE FROM growth_node
+      WHERE skill_id IN (
+        SELECT s.id FROM industry_skill s JOIN name_to_keep k ON s.name = k.name
+        WHERE s.id <> k.keep_id
+      );
+      INSERT INTO growth_node(skill_id, mastery)
+      SELECT skill_id, mastery FROM tmp_g
+      ON CONFLICT(skill_id) DO UPDATE SET mastery = excluded.mastery
+      WHERE excluded.mastery > growth_node.mastery;
+
+      -- 删除 industry_skill 的重复行（保留 keep_id）
+      DELETE FROM industry_skill
+      WHERE id IN (
+        SELECT s.id FROM industry_skill s JOIN name_to_keep k ON s.name = k.name
+        WHERE s.id <> k.keep_id
+      );
+
+      -- 处理 plan_task 因合并产生的未完成重复（保留最新）
+      DELETE FROM plan_task
+      WHERE status <> 'DONE'
+        AND id NOT IN (
+          SELECT MAX(id) FROM plan_task
+          WHERE status <> 'DONE'
+          GROUP BY horizon, skill_id
+        );
+
+      -- 加唯一索引：以后禁止同名
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_industry_skill_name_unique ON industry_skill(name);
+
+      DROP TABLE IF EXISTS tmp_g;
+      DROP TABLE IF EXISTS name_to_keep;
+    "#).map_err(|e| e.to_string())?;
+
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(dup)
+}
+
 
 fn main() {
     tauri::Builder::default()
@@ -958,7 +1145,7 @@ fn main() {
             list_plan_tasks, update_plan_status, report_week_summary,
             delete_plan_task, update_plan_task, cleanup_plan_duplicates,
             debug_counts, backfill_growth_nodes, fix_schema_required_level,
-            list_skill_gaps
+            list_skill_gaps, classify_note_embed, fix_skill_name_unique
           ])
           
         .run(tauri::generate_context!())
