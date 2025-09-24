@@ -1,6 +1,8 @@
 import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import React from "react";
+import MindMapPage from "./MindMapPage";
+
 
 // 给控制台用的临时桥
 declare global {
@@ -790,281 +792,261 @@ export default function App() {
     }
   }
 
-  // ====== 临时调试按钮组（放在顶部工具区/按钮区） ======
-  // 如有其它按钮区，可合并到一起
-  // 建议放在 return (<div>... 之前
-  // =============================
-  const debugButtons = (
-    <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
-      {/* 其它现有按钮 … */}
-      <button
-        onClick={async () => {
-          try {
-            const tree = await invoke<any[]>("list_industry_tree_v1");
-            console.log("[DEBUG] industry_tree:", tree);
-            alert(`行业树返回节点数（根层）：${Array.isArray(tree) ? tree.length : 0}（详细见控制台）`);
-          } catch (e) {
-            console.error(e);
-            alert("获取行业树失败，请看控制台错误");
-          }
-        }}
-      >
-        调试：行业树
-      </button>
-
-      <button
-        onClick={async () => {
-          try {
-            const notes = await invoke<any[]>("list_skill_notes_v1", { skillId: 1, limit: 10 });
-            console.log("[DEBUG] skill_notes(1):", notes);
-            alert(`Skill#1 关联笔记条数：${Array.isArray(notes) ? notes.length : 0}`);
-          } catch (e) {
-            console.error(e);
-            alert("获取节点关联笔记失败，请看控制台错误");
-          }
-        }}
-      >
-        调试：节点关联笔记
-      </button>
-    </div>
-  );
-
   return (
-    <div style={{ padding: 24, fontFamily: "system-ui" }}>
-      <h2 style={{marginBottom: 8}}>很高兴见到你，我们一同成长吧！</h2>
-      <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
-        <button onClick={async () => { setShowAISettings(v => !v); if (!showAISettings) await loadAIConfig(); }}>
-          {showAISettings ? "收起 AI 设置" : "AI 设置"}
-        </button>
-        {aiMsg && <div style={{ fontSize: 12, opacity: 0.8 }}>{aiMsg}</div>}
-      </div>
-      {showAISettings && (
-        <div style={{ marginTop: 8, padding: 12, border: "1px dashed #ddd", borderRadius: 8 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 8, columnGap: 8, alignItems: "center" }}>
-            <div>Provider</div>
-            <select
-              value={aiCfg.provider || ""}
-              onChange={e => setAiCfg({ ...aiCfg, provider: e.target.value })}
-            >
-              <option value="">（未设置）</option>
-              <option value="openai">OpenAI / 兼容</option>
-              <option value="deepseek">DeepSeek</option>
-              <option value="silicon">SiliconCloud</option>
-              <option value="anthropic">Anthropic</option>
-              <option value="ollama">Ollama（本地）</option>
-            </select>
-
-            <div>API Base</div>
-            <input
-              placeholder="https://api.openai.com/v1 或兼容地址"
-              value={aiCfg.api_base || ""}
-              onChange={e => setAiCfg({ ...aiCfg, api_base: e.target.value })}
-            />
-
-            <div>API Key</div>
-            <input
-              placeholder="sk-..."
-              value={aiCfg.api_key || ""}
-              onChange={e => setAiCfg({ ...aiCfg, api_key: e.target.value })}
-              style={{ fontFamily: "monospace" }}
-            />
-
-            <div>Model</div>
-            <input
-              placeholder="如 gpt-4o-mini / deepseek-chat / claude-3-5-sonnet 等"
-              value={aiCfg.model || ""}
-              onChange={e => setAiCfg({ ...aiCfg, model: e.target.value })}
-            />
-          </div>
-
-          <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-            <button onClick={saveAIConfig}>保存</button>
-            <button onClick={smokeAI}>冒烟自检</button>
-          </div>
-        </div>
-      )}
-
-      {/* ---- 全文搜索区块移到顶部 ---- */}
-      <h3>笔记搜索</h3>
-      <input
-        value={q} onChange={(e) => setQ(e.target.value)} placeholder='关键字 / "短语" / a OR b'
-        style={{ padding: 8, borderRadius: 8, width: "100%" }}
-      />
-      <div style={{ marginTop: 8 }}>
-        <button onClick={onSearch} style={{ padding: "8px 12px" }}>搜索</button>
-      </div>
-      <ul style={{ marginTop: 16, lineHeight: 1.6 }}>
-        {results.map((hit) => (
-          <li key={hit.id} style={{ marginBottom: 12 }}>
-            <div style={{ fontWeight: 600 }}>{hit.title}</div>
-            <div dangerouslySetInnerHTML={renderSnippet(hit.snippet)} />
-          </li>
-        ))}
-      </ul>
-
-      {/* ---- 最近记录区块 ---- */}
-      <h3 style={{ marginTop: 24 }}>笔记仓库</h3>
-      <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
-        <button onClick={onExport}>导出到本地</button>
-        <button onClick={onImport}>从本地导入</button>
-      </div>
-      <ul>
-        {list.map(n => (
-          <NoteItem key={n.id} note={n} onChanged={refresh} />
-        ))}
-      </ul>
-      {/* 删除“刷新”按钮（笔记列表分页区块） */}
-      <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-        <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>上一页</button>
-        <span>第 {page} / {totalPages} 页</span>
-        <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>下一页</button>
-      </div>
-
-      {/* ---- 新增记录折叠按钮 ---- */}
-      <div style={{ marginTop: 24 }}>
-        <button onClick={() => setShowAddNote(v => !v)}>
-          {showAddNote ? "收起新笔记" : "+笔记"}
-        </button>
-      </div>
-      {/* ---- 新增/编辑表单折叠区块 ---- */}
-      {showAddNote && (
-        <div style={{ marginTop: 12 }}>
-          <h3>{editingId ? "编辑笔记" : "新笔记"}</h3>
-          <input
-            value={title} onChange={(e) => setTitle(e.target.value)} placeholder="标题"
-            style={{ width: "100%", padding: 8, borderRadius: 8, marginBottom: 8 }}
-          />
-          <textarea
-            value={content} onChange={(e) => setContent(e.target.value)} placeholder="正文内容..."
-            rows={4} style={{ width: "100%", padding: 8, borderRadius: 8 }}
-          />
-          <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-            <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
-              {saving ? "保存中..." : (editingId ? "更新" : "保存")}
-            </button>
-            {editingId && (
-              <button onClick={() => { setEditingId(null); setTitle(""); setContent(""); }}>
-                取消编辑
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* ---- 计划区块卡片包裹+可折叠 ---- */}
-      <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-        <div style={{
-          display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8
-        }}>
-          <h3 style={{ margin: 0 }}>计划</h3>
-          <button onClick={() => setShowPlans(v => !v)}>
-            {showPlans ? "隐藏" : "显示"}
-          </button>
-        </div>
-        {showPlans && <PlanPanel />}
-      </div>
-
-      {/* ---- 周报简版区块 ---- */}
-      <h2>周报简版</h2>
-      <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-        <button onClick={genWeek}>生成本周简报</button>
-        <button onClick={toggleWeek} disabled={!weekReport}>
-          {weekOpen ? "隐藏" : "展开"}
-        </button>
-        <button onClick={clearWeek} disabled={!weekReport}>清空</button>
-      </div>
-      {weekReport && weekOpen && (
+    // ====== 新增导航分支 begin ======
+    (() => {
+      const [tab, setTab] = React.useState<"home" | "mindmap">("home");
+      (window as any).__knoyoo_setTab = setTab; // 调试用，可删
+      return (
         <div>
-          <div>本周范围：{weekReport.start} ~ {weekReport.end}</div>
-          <div>完成任务：{weekReport.tasks_done} 个；累计 {weekReport.minutes_done} 分钟</div>
-          <div>新增笔记：{weekReport.new_notes} 条；平均掌握度：{weekReport.avg_mastery.toFixed(1)}</div>
-          <div style={{marginTop:8}}>短板TOP5：</div>
-          <ol>
-            {weekReport.top_gaps?.map((x, i) => (
-              <li key={i}>{x[0]}（需求L{x[1]}，当前{x[2]}，差距{x[3]}）</li>
-            ))}
-          </ol>
-        </div>
-      )}
-      <DebugCounts />
-      <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-          <h3 style={{ margin: 0 }}>擅长点雷达图</h3>
-          <button
-            onClick={async () => {
-              try {
-                await invoke("ai_analyze_topics");
-                setRadarTick(t => t + 1);
-              } catch (e) {
-                console.error(e);
-              }
-            }}
-          >
-            AI云刷新
-          </button>
-        </div>
-        <RadarPanel reloadKey={radarTick} />
-      </div>
-
-      {/* 右下角开关按钮 */}
-      <button
-        style={{
-          position: "fixed", right: 16, bottom: 16, zIndex: 9999,
-          padding: "10px 12px", borderRadius: 8
-        }}
-        onClick={() => setChatOpen(v => !v)}
-      >
-        {chatOpen ? "关闭聊天" : "AI 聊天"}
-      </button>
-
-      {/* 右侧抽屉 */}
-      <div
-        style={{
-          position: "fixed",
-          top: 0, right: 0, height: "100vh",
-          width: chatOpen ? 360 : 0,
-          transition: "width .25s ease",
-          overflow: "hidden",
-          background: "#fff",
-          borderLeft: "1px solid #eee",
-          zIndex: 9998,
-          display: "flex",
-          flexDirection: "column"
-        }}
-      >
-        <div style={{ padding: 12, borderBottom: "1px solid #eee", fontWeight: 600 }}>
-          与 AI 对话
-        </div>
-        <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
-          {chatMsgs.map((m, i) => (
-            <div key={i} style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>
-              <div style={{ fontSize: 12, color: "#888" }}>
-                {m.role === "user" ? "我" : "AI"}
-              </div>
-              <div>{m.content}</div>
-            </div>
-          ))}
-          {chatMsgs.length === 0 && <div style={{ color: "#999" }}>开始提问吧～</div>}
-        </div>
-        <div style={{ padding: 12, borderTop: "1px solid #eee" }}>
-          <textarea
-            rows={3}
-            style={{ width: "100%", boxSizing: "border-box" }}
-            placeholder="输入消息…"
-            value={chatInput}
-            onChange={e => setChatInput(e.target.value)}
-            onKeyDown={e => {
-              if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                e.preventDefault(); sendChat();
-              }
-            }}
-          />
-          <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
-            <button onClick={sendChat}>发送（Ctrl/Cmd+Enter）</button>
+          <div style={{ display: "flex", gap: 12, padding: "8px 12px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "#fff", zIndex: 9 }}>
+            <button onClick={() => setTab("home")} style={{ fontWeight: tab === "home" ? 700 : 400 }}>主页</button>
+            <button onClick={() => setTab("mindmap")} style={{ fontWeight: tab === "mindmap" ? 700 : 400 }}>行业图谱</button>
           </div>
+          {tab === "home" ? (
+            <>
+              {/* 这里渲染你原有的主页内容（保持不变） */}
+              <h2 style={{marginBottom: 8}}>很高兴见到你，我们一同成长吧！</h2>
+              <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+                <button onClick={async () => { setShowAISettings(v => !v); if (!showAISettings) await loadAIConfig(); }}>
+                  {showAISettings ? "收起 AI 设置" : "AI 设置"}
+                </button>
+                {aiMsg && <div style={{ fontSize: 12, opacity: 0.8 }}>{aiMsg}</div>}
+              </div>
+              {showAISettings && (
+                <div style={{ marginTop: 8, padding: 12, border: "1px dashed #ddd", borderRadius: 8 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 8, columnGap: 8, alignItems: "center" }}>
+                    <div>Provider</div>
+                    <select
+                      value={aiCfg.provider || ""}
+                      onChange={e => setAiCfg({ ...aiCfg, provider: e.target.value })}
+                    >
+                      <option value="">（未设置）</option>
+                      <option value="openai">OpenAI / 兼容</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="silicon">SiliconCloud</option>
+                      <option value="anthropic">Anthropic</option>
+                      <option value="ollama">Ollama（本地）</option>
+                    </select>
+
+                    <div>API Base</div>
+                    <input
+                      placeholder="https://api.openai.com/v1 或兼容地址"
+                      value={aiCfg.api_base || ""}
+                      onChange={e => setAiCfg({ ...aiCfg, api_base: e.target.value })}
+                    />
+
+                    <div>API Key</div>
+                    <input
+                      placeholder="sk-..."
+                      value={aiCfg.api_key || ""}
+                      onChange={e => setAiCfg({ ...aiCfg, api_key: e.target.value })}
+                      style={{ fontFamily: "monospace" }}
+                    />
+
+                    <div>Model</div>
+                    <input
+                      placeholder="如 gpt-4o-mini / deepseek-chat / claude-3-5-sonnet 等"
+                      value={aiCfg.model || ""}
+                      onChange={e => setAiCfg({ ...aiCfg, model: e.target.value })}
+                    />
+                  </div>
+
+                  <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+                    <button onClick={saveAIConfig}>保存</button>
+                    <button onClick={smokeAI}>冒烟自检</button>
+                  </div>
+                </div>
+              )}
+
+              {/* ---- 全文搜索区块移到顶部 ---- */}
+              <h3>笔记搜索</h3>
+              <input
+                value={q} onChange={(e) => setQ(e.target.value)} placeholder='关键字 / "短语" / a OR b'
+                style={{ padding: 8, borderRadius: 8, width: "100%" }}
+              />
+              <div style={{ marginTop: 8 }}>
+                <button onClick={onSearch} style={{ padding: "8px 12px" }}>搜索</button>
+              </div>
+              <ul style={{ marginTop: 16, lineHeight: 1.6 }}>
+                {results.map((hit) => (
+                  <li key={hit.id} style={{ marginBottom: 12 }}>
+                    <div style={{ fontWeight: 600 }}>{hit.title}</div>
+                    <div dangerouslySetInnerHTML={renderSnippet(hit.snippet)} />
+                  </li>
+                ))}
+              </ul>
+
+              {/* ---- 最近记录区块 ---- */}
+              <h3 style={{ marginTop: 24 }}>笔记仓库</h3>
+              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
+                <button onClick={onExport}>导出到本地</button>
+                <button onClick={onImport}>从本地导入</button>
+              </div>
+              <ul>
+                {list.map(n => (
+                  <NoteItem key={n.id} note={n} onChanged={refresh} />
+                ))}
+              </ul>
+              {/* 删除“刷新”按钮（笔记列表分页区块） */}
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>上一页</button>
+                <span>第 {page} / {totalPages} 页</span>
+                <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>下一页</button>
+              </div>
+
+              {/* ---- 新增记录折叠按钮 ---- */}
+              <div style={{ marginTop: 24 }}>
+                <button onClick={() => setShowAddNote(v => !v)}>
+                  {showAddNote ? "收起新笔记" : "+笔记"}
+                </button>
+              </div>
+              {/* ---- 新增/编辑表单折叠区块 ---- */}
+              {showAddNote && (
+                <div style={{ marginTop: 12 }}>
+                  <h3>{editingId ? "编辑笔记" : "新笔记"}</h3>
+                  <input
+                    value={title} onChange={(e) => setTitle(e.target.value)} placeholder="标题"
+                    style={{ width: "100%", padding: 8, borderRadius: 8, marginBottom: 8 }}
+                  />
+                  <textarea
+                    value={content} onChange={(e) => setContent(e.target.value)} placeholder="正文内容..."
+                    rows={4} style={{ width: "100%", padding: 8, borderRadius: 8 }}
+                  />
+                  <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                    <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
+                      {saving ? "保存中..." : (editingId ? "更新" : "保存")}
+                    </button>
+                    {editingId && (
+                      <button onClick={() => { setEditingId(null); setTitle(""); setContent(""); }}>
+                        取消编辑
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* ---- 计划区块卡片包裹+可折叠 ---- */}
+              <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
+                <div style={{
+                  display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8
+                }}>
+                  <h3 style={{ margin: 0 }}>计划</h3>
+                  <button onClick={() => setShowPlans(v => !v)}>
+                    {showPlans ? "隐藏" : "显示"}
+                  </button>
+                </div>
+                {showPlans && <PlanPanel />}
+              </div>
+
+              {/* ---- 周报简版区块 ---- */}
+              <h2>周报简版</h2>
+              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                <button onClick={genWeek}>生成本周简报</button>
+                <button onClick={toggleWeek} disabled={!weekReport}>
+                  {weekOpen ? "隐藏" : "展开"}
+                </button>
+                <button onClick={clearWeek} disabled={!weekReport}>清空</button>
+              </div>
+              {weekReport && weekOpen && (
+                <div>
+                  <div>本周范围：{weekReport.start} ~ {weekReport.end}</div>
+                  <div>完成任务：{weekReport.tasks_done} 个；累计 {weekReport.minutes_done} 分钟</div>
+                  <div>新增笔记：{weekReport.new_notes} 条；平均掌握度：{weekReport.avg_mastery.toFixed(1)}</div>
+                  <div style={{marginTop:8}}>短板TOP5：</div>
+                  <ol>
+                    {weekReport.top_gaps?.map((x, i) => (
+                      <li key={i}>{x[0]}（需求L{x[1]}，当前{x[2]}，差距{x[3]}）</li>
+                    ))}
+                  </ol>
+                </div>
+              )}
+              <DebugCounts />
+              <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <h3 style={{ margin: 0 }}>擅长点雷达图</h3>
+                  <button
+                    onClick={async () => {
+                      try {
+                        await invoke("ai_analyze_topics");
+                        setRadarTick(t => t + 1);
+                      } catch (e) {
+                        console.error(e);
+                      }
+                    }}
+                  >
+                    AI云刷新
+                  </button>
+                </div>
+                <RadarPanel reloadKey={radarTick} />
+              </div>
+
+              {/* 右下角开关按钮 */}
+              <button
+                style={{
+                  position: "fixed", right: 16, bottom: 16, zIndex: 9999,
+                  padding: "10px 12px", borderRadius: 8
+                }}
+                onClick={() => setChatOpen(v => !v)}
+              >
+                {chatOpen ? "关闭聊天" : "AI 聊天"}
+              </button>
+
+              {/* 右侧抽屉 */}
+              <div
+                style={{
+                  position: "fixed",
+                  top: 0, right: 0, height: "100vh",
+                  width: chatOpen ? 360 : 0,
+                  transition: "width .25s ease",
+                  overflow: "hidden",
+                  background: "#fff",
+                  borderLeft: "1px solid #eee",
+                  zIndex: 9998,
+                  display: "flex",
+                  flexDirection: "column"
+                }}
+              >
+                <div style={{ padding: 12, borderBottom: "1px solid #eee", fontWeight: 600 }}>
+                  与 AI 对话
+                </div>
+                <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
+                  {chatMsgs.map((m, i) => (
+                    <div key={i} style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>
+                      <div style={{ fontSize: 12, color: "#888" }}>
+                        {m.role === "user" ? "我" : "AI"}
+                      </div>
+                      <div>{m.content}</div>
+                    </div>
+                  ))}
+                  {chatMsgs.length === 0 && <div style={{ color: "#999" }}>开始提问吧～</div>}
+                </div>
+                <div style={{ padding: 12, borderTop: "1px solid #eee" }}>
+                  <textarea
+                    rows={3}
+                    style={{ width: "100%", boxSizing: "border-box" }}
+                    placeholder="输入消息…"
+                    value={chatInput}
+                    onChange={e => setChatInput(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault(); sendChat();
+                      }
+                    }}
+                  />
+                  <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
+                    <button onClick={sendChat}>发送（Ctrl/Cmd+Enter）</button>
+                  </div>
+                </div>
+              </div>
+            </>
+          ) : (
+            <MindMapPage />
+          )}
         </div>
-      </div>
-    </div>
+      );
+    })()
+    // ====== 新增导航分支 end ======
   );
 }
 
