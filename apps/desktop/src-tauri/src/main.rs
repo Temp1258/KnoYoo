@@ -10,8 +10,25 @@ use chrono::{Local, Duration};
 use std::collections::HashSet;
 use std::collections::HashMap;
 
+// 用于返回的行业树节点
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct IndustryNode {
+    pub id: i64,
+    pub name: String,
+    pub required_level: i64,
+    pub importance: f64,
+    pub children: Vec<IndustryNode>,
+    pub mastery: Option<i64>, // 可选：显示成长掌握度（从 growth_node 取）
+}
 
-
+// 用于返回节点关联的笔记
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct SkillNote {
+    pub id: i64,
+    pub title: String,
+    pub created_at: String,
+    pub snippet: Option<String>,
+}
 
 fn app_data_dir() -> Result<PathBuf, String> {
     let proj = ProjectDirs::from("", "KnoYoo", "Desktop")
@@ -272,9 +289,119 @@ fn add_note(title: String, content: String) -> Result<i64, String> {
 }
 
 
+// ======= tree_api_v1 模块包裹 begin =======
+mod tree_api_v1 {
+    use super::*;
 
+    #[tauri::command]
+    pub(super) fn list_industry_tree_v1() -> Result<Vec<IndustryNode>, String> {
+        let conn = open_db().map_err(|e| e.to_string())?;
 
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT s.id, s.parent_id, s.name, s.required_level, s.importance,
+                   g.mastery
+            FROM industry_skill s
+            LEFT JOIN growth_node g ON g.skill_id = s.id
+            ORDER BY COALESCE(s.parent_id, -1), s.id
+            "#
+        ).map_err(|e| e.to_string())?;
 
+        #[derive(Clone)]
+        struct TmpNode {
+            id: i64,
+            parent_id: Option<i64>,
+            node: IndustryNode,
+        }
+
+        let mut tmp: Vec<TmpNode> = Vec::new();
+
+        // 显式拉取行并逐行取值，所有错误转成 String
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let id: i64 = row.get(0).map_err(|e| e.to_string())?;
+            let parent_id: Option<i64> = row.get(1).map_err(|e| e.to_string())?;
+            let name: String = row.get(2).map_err(|e| e.to_string())?;
+            let required_level: i64 = row.get(3).map_err(|e| e.to_string())?;
+            let importance: f64 = row.get::<_, f64>(4).map_err(|e| e.to_string())?;
+            let mastery: Option<i64> = row.get(5).map_err(|e| e.to_string())?;
+
+            tmp.push(TmpNode {
+                id,
+                parent_id,
+                node: IndustryNode {
+                    id,
+                    name,
+                    required_level,
+                    importance,
+                    children: Vec::new(),
+                    mastery,
+                },
+            });
+        }
+
+        use std::collections::HashMap;
+        let mut bucket: HashMap<i64, Vec<IndustryNode>> = HashMap::new();
+        let mut roots: Vec<IndustryNode> = Vec::new();
+
+        for t in tmp.into_iter() {
+            match t.parent_id {
+                Some(pid) => bucket.entry(pid).or_default().push(t.node),
+                None => roots.push(t.node),
+            }
+        }
+
+        fn fill_children(node: &mut IndustryNode, bucket: &mut HashMap<i64, Vec<IndustryNode>>) {
+            if let Some(mut kids) = bucket.remove(&node.id) {
+                for k in kids.iter_mut() {
+                    fill_children(k, bucket);
+                }
+                node.children = kids;
+            }
+        }
+        for r in roots.iter_mut() {
+            fill_children(r, &mut bucket);
+        }
+
+        Ok(roots)
+    }
+
+    #[tauri::command]
+    pub(super) fn list_skill_notes_v1(skill_id: i64, limit: Option<i64>) -> Result<Vec<SkillNote>, String> {
+        let conn = open_db().map_err(|e| e.to_string())?;
+        let lim = limit.unwrap_or(50);
+
+        let mut stmt = conn.prepare(
+            r#"
+            SELECT n.id, n.title, COALESCE(n.created_at, ''), n.snippet
+            FROM note_skill_map m
+            JOIN notes n ON n.id = m.note_id
+            WHERE m.skill_id = ?
+            ORDER BY n.created_at DESC
+            LIMIT ?
+            "#
+        ).map_err(|e| e.to_string())?;
+
+        let mut out: Vec<SkillNote> = Vec::new();
+        let mut rows = stmt.query(rusqlite::params![skill_id, lim]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let id: i64 = row.get(0).map_err(|e| e.to_string())?;
+            let title: String = row.get(1).map_err(|e| e.to_string())?;
+            let created_at: String = row.get(2).map_err(|e| e.to_string())?;
+            let snippet: Option<String> = row.get(3).map_err(|e| e.to_string())?;
+
+            out.push(SkillNote { id, title, created_at, snippet });
+        }
+        if out.is_empty() {
+            eprintln!("[DEBUG] no notes found for skill_id={}", skill_id);
+        }
+        Ok(out)
+    }
+
+    pub(crate) use list_industry_tree_v1 as cmd_list_industry_tree_v1;
+    pub(crate) use list_skill_notes_v1 as cmd_list_skill_notes_v1;
+}
+// ======= tree_api_v1 模块包裹 end =======
 
 
 
@@ -1889,7 +2016,9 @@ fn main() {
             count_notes,
             get_plan_goal, set_plan_goal,
             generate_plan_by_range,
-            ai_chat
+            ai_chat,
+            tree_api_v1::list_industry_tree_v1,
+            tree_api_v1::list_skill_notes_v1
           ])
           
         .run(tauri::generate_context!())

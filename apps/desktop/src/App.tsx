@@ -43,7 +43,7 @@ type SkillGapRow = { name: string; required_level: number; mastery: number; gap:
 function RadarPanel({ reloadKey = 0 }: { reloadKey?: number }) {
   const [data, setData] = useState<SkillGapRow[]>([]);
   const [loading, setLoading] = useState(false);
-  const [msg, setMsg] = useState("");
+  const [, setMsg] = useState("");
 
   const wrapRef = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<{ x: number; y: number; html: string } | null>(null);
@@ -272,34 +272,34 @@ export default function App() {
     }
   }
 
-  async function onEdit(n: Note) {
-    setEditingId(n.id);
-    setTitle(n.title);
-    setContent(n.content);
-  }
+  // async function onEdit(n: Note) {
+  //   setEditingId(n.id);
+  //   setTitle(n.title);
+  //   setContent(n.content);
+  // }
 
-  async function onDelete(id: number) {
-    if (!confirm("确认删除？")) return;
-    await invoke("delete_note", { id });
-    await refresh();
-  }
+  // async function onDelete(id: number) {
+  //   if (!confirm("确认删除？")) return;
+  //   await invoke("delete_note", { id });
+  //   await refresh();
+  // }
 
-  async function aiClassifyLocal(noteId: number) {
-    try {
-      const hits = await invoke<Array<{ skill_id:number; name:string; delta:number; new_mastery:number }>>(
-        "classify_note_embed", { noteId }
-      );
-      if (Array.isArray(hits) && hits.length > 0) {
-        const msg = hits.map(h => `${h.name} +${h.delta} → ${h.new_mastery}`).join("，");
-        alert("AI归类（本地）：" + msg);
-      } else {
-        alert("AI未找到明显匹配（分数低于阈值）");
-      }
-    } catch (e:any) {
-      alert("AI归类失败：" + String(e));
-      console.error(e);
-    }
-  }
+  // async function aiClassifyLocal(noteId: number) {
+  //   try {
+  //     const hits = await invoke<Array<{ skill_id:number; name:string; delta:number; new_mastery:number }>>(
+  //       "classify_note_embed", { noteId }
+  //     );
+  //     if (Array.isArray(hits) && hits.length > 0) {
+  //       const msg = hits.map(h => `${h.name} +${h.delta} → ${h.new_mastery}`).join("，");
+  //       alert("AI归类（本地）：" + msg);
+  //     } else {
+  //       alert("AI未找到明显匹配（分数低于阈值）");
+  //     }
+  //   } catch (e:any) {
+  //     alert("AI归类失败：" + String(e));
+  //     console.error(e);
+  //   }
+  // }
 
   async function onSearch() {
     try {
@@ -371,7 +371,7 @@ export default function App() {
       horizon: "WEEK" | "QTR";
     };
 
-    const [horizon, setHorizon] = useState<"WEEK" | "QTR">("WEEK");
+    const [horizon] = useState<"WEEK" | "QTR">("WEEK");
     const [onlyTodo, setOnlyTodo] = useState(false);
     const [grouped, setGrouped] = useState(true); // 默认分组显示
     const [tasks, setTasks] = useState<PlanTask[]>([]);
@@ -420,36 +420,36 @@ export default function App() {
     }
     useEffect(() => { load(); }, [horizon, onlyTodo]);
 
-    async function gen(h: "WEEK" | "QTR") {
-      setLoading(true);
-      try {
-        const created = (await invoke("generate_plan", { horizon: h })) as any[];
-        const n = Array.isArray(created) ? created.length : 0;
+    // async function gen(h: "WEEK" | "QTR") {
+    //   setLoading(true);
+    //   try {
+    //     const created = (await invoke("generate_plan", { horizon: h })) as any[];
+    //     const n = Array.isArray(created) ? created.length : 0;
 
-        let tip = "";
-        if (n === 0) {
-          const open = (await invoke("list_plan_tasks", { horizon: h, status: "TODO" })) as PlanTask[];
-          const gaps = (await invoke("list_skill_gaps", { limit: 5 })) as SkillGapRow[];
-          const hasGap = gaps.some(g => g.gap > 0);
+    //     let tip = "";
+    //     if (n === 0) {
+    //       const open = (await invoke("list_plan_tasks", { horizon: h, status: "TODO" })) as PlanTask[];
+    //       const gaps = (await invoke("list_skill_gaps", { limit: 5 })) as SkillGapRow[];
+    //       const hasGap = gaps.some(g => g.gap > 0);
 
-          const reasons: string[] = [];
-          if (open.length > 0) reasons.push(`该周期已有未完成任务 ${open.length} 条`);
-          if (!hasGap) reasons.push("当前无明显能力差距（已满足或掌握度≥要求）");
-          if (reasons.length === 0) reasons.push("可能被去重规则或唯一索引拦截");
+    //       const reasons: string[] = [];
+    //       if (open.length > 0) reasons.push(`该周期已有未完成任务 ${open.length} 条`);
+    //       if (!hasGap) reasons.push("当前无明显能力差距（已满足或掌握度≥要求）");
+    //       if (reasons.length === 0) reasons.push("可能被去重规则或唯一索引拦截");
 
-          tip = "未生成新任务：" + reasons.join("；");
-        } else {
-          tip = `生成 ${n} 条`;
-        }
+    //       tip = "未生成新任务：" + reasons.join("；");
+    //     } else {
+    //       tip = `生成 ${n} 条`;
+    //     }
 
-        await load(true);   // 刷新列表，但“保留消息”
-        setMsg(tip);        // 刷新后再设置提示，避免被清空
-      } catch (e: any) {
-        setMsg(String(e));
-      } finally {
-        setLoading(false);
-      }
-    }
+    //     await load(true);   // 刷新列表，但“保留消息”
+    //     setMsg(tip);        // 刷新后再设置提示，避免被清空
+    //   } catch (e: any) {
+    //     setMsg(String(e));
+    //   } finally {
+    //     setLoading(false);
+    //   }
+    // }
 
     async function toggle(t: PlanTask) {
       const next = t.status === "DONE" ? "TODO" : "DONE";
@@ -790,6 +790,45 @@ export default function App() {
     }
   }
 
+  // ====== 临时调试按钮组（放在顶部工具区/按钮区） ======
+  // 如有其它按钮区，可合并到一起
+  // 建议放在 return (<div>... 之前
+  // =============================
+  const debugButtons = (
+    <div style={{ display: 'flex', gap: 8, marginBottom: 12 }}>
+      {/* 其它现有按钮 … */}
+      <button
+        onClick={async () => {
+          try {
+            const tree = await invoke<any[]>("list_industry_tree_v1");
+            console.log("[DEBUG] industry_tree:", tree);
+            alert(`行业树返回节点数（根层）：${Array.isArray(tree) ? tree.length : 0}（详细见控制台）`);
+          } catch (e) {
+            console.error(e);
+            alert("获取行业树失败，请看控制台错误");
+          }
+        }}
+      >
+        调试：行业树
+      </button>
+
+      <button
+        onClick={async () => {
+          try {
+            const notes = await invoke<any[]>("list_skill_notes_v1", { skillId: 1, limit: 10 });
+            console.log("[DEBUG] skill_notes(1):", notes);
+            alert(`Skill#1 关联笔记条数：${Array.isArray(notes) ? notes.length : 0}`);
+          } catch (e) {
+            console.error(e);
+            alert("获取节点关联笔记失败，请看控制台错误");
+          }
+        }}
+      >
+        调试：节点关联笔记
+      </button>
+    </div>
+  );
+
   return (
     <div style={{ padding: 24, fontFamily: "system-ui" }}>
       <h2 style={{marginBottom: 8}}>很高兴见到你，我们一同成长吧！</h2>
@@ -954,7 +993,7 @@ export default function App() {
           <button
             onClick={async () => {
               try {
-                const data = await invoke("ai_analyze_topics");
+                await invoke("ai_analyze_topics");
                 setRadarTick(t => t + 1);
               } catch (e) {
                 console.error(e);
