@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState, useRef } from "react";
 
 type IndustryNode = {
   id: number;
@@ -56,6 +56,8 @@ export default function MindMapPage() {
   const [drag, setDrag] = useState<{ startX: number; startY: number; origX: number; origY: number } | null>(null);
   const [notes, setNotes] = useState<SkillNote[]>([]);
   const [loading, setLoading] = useState(false);
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+
 // 拖拽开始
 const onMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
   setDrag({ startX: e.clientX, startY: e.clientY, origX: pan.x, origY: pan.y });
@@ -78,7 +80,13 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
   setScale(newScale);
 };
 
-
+const onCanvasWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+  e.preventDefault();     // 阻止页面滚动
+  e.stopPropagation();
+  const k = e.deltaY > 0 ? 0.9 : 1.1;
+  const newScale = Math.min(3, Math.max(0.3, scale * k));
+  setScale(newScale);
+};
 
 
   const layers = useMemo(() => flattenByDepth(tree), [tree]);
@@ -107,6 +115,49 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     });
     return pos;
   }, [layers]);
+
+// 递归在树中寻找指定 id 的节点
+function findNodeById(roots: IndustryNode[], id: number): IndustryNode | null {
+  const stack = [...roots];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (n.id === id) return n;
+    if (n.children?.length) stack.push(...n.children);
+  }
+  return null;
+}
+
+// 从整棵树里提取以 id 为根的子树（深拷贝），用于“单根聚焦”
+function extractSubtree(roots: IndustryNode[], id: number): IndustryNode | null {
+  const src = findNodeById(roots, id);
+  if (!src) return null;
+  const clone = (n: IndustryNode): IndustryNode => ({
+    id: n.id,
+    name: n.name,
+    required_level: n.required_level,
+    importance: n.importance,
+    mastery: n.mastery ?? null,
+    children: (n.children || []).map(clone),
+  });
+  return clone(src);
+}
+
+
+// 把一组节点的“包围盒中心”居中显示（基于当前 layout/scale）
+function centerOnNodeIds(ids: number[]) {
+  const pts = ids.map(id => layout.get(id)).filter(Boolean) as Point[];
+  if (pts.length === 0) return;
+  const minX = Math.min(...pts.map(p => p.x));
+  const maxX = Math.max(...pts.map(p => p.x));
+  const minY = Math.min(...pts.map(p => p.y));
+  const maxY = Math.max(...pts.map(p => p.y));
+  const cxWorld = (minX + maxX) / 2 + nodeW / 2;
+  const cyWorld = (minY + maxY) / 2 + nodeH / 2;
+
+  const cx = width / 2 - cxWorld * scale;
+  const cy = height / 2 - cyWorld * scale;
+  setPan({ x: cx, y: cy });
+}
 
   // 选择节点
   const onSelect = (node: IndustryNode) => {
@@ -139,31 +190,33 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
     return list;
   }, [tree, layout]);
 
-  // 手动添加一个“自定义根节点”（仅前端内存，后续我们会做持久化+AI生成）
+  
   const addCustomRoot = () => {
     if (!skillInput.trim()) return;
     const newNode: IndustryNode = {
-      id: Date.now(), name: skillInput.trim(),
-      required_level: 100, importance: 1, mastery: 0, children: []
+      id: Date.now(),
+      name: skillInput.trim(),
+      required_level: 100,
+      importance: 1,
+      mastery: 0,
+      children: [],
     };
-    setTree(prev => {
-       const next = [newNode, ...prev];
-      // 下一帧等 layout 更新后再计算坐标居中，避免首次添加时取不到位置
-       requestAnimationFrame(() => {
-         // 这里用最新的 tree 重算过的 layout 进行定位
-         const p = layout.get(newNode.id);
-         if (p) {
-           const cx = width / 2 - (p.x + nodeW / 2) * scale;
-           const cy = height / 2 - (p.y + nodeH / 2) * scale;
-           setPan({ x: cx, y: cy });
-           setActive(newNode);
-           canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-         }
-       });
-       return next;
-     });
+    // 单根聚焦：直接替换整棵树，只保留这个根
+    setTree([newNode]);
     setSkillInput("");
+  
+    requestAnimationFrame(() => {
+      const p = layout.get(newNode.id);
+      if (p) {
+        const cx = width / 2 - (p.x + nodeW / 2) * scale;
+        const cy = height / 2 - (p.y + nodeH / 2) * scale;
+        setPan({ x: cx, y: cy });
+      }
+      setActive(newNode);
+      canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+    });
   };
+  
 
   return (
     <div style={{ padding: 16 }}>
@@ -177,46 +230,50 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
             style={{ width: 320, height: 32, padding: "0 8px" }}
           />
           <button onClick={addCustomRoot}>添加为根节点</button>
-            <button
-              onClick={async () => {
-                const query = (skillInput || active?.name || "").trim();
-                if (!query) {
-                  alert("请先在左侧输入一个行业/能力，或点击某个节点后再生成。");
-                  return;
-                }
-                try {
-                  // 构造扁平参数：只有在有选中节点时才传 parent_id（避免传 null）
-                  const args: any = { query };
-                  if (active) args.parent_id = active.id;
+          <button
+            onClick={async () => {
+              // 目标节点：优先当前选中；若画布只有一个节点则默认它
+              let target = active;
+              if (!target && tree.length === 1) target = tree[0];
+              if (!target) {
+                alert("请先点击画布中的一个节点（或先添加一个根节点）再生成。");
+                return;
+              }
 
-                  const freshTree = await tauriInvoke<IndustryNode[]>("ai_generate_industry_tree_v1", args);
-                  setTree(freshTree || []);
+              try {
+                // 仅对目标节点生成，parent_id = 该节点
+                const freshWhole = await tauriInvoke<IndustryNode[]>("ai_generate_industry_tree_v1", {
+                  query: target.name,
+                  parent_id: target.id,
+                });
 
-                  // 如果当前无选中，则把新建的根作为选中并居中
-                  if (!active) {
-                    const root = (freshTree || []).find(
-                      n => n.name.toLowerCase() === query.toLowerCase()
-                    );
-                    if (root) {
-                      setActive(root);
-                      const p = layout.get(root.id);
-                      if (p) {
-                        const cx = width / 2 - (p.x + nodeW / 2) * scale;
-                        const cy = height / 2 - (p.y + nodeH / 2) * scale;
-                        setPan({ x: cx, y: cy });
-                      }
-                      canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-                    }
-                  }
-                  setSkillInput("");
-                } catch (e: any) {
-                  console.error(e);
-                  alert(`AI 生成失败：${e?.message ?? String(e)}`);
+                // 只保留“以目标为根”的子树进行展示（单根聚焦模式）
+                const latestSub = extractSubtree(freshWhole || [], target.id);
+                if (latestSub) {
+                  setTree([latestSub]);
+                  setActive(latestSub);
+
+                  // 等布局更新后，把【父节点 + 直接子技能】作为包围盒居中
+                  requestAnimationFrame(() => {
+                    const ids = [latestSub.id, ...(latestSub.children?.map((c) => c.id) || [])];
+                    centerOnNodeIds(ids);
+                  });
+                } else {
+                  // 兜底：至少保留当前树并居中选中节点
+                  requestAnimationFrame(() => centerOnNodeIds([target!.id]));
                 }
-              }}
-            >
-              从AI生成
-            </button>
+
+                setSkillInput("");
+                canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+              } catch (e: any) {
+                console.error(e);
+                alert(`AI 生成失败：${e?.message ?? String(e)}`);
+              }
+            }}
+
+          >
+            从AI生成
+          </button>
 
         </div>
       </div>
