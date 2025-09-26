@@ -373,7 +373,7 @@ mod tree_api_v1 {
 
         let mut stmt = conn.prepare(
             r#"
-            SELECT n.id, n.title, COALESCE(n.created_at, ''), n.snippet
+            SELECT n.id, n.title, COALESCE(n.created_at, ''), NULL as snippet
             FROM note_skill_map m
             JOIN notes n ON n.id = m.note_id
             WHERE m.skill_id = ?
@@ -398,12 +398,93 @@ mod tree_api_v1 {
         Ok(out)
     }
 
-    pub(crate) use list_industry_tree_v1 as cmd_list_industry_tree_v1;
-    pub(crate) use list_skill_notes_v1 as cmd_list_skill_notes_v1;
+        // === 放在 mod tree_api_v1 { ... } 内，use super::*; 已有 ===
+
+    // #[derive(Debug, Serialize, Deserialize, Clone)]
+    // pub struct AiGenRequest {
+    //     pub query: String,            // 用户想要的行业/能力名
+    //     pub parent_id: Option<i64>,   // 生成到哪个父节点；为 None 则新建根
+    // }
+
+    // 简单模板：根据 query 生成一组常见子技能（占位可用；后续可接入真实 LLM）
+    fn template_children_for(query: &str) -> Vec<&'static str> {
+        let q = query.to_lowercase();
+        if q.contains("data") || q.contains("分析") || q.contains("科学") {
+            return vec![
+                "统计基础","编程（Python/SQL）","数据清洗","可视化",
+                "机器学习","深度学习","特征工程","模型评估与部署",
+            ];
+        }
+        if q.contains("ai") || q.contains("人工智能") {
+            return vec![
+                "机器学习","深度学习","大模型","提示工程","MLOps",
+                "数据工程","评测与安全","AI 产品思维",
+            ];
+        }
+        if q.contains("product") || q.contains("产品") {
+            return vec![
+                "用户研究","竞品分析","PRD/需求管理","数据驱动决策",
+                "原型与交互","项目推进","增长与运营","A/B 测试",
+            ];
+        }
+        // 默认兜底
+        vec![
+            "核心概念","必备工具","入门项目","进阶项目",
+            "最佳实践","常见坑","评估标准","行业趋势",
+        ]
+    }
+
+
+    #[tauri::command]
+    pub fn ai_generate_industry_tree_v1(query: String, parent_id: Option<i64>) -> Result<Vec<IndustryNode>, String> {
+        use rusqlite::{params, OptionalExtension};
+        
+        let conn = open_db().map_err(|e| e.to_string())?;
+        conn.execute("PRAGMA foreign_keys = ON;", []).map_err(|e| format!("pragma fk on: {e}"))?;
+
+        let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
+
+        fn ensure_skill(tx: &rusqlite::Transaction, name: &str, parent_id: Option<i64>) -> Result<i64, String> {
+            let mut sel = tx.prepare(
+                "SELECT id FROM industry_skill WHERE name = ?1 AND ( (parent_id IS NULL AND ?2 IS NULL) OR (parent_id = ?2) )"
+            ).map_err(|e| format!("prepare select skill: {e}"))?;
+            if let Some(id) = sel.query_row(params![name, parent_id], |r| r.get::<_, i64>(0)).optional().map_err(|e| e.to_string())? {
+                return Ok(id);
+            }
+            tx.execute(
+                "INSERT INTO industry_skill (name, parent_id, required_level, importance) VALUES (?1, ?2, 100, 1.0)",
+                params![name, parent_id]
+            ).map_err(|e| e.to_string())?;
+            let id = tx.last_insert_rowid();
+            tx.execute(
+                "INSERT OR IGNORE INTO growth_node (skill_id, mastery) VALUES (?1, 0)",
+                params![id]
+            ).map_err(|e| e.to_string())?;
+            Ok(id)
+        }
+
+        // 1) 决定父节点
+        let parent_id = match parent_id {
+            Some(pid) => pid,
+            None => ensure_skill(&tx, &query, None)?, // 新建/获取根
+        };
+
+        // 2) 生成子节点（占位模板）
+        let children = template_children_for(&query);
+        for name in children {
+            let _cid = ensure_skill(&tx, name, Some(parent_id))?;
+        }
+
+        tx.commit().map_err(|e| e.to_string())?;
+
+        // 3) 返回最新整棵树
+        list_industry_tree_v1()
+    }
 }
+
+
+
 // ======= tree_api_v1 模块包裹 end =======
-
-
 
 
 #[derive(Serialize)]
@@ -2018,7 +2099,8 @@ fn main() {
             generate_plan_by_range,
             ai_chat,
             tree_api_v1::list_industry_tree_v1,
-            tree_api_v1::list_skill_notes_v1
+            tree_api_v1::list_skill_notes_v1,
+            tree_api_v1::ai_generate_industry_tree_v1            
           ])
           
         .run(tauri::generate_context!())
