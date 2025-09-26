@@ -119,7 +119,7 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
       const cy = height / 2 - (p.y + nodeH / 2) * scale;
       setPan({ x: cx, y: cy });
     }
-  
+    canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
     // 暂不加载笔记。后续点击“从AI生成”来补全该节点的子树。
   };
 
@@ -157,6 +157,7 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
            const cy = height / 2 - (p.y + nodeH / 2) * scale;
            setPan({ x: cx, y: cy });
            setActive(newNode);
+           canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
          }
        });
        return next;
@@ -204,6 +205,7 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
                         const cy = height / 2 - (p.y + nodeH / 2) * scale;
                         setPan({ x: cx, y: cy });
                       }
+                      canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
                     }
                   }
                   setSkillInput("");
@@ -220,7 +222,19 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
       </div>
 
       {/* 画布 */}
-      <div style={{ marginTop: 12, border: "1px solid #e5e7eb", borderRadius: 8, overflow: "hidden", position: "relative" }}>
+      <div
+        ref={canvasRef}
+        onWheel={onCanvasWheel}
+        onWheelCapture={onCanvasWheel}
+        style={{
+          marginTop: 12,
+          border: "1px solid #e5e7eb",
+          borderRadius: 8,
+          overflow: "hidden",
+          position: "relative",
+          height: "70vh"     // 固定画布高度，滚轮只在画布内生效
+        }}
+      >
         <svg
         width={width}
         height={height}
@@ -229,7 +243,6 @@ const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
         onMouseLeave={onMouseUp}
-        onWheel={onWheel}
         >
         <g transform={`translate(${pan.x}, ${pan.y}) scale(${scale})`}>
             {/* 边（贝塞尔曲线） */}
