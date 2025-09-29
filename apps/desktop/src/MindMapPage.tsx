@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, {useEffect, useMemo, useState, useRef } from "react";
 
 type IndustryNode = {
   id: number;
@@ -57,36 +57,53 @@ export default function MindMapPage() {
   const [notes, setNotes] = useState<SkillNote[]>([]);
   const [loading, setLoading] = useState(false);
   const canvasRef = useRef<HTMLDivElement | null>(null);
+  const [roots, setRoots] = useState<IndustryNode[]>([]);
 
-// 拖拽开始
-const onMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
-  setDrag({ startX: e.clientX, startY: e.clientY, origX: pan.x, origY: pan.y });
-};
-// 拖拽中
-const onMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
-  if (!drag) return;
-  const dx = e.clientX - drag.startX;
-  const dy = e.clientY - drag.startY;
-  setPan({ x: drag.origX + dx, y: drag.origY + dy });
-};
-// 拖拽结束
-const onMouseUp = () => setDrag(null);
 
-// 滚轮缩放（以鼠标位置为中心缩放的简化版）
-const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
-  e.preventDefault();
-  const k = e.deltaY > 0 ? 0.9 : 1.1;
-  const newScale = Math.min(3, Math.max(0.3, scale * k));
-  setScale(newScale);
-};
+  const refreshRoots = async () => {
+    try {
+      const r = await tauriInvoke<IndustryNode[]>("list_root_nodes_v1");
+      setRoots(r || []);
+    } catch (e) { console.error(e); }
+  };
+  useEffect(() => { refreshRoots(); }, []);
 
-const onCanvasWheel = (e: React.WheelEvent<HTMLDivElement>) => {
-  e.preventDefault();     // 阻止页面滚动
-  e.stopPropagation();
-  const k = e.deltaY > 0 ? 0.9 : 1.1;
-  const newScale = Math.min(3, Math.max(0.3, scale * k));
-  setScale(newScale);
-};
+
+  // 拖拽开始
+  const onMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
+    setDrag({ startX: e.clientX, startY: e.clientY, origX: pan.x, origY: pan.y });
+  };
+
+
+  // 拖拽中
+  const onMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    if (!drag) return;
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    setPan({ x: drag.origX + dx, y: drag.origY + dy });
+  };
+
+
+  // 拖拽结束
+  const onMouseUp = () => setDrag(null);
+
+  
+  // 滚轮缩放（以鼠标位置为中心缩放的简化版）
+  const onWheel = (e: React.WheelEvent<SVGSVGElement>) => {
+    e.preventDefault();
+    const k = e.deltaY > 0 ? 0.9 : 1.1;
+    const newScale = Math.min(3, Math.max(0.3, scale * k));
+    setScale(newScale);
+  };
+
+  
+  const onCanvasWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+    e.preventDefault();     // 阻止页面滚动
+    e.stopPropagation();
+    const k = e.deltaY > 0 ? 0.9 : 1.1;
+    const newScale = Math.min(3, Math.max(0.3, scale * k));
+    setScale(newScale);
+  };
 
 
   const layers = useMemo(() => flattenByDepth(tree), [tree]);
@@ -126,6 +143,19 @@ function findNodeById(roots: IndustryNode[], id: number): IndustryNode | null {
   }
   return null;
 }
+
+// 在整棵树里按名字（不区分大小写）寻找节点
+function findNodeByName(roots: IndustryNode[], name: string): IndustryNode | null {
+  const key = name.trim().toLowerCase();
+  const stack = [...roots];
+  while (stack.length) {
+    const n = stack.pop()!;
+    if (n.name.trim().toLowerCase() === key) return n;
+    if (n.children?.length) stack.push(...n.children);
+  }
+  return null;
+}
+
 
 // 从整棵树里提取以 id 为根的子树（深拷贝），用于“单根聚焦”
 function extractSubtree(roots: IndustryNode[], id: number): IndustryNode | null {
@@ -191,35 +221,137 @@ function centerOnNodeIds(ids: number[]) {
   }, [tree, layout]);
 
   
-  const addCustomRoot = () => {
-    if (!skillInput.trim()) return;
-    const newNode: IndustryNode = {
-      id: Date.now(),
-      name: skillInput.trim(),
-      required_level: 100,
-      importance: 1,
-      mastery: 0,
-      children: [],
-    };
-    // 单根聚焦：直接替换整棵树，只保留这个根
-    setTree([newNode]);
-    setSkillInput("");
-  
-    requestAnimationFrame(() => {
-      const p = layout.get(newNode.id);
-      if (p) {
-        const cx = width / 2 - (p.x + nodeW / 2) * scale;
-        const cy = height / 2 - (p.y + nodeH / 2) * scale;
-        setPan({ x: cx, y: cy });
-      }
-      setActive(newNode);
+  const addCustomRoot = async () => {
+    const name = skillInput.trim();
+    if (!name) return;
+    try {
+      const id = await tauriInvoke<number>("save_custom_root_v1", { name });
+      await refreshRoots();
+
+      // 取整棵树 → 只抽取该根做“单根聚焦”
+      const all = await tauriInvoke<IndustryNode[]>("list_industry_tree_v1");
+      const latest = (all && (findNodeById(all, id) || findNodeByName(all, name))) || null;
+      const sub = latest ? extractSubtree(all, latest.id) : null;
+
+      const root = sub ?? { id, name, required_level: 100, importance: 1, mastery: 0, children: [] };
+      setTree([root]);
+      setActive(root);
+
+      requestAnimationFrame(() => {
+        const ids = [root.id, ...(root.children?.map(c => c.id) || [])];
+        centerOnNodeIds(ids);
+      });
+
+      setSkillInput("");
       canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
-    });
+    } catch (e:any) {
+      console.error(e);
+      alert(`保存根节点失败：${e?.message ?? String(e)}`);
+    }
   };
+  
   
 
   return (
     <div style={{ padding: 16 }}>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          marginBottom: 8,
+          whiteSpace: "nowrap",
+          overflowX: "auto",
+          overflowY: "hidden",
+          paddingBottom: 6,
+          borderBottom: "1px dashed #e5e7eb",
+        }}
+      >
+        <span style={{ color: "#6b7280", flex: "0 0 auto" }}>我的根节点：</span>
+        {roots.length === 0 ? (
+          <span style={{ color: "#9ca3af" }}>暂无，先在右侧输入框添加</span>
+        ) : (
+          <>
+            {roots.map(r => (
+              <span
+                key={r.id}
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  border: "1px solid #e5e7eb",
+                  borderRadius: 999,
+                  background: tree[0]?.id === r.id ? "#e0f2fe" : "#fff",
+                  flex: "0 0 auto",
+                  maxWidth: 220,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                }}
+              >
+                <a
+                  onClick={async () => {
+                    // 单根聚焦：切换到该根
+                    try {
+                      const all = await tauriInvoke<IndustryNode[]>("list_industry_tree_v1");
+                      const latest = findNodeById(all || [], r.id) || findNodeByName(all || [], r.name);
+                      const sub = latest ? extractSubtree(all || [], latest.id) : null;
+                      if (sub) {
+                        setTree([sub]); setActive(sub);
+                        requestAnimationFrame(() => centerOnNodeIds([sub.id, ...(sub.children?.map(c=>c.id)||[])]));
+                        canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+                      }
+                    } catch (e) { console.error(e); }
+                  }}
+                  style={{
+                    cursor: "pointer",
+                    textDecoration: "none",
+                    color: "#0369a1",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                  }}
+                  title={r.name}
+                >
+                  {r.name}
+                </a>
+                <button
+                  onClick={async () => {
+                    if (!confirm(`删除根节点“${r.name}”（含其全部子项）？`)) return;
+                    try {
+                      await tauriInvoke("delete_root_and_subtree_v1", { rootId: r.id });
+                      await refreshRoots();
+                      if (tree[0]?.id === r.id) { setTree([]); setActive(null); }
+                    } catch (e:any) {
+                      console.error(e); alert(`删除失败：${e?.message ?? String(e)}`);
+                    }
+                  }}
+                  style={{ border: "none", background: "transparent", color: "#ef4444", cursor: "pointer" }}
+                  title="删除该根"
+                >×</button>
+              </span>
+            ))}
+            {/* 根列表右侧，新增一键清空 */}
+            <button
+              onClick={async () => {
+                if (!roots.length) return;
+                if (!confirm(`确认清空 ${roots.length} 个根节点及其子树？该操作不可撤销。`)) return;
+                try {
+                  await tauriInvoke("clear_all_roots_v1");
+                  await refreshRoots();
+                  setTree([]);
+                  setActive(null);
+                } catch (e: any) {
+                  console.error(e);
+                  alert(`清空失败：${e?.message ?? String(e)}`);
+                }
+              }}
+              style={{ marginLeft: 8, flex: "0 0 auto" }}
+            >
+              清空根节点
+            </button>
+          </>
+        )}
+      </div>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <h2 style={{ margin: 0 }}>行业图谱（思维导图 · 最小可用版）</h2>
         <div style={{ display: "flex", gap: 8 }}>
@@ -232,44 +364,48 @@ function centerOnNodeIds(ids: number[]) {
           <button onClick={addCustomRoot}>添加为根节点</button>
           <button
             onClick={async () => {
-              // 目标节点：优先当前选中；若画布只有一个节点则默认它
+              // 目标：优先选中；否则当画布仅有一个根时用它
               let target = active;
               if (!target && tree.length === 1) target = tree[0];
               if (!target) {
                 alert("请先点击画布中的一个节点（或先添加一个根节点）再生成。");
                 return;
               }
-
+            
               try {
-                // 仅对目标节点生成，parent_id = 该节点
-                const freshWhole = await tauriInvoke<IndustryNode[]>("ai_generate_industry_tree_v1", {
-                  query: target.name,
-                  parent_id: target.id,
+                // 只按名称生成；后端会“确保/创建”同名根并挂上子技能
+                const freshWhole = await tauriInvoke<IndustryNode[]>("ai_expand_node_v2", {
+                  name: target.name,
+                  parentId: target.id,  // 选中谁就扩谁；根节点也一样
+                  limit: 10
                 });
-
-                // 只保留“以目标为根”的子树进行展示（单根聚焦模式）
-                const latestSub = extractSubtree(freshWhole || [], target.id);
-                if (latestSub) {
-                  setTree([latestSub]);
-                  setActive(latestSub);
-
-                  // 等布局更新后，把【父节点 + 直接子技能】作为包围盒居中
-                  requestAnimationFrame(() => {
-                    const ids = [latestSub.id, ...(latestSub.children?.map((c) => c.id) || [])];
-                    centerOnNodeIds(ids);
-                  });
-                } else {
-                  // 兜底：至少保留当前树并居中选中节点
-                  requestAnimationFrame(() => centerOnNodeIds([target!.id]));
+            
+                // 在返回的整棵树里，按名字找到刚刚的那个节点，然后提取它的子树
+                const latestRoot = findNodeByName(freshWhole || [], target.name);
+                if (!latestRoot) {
+                  console.warn("not found by name in fresh tree:", target.name);
+                  alert("生成完成，但未找到对应节点，请重试或更换名称。");
+                  return;
                 }
-
+                const latestSub = extractSubtree(freshWhole || [], latestRoot.id)!;
+            
+                // 进入“单根聚焦”：只保留该子树
+                setTree([latestSub]);
+                setActive(latestSub);
+            
+                // 等布局更新后，把【父节点 + 直接子技能】作为包围盒居中
+                requestAnimationFrame(() => {
+                  const ids = [latestSub.id, ...(latestSub.children?.map(c => c.id) || [])];
+                  centerOnNodeIds(ids);
+                });
+            
                 setSkillInput("");
                 canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
               } catch (e: any) {
                 console.error(e);
                 alert(`AI 生成失败：${e?.message ?? String(e)}`);
               }
-            }}
+            }}            
 
           >
             从AI生成
