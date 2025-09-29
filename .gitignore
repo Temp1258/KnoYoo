@@ -15,6 +15,13 @@ dist/
 dist-ssr/
 *.local
 
+# 本地运行时生成的 SQLite 数据文件，属于运行时数据，不应该进仓库。
+apps/desktop/src-tauri/notes.db
+
+# 我用的是 pnpm，它生成的是 pnpm-lock.yaml，package-lock.json 很可能是误生成的，不需要版本管理。
+package-lock.json
+
+
 # Rust / Cargo
 target/
 **/target/
