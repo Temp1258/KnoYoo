@@ -59,6 +59,10 @@ export default function MindMapPage() {
   const canvasRef = useRef<HTMLDivElement | null>(null);
   const [roots, setRoots] = useState<IndustryNode[]>([]);
 
+  // 保存行业树的列表与面板状态
+  const [savedTrees, setSavedTrees] = useState<{ id: number; name: string; created_at: string }[]>([]);
+  const [showSavedPanel, setShowSavedPanel] = useState(false);
+
 
   const refreshRoots = async () => {
     try {
@@ -156,6 +160,24 @@ function findNodeByName(roots: IndustryNode[], name: string): IndustryNode | nul
   return null;
 }
 
+// 寻找某个节点从根到它的路径，返回节点数组
+function findPathToNode(roots: IndustryNode[], id: number): IndustryNode[] | null {
+  for (const r of roots) {
+    const stack: { node: IndustryNode; path: IndustryNode[] }[] = [];
+    stack.push({ node: r, path: [r] });
+    while (stack.length) {
+      const { node, path } = stack.pop()!;
+      if (node.id === id) return path;
+      if (node.children && node.children.length) {
+        for (const c of node.children) {
+          stack.push({ node: c, path: [...path, c] });
+        }
+      }
+    }
+  }
+  return null;
+}
+
 
 // 从整棵树里提取以 id 为根的子树（深拷贝），用于“单根聚焦”
 function extractSubtree(roots: IndustryNode[], id: number): IndustryNode | null {
@@ -247,6 +269,34 @@ function centerOnNodeIds(ids: number[]) {
     } catch (e:any) {
       console.error(e);
       alert(`保存根节点失败：${e?.message ?? String(e)}`);
+    }
+  };
+
+  // 获取所有已保存的行业树信息
+  const refreshSavedTrees = async () => {
+    try {
+      const list = await tauriInvoke<any[]>("list_saved_industry_trees_v1");
+      setSavedTrees(list || []);
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  // 保存当前行业树
+  const onSaveTree = async () => {
+    if (!tree || tree.length === 0) {
+      alert("当前没有可以保存的行业树");
+      return;
+    }
+    const name = prompt("请输入行业树的名称：");
+    if (!name || !name.trim()) return;
+    try {
+      await tauriInvoke<number>("save_industry_tree_v1", { name: name.trim() });
+      alert("保存成功");
+      refreshSavedTrees();
+    } catch (e: any) {
+      console.error(e);
+      alert(`保存失败：${e?.message ?? String(e)}`);
     }
   };
   
@@ -349,11 +399,129 @@ function centerOnNodeIds(ids: number[]) {
             >
               清空根节点
             </button>
+            <button
+              onClick={() => {
+                // 收集所有节点 ID 并居中整个树
+                const ids: number[] = [];
+                const gather = (n: IndustryNode) => {
+                  ids.push(n.id);
+                  (n.children || []).forEach(gather);
+                };
+                tree.forEach(gather);
+                if (ids.length > 0) {
+                  centerOnNodeIds(ids);
+                }
+              }}
+              style={{ marginLeft: 8, flex: "0 0 auto" }}
+            >
+              画布居中
+            </button>
           </>
         )}
       </div>
+      {/* 侧边保存/加载行业树面板 */}
+      {showSavedPanel && (
+        <div
+          style={{
+            position: "fixed",
+            top: 80,
+            right: 0,
+            width: 280,
+            height: "80vh",
+            background: "#ffffff",
+            borderLeft: "1px solid #e5e7eb",
+            boxShadow: "-4px 0 8px rgba(0,0,0,0.05)",
+            padding: 12,
+            zIndex: 100,
+            overflowY: "auto",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <strong>我的行业树</strong>
+            <button
+              onClick={() => setShowSavedPanel(false)}
+              style={{ border: "none", background: "transparent", cursor: "pointer" }}
+            >
+              ×
+            </button>
+          </div>
+          <button onClick={onSaveTree} style={{ marginTop: 8, marginBottom: 12 }}>
+            保存当前行业树
+          </button>
+          {savedTrees.length === 0 ? (
+            <div style={{ color: "#6b7280" }}>暂无保存的行业树</div>
+          ) : (
+            <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
+              {savedTrees.map(t => (
+                <li key={t.id} style={{ borderBottom: "1px solid #f3f4f6", padding: "6px 0" }}>
+                  <div
+                    style={{
+                      fontSize: 14,
+                      overflow: "hidden",
+                      textOverflow: "ellipsis",
+                      whiteSpace: "nowrap",
+                    }}
+                    title={t.name}
+                  >
+                    {t.name}
+                  </div>
+                  <div style={{ fontSize: 11, color: "#6b7280" }}>
+                    {new Date(t.created_at).toLocaleString()}
+                  </div>
+                  <div style={{ marginTop: 4, display: "flex", gap: 4 }}>
+                    <button
+                      onClick={async () => {
+                        try {
+                          const loaded = await tauriInvoke<IndustryNode[]>(
+                            "get_saved_industry_tree_v1",
+                            { id: t.id }
+                          );
+                          setTree(loaded || []);
+                          setActive(null);
+                          // 居中整个树
+                          requestAnimationFrame(() => {
+                            const ids: number[] = [];
+                            const gather = (n: IndustryNode) => {
+                              ids.push(n.id);
+                              (n.children || []).forEach(gather);
+                            };
+                            (loaded || []).forEach(gather);
+                            if (ids.length > 0) {
+                              centerOnNodeIds(ids);
+                            }
+                          });
+                          setShowSavedPanel(false);
+                        } catch (e: any) {
+                          console.error(e);
+                          alert(`加载失败：${e?.message ?? String(e)}`);
+                        }
+                      }}
+                    >
+                      加载
+                    </button>
+                    <button
+                      onClick={async () => {
+                        if (!confirm(`确认删除行业树“${t.name}”吗？`)) return;
+                        try {
+                          await tauriInvoke("delete_saved_industry_tree_v1", { id: t.id });
+                          refreshSavedTrees();
+                        } catch (e: any) {
+                          console.error(e);
+                          alert(`删除失败：${e?.message ?? String(e)}`);
+                        }
+                      }}
+                    >
+                      删除
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <h2 style={{ margin: 0 }}>行业图谱（思维导图 · 最小可用版）</h2>
+        <h2 style={{ margin: 0 }}>行业树</h2>
         <div style={{ display: "flex", gap: 8 }}>
           <input
             placeholder="手动输入一个行业/能力，如 Data Scientist"
@@ -373,11 +541,12 @@ function centerOnNodeIds(ids: number[]) {
               }
             
               try {
-                // 只按名称生成；后端会“确保/创建”同名根并挂上子技能
+                // 生成路径：从根到选中节点，作为 AI 提示上下文
+                const path = findPathToNode(tree, target.id)?.map(n => n.name) || [target.name];
                 const freshWhole = await tauriInvoke<IndustryNode[]>("ai_expand_node_v2", {
                   name: target.name,
-                  parentId: target.id,  // 选中谁就扩谁；根节点也一样
-                  limit: 10
+                  parentId: target.id,
+                  pathNames: path
                 });
             
                 // 在返回的整棵树里，按名字找到刚刚的那个节点，然后提取它的子树
@@ -409,6 +578,19 @@ function centerOnNodeIds(ids: number[]) {
 
           >
             从AI生成
+          </button>
+
+          {/* 打开保存/管理行业树面板 */}
+          <button
+            onClick={() => {
+              const next = !showSavedPanel;
+              if (next) {
+                refreshSavedTrees();
+              }
+              setShowSavedPanel(next);
+            }}
+          >
+            我的行业树
           </button>
 
         </div>
@@ -465,39 +647,7 @@ function centerOnNodeIds(ids: number[]) {
             </g>
         </g>
         </svg>
-                {/* 悬浮信息卡（显示在被选节点附近） */}
-        {active && (() => {
-        const p = layout.get(active.id);
-        if (!p) return null;
-        // 需要把节点坐标应用 pan/scale 转换成屏幕坐标
-        const screenX = pan.x + (p.x + nodeW + 8) * scale; // 节点右侧 8px
-        const screenY = pan.y + (p.y) * scale;
-
-        return (
-            <div
-            style={{
-                position: "absolute",
-                left: screenX,
-                top: screenY,
-                background: "#fff",
-                border: "1px solid #e5e7eb",
-                boxShadow: "0 6px 16px rgba(0,0,0,0.08)",
-                borderRadius: 8,
-                padding: "8px 10px",
-                pointerEvents: "none", // 仅显示；真的需要交互再开启
-            }}
-            >
-            <div style={{ fontWeight: 600, marginBottom: 4 }}>{active.name}</div>
-            <div style={{ color: "#6b7280", fontSize: 12 }}>
-                required={active.required_level} · importance={active.importance}
-                {typeof active.mastery === "number" ? ` · mastery=${active.mastery}` : ""}
-            </div>
-            <div style={{ color: "#6b7280", fontSize: 12, marginTop: 4 }}>
-              下一步：点击上方“从AI生成”，根据【{active.name}】自动补全子树
-            </div>
-            </div>
-        );
-        })()}
+                {/* 已移除悬浮信息卡 */}
 
       </div>
 
@@ -534,7 +684,7 @@ function centerOnNodeIds(ids: number[]) {
             </div>
           </div>
         ) : (
-          <div style={{ color: "#6b7280" }}>点击导图节点查看详情</div>
+          null
         )}
       </div>
     </div>

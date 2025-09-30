@@ -219,6 +219,8 @@ export default function App() {
 
   // 给雷达用的“刷新信号”
   const [radarTick, setRadarTick] = useState(0);
+  // 雷达图刷新状态
+  const [loadingRadar, setLoadingRadar] = useState(false);
 
   const pageSize = 10;
   const [totalNotes, setTotalNotes] = useState(0);
@@ -637,7 +639,7 @@ export default function App() {
     async function genByRange() {
       setLoading(true);
       try {
-        const created = await invoke("generate_plan_by_range", { start: startDate, end: endDate, goal });
+        const created = await invoke("ai_generate_plan_by_range", { start: startDate, end: endDate, goal });
         await load(true);
         setMsg(Array.isArray(created) && created.length>0 ? `生成 ${created.length} 条` : "未生成新任务（可能已有未完成或差距不足）");
       } catch (e:any) {
@@ -795,15 +797,16 @@ export default function App() {
   return (
     // ====== 新增导航分支 begin ======
     (() => {
-      const [tab, setTab] = React.useState<"home" | "mindmap">("home");
+      const [tab, setTab] = React.useState<"home" | "mindmap" | "me">("home");
       (window as any).__knoyoo_setTab = setTab; // 调试用，可删
       return (
         <div>
           <div style={{ display: "flex", gap: 12, padding: "8px 12px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "#fff", zIndex: 9 }}>
             <button onClick={() => setTab("home")} style={{ fontWeight: tab === "home" ? 700 : 400 }}>主页</button>
             <button onClick={() => setTab("mindmap")} style={{ fontWeight: tab === "mindmap" ? 700 : 400 }}>行业图谱</button>
+            <button onClick={() => setTab("me")} style={{ fontWeight: tab === "me" ? 700 : 400 }}>我</button>
           </div>
-          {tab === "home" ? (
+          {tab === "home" && (
             <>
               {/* 这里渲染你原有的主页内容（保持不变） */}
               <h2 style={{marginBottom: 8}}>很高兴见到你，我们一同成长吧！</h2>
@@ -939,47 +942,7 @@ export default function App() {
                 {showPlans && <PlanPanel />}
               </div>
 
-              {/* ---- 周报简版区块 ---- */}
-              <h2>周报简版</h2>
-              <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-                <button onClick={genWeek}>生成本周简报</button>
-                <button onClick={toggleWeek} disabled={!weekReport}>
-                  {weekOpen ? "隐藏" : "展开"}
-                </button>
-                <button onClick={clearWeek} disabled={!weekReport}>清空</button>
-              </div>
-              {weekReport && weekOpen && (
-                <div>
-                  <div>本周范围：{weekReport.start} ~ {weekReport.end}</div>
-                  <div>完成任务：{weekReport.tasks_done} 个；累计 {weekReport.minutes_done} 分钟</div>
-                  <div>新增笔记：{weekReport.new_notes} 条；平均掌握度：{weekReport.avg_mastery.toFixed(1)}</div>
-                  <div style={{marginTop:8}}>短板TOP5：</div>
-                  <ol>
-                    {weekReport.top_gaps?.map((x, i) => (
-                      <li key={i}>{x[0]}（需求L{x[1]}，当前{x[2]}，差距{x[3]}）</li>
-                    ))}
-                  </ol>
-                </div>
-              )}
-              <DebugCounts />
-              <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <h3 style={{ margin: 0 }}>擅长点雷达图</h3>
-                  <button
-                    onClick={async () => {
-                      try {
-                        await invoke("ai_analyze_topics");
-                        setRadarTick(t => t + 1);
-                      } catch (e) {
-                        console.error(e);
-                      }
-                    }}
-                  >
-                    AI云刷新
-                  </button>
-                </div>
-                <RadarPanel reloadKey={radarTick} />
-              </div>
+              { /* 周报和雷达图移至“我”页面 */ }
 
               {/* 右下角开关按钮 */}
               <button
@@ -1040,8 +1003,65 @@ export default function App() {
                 </div>
               </div>
             </>
-          ) : (
-            <MindMapPage />
+          )}
+          {tab === "mindmap" && (<MindMapPage />)}
+          {tab === "me" && (
+            <div style={{ padding: 16 }}>
+              {/* 我 页面：周报与能力雷达 */}
+              <h2>我的成长</h2>
+              {/* 周报区域 */}
+              <div style={{ marginTop: 16, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <h3 style={{ margin: 0 }}>周报</h3>
+                  <button onClick={genWeek}>生成周报</button>
+                </div>
+                {weekReport ? (
+                  <div style={{ marginTop: 12 }}>
+                    <div>统计周期：{weekReport.start} → {weekReport.end}</div>
+                    <div>完成任务：{weekReport.tasks_done}</div>
+                    <div>学习时间：{weekReport.minutes_done} 分钟</div>
+                    <div>新增笔记：{weekReport.new_notes}</div>
+                    <div>平均掌握度：{weekReport.avg_mastery.toFixed(1)}</div>
+                    <div style={{ marginTop: 8 }}>
+                      <strong>主要差距：</strong>
+                      <ul>
+                        {weekReport.top_gaps.map(([name, required, mastery, gap], idx) => (
+                          <li key={idx}>{name}：要求{required}，掌握{mastery}，差距{gap}</li>
+                        ))}
+                      </ul>
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 12, color: "#888" }}>尚未生成周报</div>
+                )}
+              </div>
+              {/* 雷达图区域 */}
+              <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                  <h3 style={{ margin: 0 }}>能力雷达图</h3>
+                  <button
+                    onClick={async () => {
+                      setLoadingRadar(true);
+                      try {
+                        await invoke("ai_analyze_topics");
+                        setRadarTick((v) => v + 1);
+                      } catch (e) {
+                        console.error(e);
+                        alert("刷新雷达失败");
+                      } finally {
+                        setLoadingRadar(false);
+                      }
+                    }}
+                    disabled={loadingRadar}
+                  >
+                    {loadingRadar ? "刷新中..." : "刷新雷达"}
+                  </button>
+                </div>
+                <div style={{ marginTop: 12 }}>
+                  <RadarPanel reloadKey={radarTick} />
+                </div>
+              </div>
+            </div>
           )}
         </div>
       );

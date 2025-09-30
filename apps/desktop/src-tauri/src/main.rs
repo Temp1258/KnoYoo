@@ -160,6 +160,15 @@ fn open_db() -> Result<Connection, String> {
       FOREIGN KEY(topic_id) REFERENCES ai_topic(id)   ON DELETE CASCADE
     );
 
+    -- ==== 行业树快照表 ===
+    -- 用于保存用户生成的行业树快照及其名称与保存时间
+    CREATE TABLE IF NOT EXISTS saved_industry_tree (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      data TEXT NOT NULL
+    );
+
     -- 应用配置（AI 等）
     CREATE TABLE IF NOT EXISTS app_kv (
       key TEXT PRIMARY KEY,
@@ -561,6 +570,7 @@ mod tree_api_v1 {
         name: String,
         parentId: Option<i64>,
         limit: Option<i64>,
+        pathNames: Option<Vec<String>>,
     ) -> Result<Vec<IndustryNode>, String> {
         use rusqlite::{params, OptionalExtension};
         let mut conn = open_db().map_err(|e| e.to_string())?;
@@ -583,13 +593,44 @@ mod tree_api_v1 {
         let api_key = get_kv("api_key")?
             .ok_or_else(|| "缺少 app_kv['api_key']，请在 AI 设置 里配置".to_string())?;
 
-        // 2) 组织提示词（最多 10 个）
-        let top_k = limit.unwrap_or(10).clamp(1, 10);
-        let prompt = format!(
-            "请根据\"{}\"这个职业/技能，返回它最重要的最多{}个技能点名称。\
-    只返回 JSON：{{\"skills\": [\"...\", ...]}}，不要任何解释。",
-            name, top_k
-        );
+        // 2) 组织提示词。若提供 pathNames，则以路径为背景生成更细化的技能。
+        // 若 limit 为 None，则不限制数量。
+        let max_n = limit.unwrap_or(0);
+        let prompt = if let Some(ref path) = pathNames {
+            let path_str = path.join("→");
+            if max_n > 0 {
+                format!(
+                    "请根据\"{}\"这个技能路径，返回它最重要的最多{}个更具体的技能点名称。\
+只能返回 JSON：{{\"skills\": [\"...\", ...]}}，不要任何解释。",
+                    path_str, max_n
+                )
+            } else {
+                format!(
+                    "请根据\"{}\"这个技能路径，返回它更具体的技能点名称。\
+只能返回 JSON：{{\"skills\": [\"...\", ...]}}，不要任何解释。",
+                    path_str
+                )
+            }
+        } else {
+            let top_k = if max_n > 0 {
+                max_n.clamp(1, 10)
+            } else {
+                0
+            };
+            if top_k > 0 {
+                format!(
+                    "请根据\"{}\"这个职业/技能，返回它最重要的最多{}个技能点名称。\
+只能返回 JSON：{{\"skills\": [\"...\", ...]}}，不要任何解释。",
+                    name, top_k
+                )
+            } else {
+                format!(
+                    "请根据\"{}\"这个职业/技能，返回它更具体的技能点名称。\
+只能返回 JSON：{{\"skills\": [\"...\", ...]}}，不要任何解释。",
+                    name
+                )
+            }
+        };
 
         // 3) 调用你的 AI 接口（按你接口的需要自行调整）
         let endpoint = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
@@ -640,6 +681,26 @@ mod tree_api_v1 {
                 "AI 未返回有效的 skills，请检查接口响应格式（应为 {\"skills\":[...]})".into(),
             );
         }
+
+        // 根据 pathNames 去重，避免重复返回路径中的技能，并去重整个列表
+        if let Some(ref path) = pathNames {
+            let lower_path: Vec<String> = path.iter().map(|s| s.trim().to_lowercase()).collect();
+            skills.retain(|s| {
+                let ls = s.trim().to_lowercase();
+                !lower_path.contains(&ls)
+            });
+        }
+        // 整体去重
+        let mut seen = HashSet::<String>::new();
+        skills.retain(|s| {
+            let t = s.trim().to_string();
+            if seen.contains(&t.to_lowercase()) {
+                false
+            } else {
+                seen.insert(t.to_lowercase());
+                true
+            }
+        });
 
         // 4) 入库：确保父节点存在，并把 skills 都挂到它下面
         conn.execute("PRAGMA foreign_keys = ON;", [])
@@ -693,6 +754,79 @@ mod tree_api_v1 {
 }
 
 // ======= tree_api_v1 模块包裹 end =======
+
+// ======= 行业树快照相关 =======
+
+/// 行业树快照概要
+#[derive(Serialize, Deserialize)]
+struct SavedTreeRow {
+    id: i64,
+    name: String,
+    created_at: String,
+}
+
+/// 保存当前行业树为快照
+#[tauri::command]
+fn save_industry_tree_v1(name: String) -> Result<i64, String> {
+    // 获取当前完整行业树
+    let trees = tree_api_v1::list_industry_tree_v1()?;
+    // 序列化为 JSON
+    let json = serde_json::to_string(&trees).map_err(|e| e.to_string())?;
+    let conn = open_db()?;
+    conn.execute(
+        "INSERT INTO saved_industry_tree (name, data) VALUES (?1, ?2)",
+        rusqlite::params![name, json],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    Ok(id)
+}
+
+/// 列出所有已保存的行业树概要（按保存时间倒序）
+#[tauri::command]
+fn list_saved_industry_trees_v1() -> Result<Vec<SavedTreeRow>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare("SELECT id, name, created_at FROM saved_industry_tree ORDER BY id DESC")
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+    let mut out = Vec::<SavedTreeRow>::new();
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        out.push(SavedTreeRow {
+            id: row.get(0).map_err(|e| e.to_string())?,
+            name: row.get(1).map_err(|e| e.to_string())?,
+            created_at: row.get(2).map_err(|e| e.to_string())?,
+        });
+    }
+    Ok(out)
+}
+
+/// 读取指定 ID 的行业树
+#[tauri::command]
+fn get_saved_industry_tree_v1(id: i64) -> Result<Vec<IndustryNode>, String> {
+    let conn = open_db()?;
+    let json: String = conn
+        .query_row(
+            "SELECT data FROM saved_industry_tree WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    let tree: Vec<IndustryNode> = serde_json::from_str(&json).map_err(|e| e.to_string())?;
+    Ok(tree)
+}
+
+/// 删除指定 ID 的行业树快照
+#[tauri::command]
+fn delete_saved_industry_tree_v1(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute(
+        "DELETE FROM saved_industry_tree WHERE id=?1",
+        rusqlite::params![id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
 
 #[derive(Serialize)]
 struct Hit {
@@ -1087,10 +1221,12 @@ fn classify_and_update(note_id: i64) -> Result<Vec<ClassifyHit>, String> {
             ).map_err(|e| e.to_string())?;
             if inserted > 0 {
                 let delta: i64 = 10;
-                let updated = conn.execute(
-                    "UPDATE growth_node SET mastery = MIN(mastery+?2,100) WHERE skill_id=?1",
-                    rusqlite::params![skill_id, delta],
-                ).map_err(|e| e.to_string())?;
+                let updated = conn
+                    .execute(
+                        "UPDATE growth_node SET mastery = MIN(mastery+?2,100) WHERE skill_id=?1",
+                        rusqlite::params![skill_id, delta],
+                    )
+                    .map_err(|e| e.to_string())?;
                 if updated == 0 {
                     conn.execute(
                         "INSERT INTO growth_node (skill_id, mastery) VALUES (?1, ?2)",
@@ -2530,6 +2666,177 @@ fn generate_plan_by_range(
     Ok(out)
 }
 
+// === AI 版计划生成 ===
+#[tauri::command]
+fn ai_generate_plan_by_range(
+    start: String,
+    end: String,
+    goal: Option<String>,
+) -> Result<Vec<PlanTaskOut>, String> {
+    // AI 版本的计划生成：根据用户能力差距和时间范围生成学习任务
+    use chrono::{Duration, NaiveDate};
+
+    let start_d = NaiveDate::parse_from_str(&start, "%Y-%m-%d")
+        .map_err(|e| e.to_string())?;
+    let end_d = NaiveDate::parse_from_str(&end, "%Y-%m-%d")
+        .map_err(|e| e.to_string())?;
+    if end_d < start_d {
+        return Err("结束日期必须不小于开始日期".into());
+    }
+    let days = (end_d - start_d).num_days() + 1;
+    let horizon = if days <= 28 { "WEEK" } else { "QTR" }.to_string();
+
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
+
+    // 收集差距 Top5
+    let picked: Vec<(i64, String, i64, i64, i64)> = {
+        let mut stmt = tx.prepare(
+            "SELECT s.id, s.name, s.importance, COALESCE(g.mastery,0), s.required_level
+               FROM industry_skill s
+          LEFT JOIN growth_node g ON g.skill_id = s.id
+           ORDER BY (s.required_level-COALESCE(g.mastery,0))*s.importance DESC, s.importance DESC
+              LIMIT 5",
+        ).map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut tmp = Vec::new();
+        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+            let sid: i64 = r.get(0).map_err(|e| e.to_string())?;
+            let name: String = r.get(1).map_err(|e| e.to_string())?;
+            let imp: i64 = r.get(2).map_err(|e| e.to_string())?;
+            let m: i64 = r.get(3).map_err(|e| e.to_string())?;
+            let req: i64 = r.get(4).map_err(|e| e.to_string())?;
+            if req - m > 0 {
+                tmp.push((sid, name, imp, m, req));
+            }
+        }
+        tmp
+    };
+
+    if picked.is_empty() {
+        tx.commit().ok();
+        return Ok(vec![]);
+    }
+
+    // 准备 AI 提示词
+    let mut descs = Vec::new();
+    for (_sid, name, imp, m, req) in &picked {
+        let gap = req - m;
+        descs.push(format!("{}(需求L{}, 当前掌握{}, 差距{})", name, req, m, gap));
+    }
+    let desc_str = descs.join("；");
+    let goal_str = goal.unwrap_or_default().trim().to_string();
+
+    // 读取 AI 配置
+    let cfg = get_ai_config()?;
+    let api_base = cfg
+        .get("api_base")
+        .cloned()
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .to_string();
+    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
+    let model = cfg
+        .get("model")
+        .cloned()
+        .unwrap_or_else(|| "gpt-4o-mini".to_string());
+    if api_base.is_empty() || api_key.is_empty() {
+        return Err("AI 配置缺失，请先配置 api_base 和 api_key".into());
+    }
+    let url = format!("{}/v1/chat/completions", api_base);
+
+    // 构造提示：把能力差距和时间范围、目标告知 AI
+    let sys_msg = "你是一个成长计划教练，需要根据用户的能力差距和时间范围生成学习任务。\
+每条任务必须包含三个字段：title（简洁明了的行动），minutes（一个合理的学习时长，单位分钟，可为 0 表示里程碑），due（任务截止日期，格式 YYYY-MM-DD），并且 due 必须在给定的时间范围内。\
+生成的任务应该聚焦于弥补用户的能力差距，每项能力可以有 1~5 个任务，总体任务数量不宜过多。\
+输出严格 JSON：{\"tasks\":[{\"title\":\"...\",\"minutes\":45,\"due\":\"2025-10-10\"},...]}，不要任何解释。";
+    let user_msg = if goal_str.is_empty() {
+        format!("能力差距列表：{}。时间范围：{} 到 {}。请生成对应的任务。", desc_str, start, end)
+    } else {
+        format!("能力差距列表：{}。时间范围：{} 到 {}。总目标：{}。请生成对应的任务。", desc_str, start, end, goal_str)
+    };
+
+    let payload = serde_json::json!({
+        "model": model,
+        "temperature": 0.3,
+        "response_format": { "type": "json_object" },
+        "messages": [
+            {"role":"system","content": sys_msg},
+            {"role":"user","content": user_msg}
+        ]
+    });
+
+    let resp = ureq::post(&url)
+        .set("Authorization", &format!("Bearer {}", api_key))
+        .set("Content-Type", "application/json")
+        .send_json(payload)
+        .map_err(|e| format!("AI 调用失败: {}", e))?;
+    if resp.status() >= 300 {
+        return Err(format!("AI HTTP {}", resp.status()));
+    }
+    let v: serde_json::Value = resp
+        .into_json()
+        .map_err(|e| format!("解析 AI 响应失败: {}", e))?;
+    let content = v["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("{}");
+    let parsed: serde_json::Value = serde_json::from_str(content)
+        .map_err(|e| format!("AI JSON 解析失败: {}", e))?;
+    let tasks = parsed["tasks"].as_array()
+        .ok_or("AI 未返回 tasks 数组".to_string())?;
+
+    let mut result: Vec<PlanTaskOut> = Vec::new();
+    for item in tasks {
+        let title = item["title"].as_str().unwrap_or("").trim().to_string();
+        let minutes = item["minutes"].as_i64().unwrap_or(0).max(0);
+        let due = item["due"].as_str().unwrap_or("").trim().to_string();
+        if title.is_empty() || due.is_empty() {
+            continue;
+        }
+        let mut skill_id: Option<i64> = None;
+        for (sid, name, _imp, _m, _req) in &picked {
+            if title.to_lowercase().contains(&name.to_lowercase()) {
+                skill_id = Some(*sid);
+                break;
+            }
+        }
+        tx.execute(
+            "INSERT INTO plan_task (horizon, skill_id, title, minutes, due, status)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'TODO')",
+            rusqlite::params![&horizon, &skill_id, &title, &minutes, &due],
+        ).map_err(|e| e.to_string())?;
+        let id = tx.last_insert_rowid();
+        result.push(PlanTaskOut {
+            id,
+            skill_id,
+            title,
+            minutes,
+            due: Some(due.clone()),
+            status: "TODO".into(),
+        });
+    }
+    if !goal_str.is_empty() {
+        let title = format!("目标：{}", goal_str);
+        let due_s = end_d.format("%Y-%m-%d").to_string();
+        tx.execute(
+            "INSERT INTO plan_task (horizon, skill_id, title, minutes, due, status)
+             VALUES (?1, NULL, ?2, ?3, ?4, 'TODO')",
+            rusqlite::params![&horizon, &title, 0_i64, &due_s],
+        ).map_err(|e| e.to_string())?;
+        let id = tx.last_insert_rowid();
+        result.push(PlanTaskOut {
+            id,
+            skill_id: None,
+            title,
+            minutes: 0,
+            due: Some(due_s.clone()),
+            status: "TODO".into(),
+        });
+    }
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(result)
+}
+
 #[derive(Deserialize)]
 struct ChatMessage {
     role: String,
@@ -2615,7 +2922,12 @@ fn main() {
             get_plan_goal,
             set_plan_goal,
             generate_plan_by_range,
+            ai_generate_plan_by_range,
             ai_chat,
+            save_industry_tree_v1,
+            list_saved_industry_trees_v1,
+            get_saved_industry_tree_v1,
+            delete_saved_industry_tree_v1,
             tree_api_v1::list_industry_tree_v1,
             tree_api_v1::list_skill_notes_v1,
             tree_api_v1::save_custom_root_v1,
