@@ -18,6 +18,9 @@ import {
   faEllipsisVertical
 } from "@fortawesome/free-solid-svg-icons";
 
+// 本文件是前端的主视图组件，负责记笔记、搜索、计划管理、行业树、个人设置等功能。
+// 通过使用 React hooks 管理状态，并与后端 (Tauri) 命令交互完成数据的增删查改。
+
 
 // 给控制台用的临时桥
 declare global {
@@ -32,6 +35,7 @@ window.tauriInvoke = (cmd, args) => invoke(cmd, args);
 type Hit = { id: number; title: string; snippet: string };
 type Note = { id: number; title: string; content: string; created_at: string };
 
+// DebugCounts 组件调用后端接口调试某些计数，并展示返回结果。
 function DebugCounts() {
   const [msg, setMsg] = useState<string>("");
 
@@ -57,7 +61,11 @@ function DebugCounts() {
 
 type SkillGapRow = { name: string; required_level: number; mastery: number; gap: number };
 
-function RadarPanel({ reloadKey = 0 }: { reloadKey?: number }) {
+// RadarPanel 组件渲染一个雷达图，显示八个顶级技能维度的掌握度。
+// 通过调用后端接口获取技能得分，并在 SVG 中绘制多边形和交互提示。
+
+ // 渲染雷达图面板，支持外部通过 reloadKey 触发刷新
+ function RadarPanel({ reloadKey = 0 }: { reloadKey?: number }) {
   const [data, setData] = useState<SkillGapRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [, setMsg] = useState("");
@@ -213,6 +221,8 @@ function RadarPanel({ reloadKey = 0 }: { reloadKey?: number }) {
 }
 
 export default function App() {
+  // App 组件是应用的主要容器，包含记笔记列表、计划管理面板、AI 设置、行业树视图等子面板。
+  // 使用大量 useState/useEffect hooks 来管理输入状态、分页、视图切换及与后端的交互。
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -252,12 +262,14 @@ export default function App() {
 
   // 当选择某个笔记时切换到 note 视图并记录 ID
   function handleSelectNote(n: Note) {
+    // 选中一条笔记：记录其 id，以便在 Note 视图显示其内容，并隐藏新增笔记表单。
     setSelectedNoteId(n.id);
     setView('note');
     setShowAddNote(false);
   }
   // 返回计划视图
   function handleBackToPlan() {
+    // 取消选中的笔记，切换到计划视图。
     setView('plan');
     setSelectedNoteId(null);
   }
@@ -265,6 +277,7 @@ export default function App() {
   useEffect(() => { refresh(); }, [page]);
 
   async function refresh() {
+    // 从后端获取指定页码的笔记列表与总数，更新状态。
     const rows = await invoke<Note[]>("list_notes", { page, pageSize });
     setList(rows);
     const n = await invoke<number>("count_notes");
@@ -275,12 +288,15 @@ export default function App() {
   }
 
   async function loadTotalNotes() {
+    // 单独统计笔记总数，用于分页计算。
     const n = await invoke<number>("count_notes");
     setTotalNotes(n || 0);
   }
   useEffect(() => { loadTotalNotes(); }, []);
 
   async function onSave() {
+    // 保存或更新当前输入的笔记。
+    // 如果 editingId 为 null 则新增，否则更新指定 id 的笔记。
     if (!title.trim() || !content.trim()) return;
     setSaving(true);
     try {
@@ -342,6 +358,7 @@ export default function App() {
   // }
 
   async function onSearch() {
+    // 调用全文搜索接口，根据关键字检索笔记标题与内容，并高亮命中片段。
     try {
       const q2 = q.trim();
       if (!q2) { setResults([]); return; }
@@ -354,10 +371,12 @@ export default function App() {
   }
 
   const renderSnippet = (s: string) =>
+    // 将搜索结果中的 [mark] 标记替换为 <mark>，用于高亮显示。
     ({ __html: s.replaceAll("[mark]", "<mark>").replaceAll("[/mark]", "</mark>") });
 
   // ✅ 移到组件内部
   const onExport = async () => {
+    // 导出全部笔记为 JSONL 文件，由后端决定路径和记录数。
     try {
       const res = await invoke<{ path: string; count: number }>("export_notes_jsonl");
       alert(`已导出 ${res.count} 条到：\n${res.path}`);
@@ -368,6 +387,7 @@ export default function App() {
 
   // ✅ 移到组件内部，并在成功后调用 refresh()
   async function onImport() {
+    // 从文件导入笔记数据（JSONL 格式），后端会返回插入和忽略的条数。
     try {
       const res = await invoke<[number, number]>("import_notes_jsonl");
       const [inserted, ignored] = res;
@@ -380,18 +400,23 @@ export default function App() {
 
   // ---- 周报简版区块 ----
   type WeekReport = {
+    // 起止日期（ISO 字符串）
     start: string;
     end: string;
+    // 完成任务数、完成的总分钟数、新增笔记数
     tasks_done: number;
     minutes_done: number;
     new_notes: number;
+    // 平均掌握度
     avg_mastery: number;
+    // 前 5 个能力差距 (技能名, required_level, mastery, gap)
     top_gaps: [string, number, number, number][];
   };
   const [weekReport, setWeekReport] = React.useState<WeekReport | null>(null);
   const [weekOpen, setWeekOpen] = React.useState(false);
 
   const genWeek = async () => {
+    // 调用后端生成本周数据概要（周报），并在 UI 中展开显示。
     const r = await invoke<WeekReport>("report_week_summary");
     setWeekReport(r);
     setWeekOpen(true);
@@ -400,6 +425,8 @@ export default function App() {
   const toggleWeek = () => setWeekOpen(v => !v);
 
   function PlanPanel() {
+    // PlanPanel 组件负责展示和操作周/季度计划任务列表。
+    // 它封装了任务的加载、排序、增加、删除、编辑、切换状态等逻辑。
     // 放在组件内部，避免和外部类型重名冲突
     type PlanTask = {
       id: number;
@@ -432,9 +459,12 @@ export default function App() {
     const [showAddPlan, setShowAddPlan] = useState(false);
 
     const todayStr = () => new Date().toISOString().slice(0, 10);
+    // 判断任务是否逾期：有到期日期且未完成且到期日期早于今天
     const isOverdue = (t: PlanTask) => t.due != null && t.status !== "DONE" && t.due < todayStr();
 
     async function load(preserveMsg = false) {
+      // 调用 list_plan_tasks 命令加载计划任务列表。
+      // 结果按逾期、状态和到期日期排序，更新 tasks 状态。
       setLoading(true);
       if (!preserveMsg) setMsg("");
       try {
@@ -460,61 +490,36 @@ export default function App() {
     }
     useEffect(() => { load(); }, [horizon, onlyTodo]);
 
-    // async function gen(h: "WEEK" | "QTR") {
-    //   setLoading(true);
-    //   try {
-    //     const created = (await invoke("generate_plan", { horizon: h })) as any[];
-    //     const n = Array.isArray(created) ? created.length : 0;
-
-    //     let tip = "";
-    //     if (n === 0) {
-    //       const open = (await invoke("list_plan_tasks", { horizon: h, status: "TODO" })) as PlanTask[];
-    //       const gaps = (await invoke("list_skill_gaps", { limit: 5 })) as SkillGapRow[];
-    //       const hasGap = gaps.some(g => g.gap > 0);
-
-    //       const reasons: string[] = [];
-    //       if (open.length > 0) reasons.push(`该周期已有未完成任务 ${open.length} 条`);
-    //       if (!hasGap) reasons.push("当前无明显能力差距（已满足或掌握度≥要求）");
-    //       if (reasons.length === 0) reasons.push("可能被去重规则或唯一索引拦截");
-
-    //       tip = "未生成新任务：" + reasons.join("；");
-    //     } else {
-    //       tip = `生成 ${n} 条`;
-    //     }
-
-    //     await load(true);   // 刷新列表，但“保留消息”
-    //     setMsg(tip);        // 刷新后再设置提示，避免被清空
-    //   } catch (e: any) {
-    //     setMsg(String(e));
-    //   } finally {
-    //     setLoading(false);
-    //   }
-    // }
 
     async function toggle(t: PlanTask) {
+      // 切换任务状态：待办 <-> 已完成
       const next = t.status === "DONE" ? "TODO" : "DONE";
       await invoke("update_plan_status", { id: t.id, status: next });
       await load();
     }
 
     async function del(t: PlanTask) {
+      // 删除单个任务
       await invoke("delete_plan_task", { id: t.id });
       await load();
     }
 
     function startEdit(t: PlanTask) {
+      // 初始化编辑模式，将当前任务的字段填入输入框。
       setEditId(t.id);
       setETitle(t.title);
       setEMinutes(String(t.minutes ?? 0));
       setEDue(t.due ?? "");
     }
     function cancelEdit() {
+      // 退出编辑模式，清空编辑字段。
       setEditId(null);
       setETitle("");
       setEMinutes("");
       setEDue("");
     }
     async function saveEdit(id: number) {
+      // 保存编辑后的任务信息：标题、分钟数、截止日期。
       const minutes = Number.parseInt(eMinutes || "0", 10);
       const due = eDue.trim() === "" ? null : eDue.trim();
       await invoke("update_plan_task", { id, title: eTitle, minutes, due });
@@ -523,6 +528,8 @@ export default function App() {
     }
 
     async function onAddPlanQuick() {
+      // 以当前输入的标题、分钟数和日期新增一条计划任务。
+      // 若未指定具体技能，则传入 null。
       const t = newTitle.trim();
       if (!t) { alert("标题必填"); return; }
       try {
@@ -1018,7 +1025,7 @@ export default function App() {
           )}
           {view === 'plan' && selectedNoteId == null && (
             <div>
-              <h2 style={{ marginBottom: 8 }}>很高兴见到你，我们一同成长吧！</h2>
+              <h2 style={{ marginBottom: 8 }}> Know More About You! </h2>
               {/* AI 设置折叠 */}
               <div style={{ marginTop: 8, marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
                 <button className="btn" onClick={async () => { setShowAISettings(v => !v); if (!showAISettings) await loadAIConfig(); }}>

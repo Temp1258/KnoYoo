@@ -1,4 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// ===== 应用入口点与数据库模块 =====
+// 这份 Rust 源码实现了桌面应用的后端逻辑，通过 Tauri 框架暴露命令给前端。
+// 包含笔记管理、行业树管理、计划任务以及 AI 相关的数据库操作和逻辑。
 
 use chrono::{Duration, Local};
 use directories::ProjectDirs;
@@ -13,23 +16,35 @@ use std::path::PathBuf;
 // 用于返回的行业树节点
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct IndustryNode {
+    // 每个技能节点的唯一标识，自增整数。
     pub id: i64,
+    // 技能名称，如 "Data Scientist"
     pub name: String,
+    // 要求的技能级别（1-5），数值越大要求越高。
     pub required_level: i64,
+    // 重要性权重，用于计划算法。
     pub importance: f64,
+    // 子节点列表，表示技能树中的下级技能。
     pub children: Vec<IndustryNode>,
+    // 可选：技能的掌握度（0-100），从 growth_node 表中获取。
     pub mastery: Option<i64>, // 可选：显示成长掌握度（从 growth_node 取）
 }
 
 // 用于返回节点关联的笔记
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct SkillNote {
+    // 笔记 ID。
     pub id: i64,
+    // 笔记标题。
     pub title: String,
+    // 创建时间（ISO 8601 格式）。
     pub created_at: String,
+    // 预览内容的片段，可为空。
     pub snippet: Option<String>,
 }
 
+/// 获取应用数据目录的路径（不同操作系统位置各异）
+/// 如果目录不存在则会自动创建。
 fn app_data_dir() -> Result<PathBuf, String> {
     let proj = ProjectDirs::from("", "KnoYoo", "Desktop")
         .ok_or_else(|| "cannot resolve app data dir".to_string())?;
@@ -44,6 +59,8 @@ fn app_db_path() -> Result<PathBuf, String> {
     Ok(app_data_dir()?.join("notes.db"))
 }
 
+/// 打开 SQLite 数据库并执行必要的初始化。
+/// 包含表、索引、触发器以及视图的创建。
 fn open_db() -> Result<Connection, String> {
     let db_path = app_db_path()?;
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
@@ -184,6 +201,8 @@ fn open_db() -> Result<Connection, String> {
 }
 
 // === 新增：plan_task.minutes 字段可空迁移 ===
+/// 数据库迁移：将 plan_task.minutes 字段改为可为空。
+/// 检查表结构，如果 minutes 已经可空则跳过；否则重建表并迁移数据。
 fn migrate_plan_minutes_nullable(conn: &rusqlite::Connection) -> Result<(), String> {
     // 检查 minutes 是否 NOT NULL
     let mut notnull = false;
@@ -260,6 +279,9 @@ fn add_note(title: String, content: String) -> Result<i64, String> {
 mod tree_api_v1 {
     use super::*;
 
+    /// 列出完整的行业技能树。
+    /// 返回所有根节点及其递归子节点的列表结构。
+    /// 前端使用该函数来绘制行业树。
     #[tauri::command]
     pub(super) fn list_industry_tree_v1() -> Result<Vec<IndustryNode>, String> {
         let conn = open_db().map_err(|e| e.to_string())?;
@@ -333,6 +355,8 @@ mod tree_api_v1 {
         Ok(roots)
     }
 
+    /// 获取与某个技能关联的笔记列表。
+    /// 可选参数 limit 控制返回的最大条数，默认为 50。
     #[tauri::command]
     pub(super) fn list_skill_notes_v1(
         skill_id: i64,
@@ -379,6 +403,8 @@ mod tree_api_v1 {
 
     // === 根节点持久化 / 列表 / 删除子树  ============================
 
+    /// 保存一个自定义根节点（行业或技能）并返回其 id。
+    /// 如果存在同名根节点则直接返回已有 id，不会重复插入。
     #[tauri::command]
     pub fn save_custom_root_v1(name: String) -> Result<i64, String> {
         use rusqlite::{params, OptionalExtension};
@@ -566,16 +592,34 @@ mod tree_api_v1 {
     }
 
     #[tauri::command]
+    #[allow(non_snake_case)]
     pub fn ai_expand_node_v2(
         name: String,
         parentId: Option<i64>,
         limit: Option<i64>,
         pathNames: Option<Vec<String>>,
     ) -> Result<Vec<IndustryNode>, String> {
+        /*
+         * === AI 扩展节点逻辑概述 ===
+         * 该函数用于根据输入的技能名称及其父节点，向 AI 接口请求若干新的子技能，并将结果写入数据库。
+         * 整体步骤如下：
+         * 1. 从 app_kv 表中读取 AI 的配置（api_base、api_key、模型名称等）。若缺失则返回错误。
+         * 2. 根据传入的 pathNames（根到当前节点的名称路径）或 name 构造提示词 prompt。limit 用于限制返回技能的数量。
+         *    提示词要求 AI 返回一个严格的 JSON：{"skills": ["子技能", ...]}。
+         * 3. 使用 ureq 调用 OpenAI/其他模型的 chat/completions 接口，设置系统提示和用户 prompt。
+         *    通过设置 response_format.type=json_object，提示 AI 尽量输出标准 JSON 格式。
+         * 4. 解析 AI 返回的内容：尝试直接解析 JSON；如失败则从 message.content 中提取，再用 serde_json 解析。
+         *    将提取出的 skills 数组转为 Vec<String>，并过滤掉空字符串。
+         * 5. 去重：先剔除在 pathNames 中已经存在的名称，再用 HashSet 全局去重，保证 skills 中不含重复技能。
+         * 6. 开启事务，确保父节点存在（必要时插入），然后遍历 skills：若已存在同名子技能则复用其 ID，否则插入新记录并
+         *    初始化 growth_node 记录。最后提交事务。
+         * 7. 调用 list_industry_tree_v1 返回完整的行业技能树，让前端找到新生成的子树并更新界面。
+         */
         use rusqlite::{params, OptionalExtension};
         let mut conn = open_db().map_err(|e| e.to_string())?;
 
         // 1) 从 app_kv 读取 AI 配置
+        // 读取 AI 的基础地址、密钥以及模型配置，若缺失则返回错误提示
         let get_kv = |key: &str| -> Result<Option<String>, String> {
             let mut s = conn
                 .prepare("SELECT val FROM app_kv WHERE key=?1")
@@ -595,6 +639,7 @@ mod tree_api_v1 {
 
         // 2) 组织提示词。若提供 pathNames，则以路径为背景生成更细化的技能。
         // 若 limit 为 None，则不限制数量。
+        // 该提示构造了一个自然语言请求，请求 AI 返回若干子技能名称并要求输出严格的 JSON。
         let max_n = limit.unwrap_or(0);
         let prompt = if let Some(ref path) = pathNames {
             let path_str = path.join("→");
@@ -633,6 +678,8 @@ mod tree_api_v1 {
         };
 
         // 3) 调用你的 AI 接口（按你接口的需要自行调整）
+        // 这里构造请求 body，使用 chat/completions 接口，传入系统提示和用户提示，
+        // 并通过 ureq 向 OpenAI (或其他) API 发出 POST 请求。若失败则返回错误。
         let endpoint = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
         let body = serde_json::json!({
             "model": get_kv("model")?.unwrap_or_else(|| "gpt-4o-mini".to_string()),
@@ -656,6 +703,7 @@ mod tree_api_v1 {
             .map_err(|e| format!("解析 AI 响应失败：{e}"))?;
 
         // A) 期望直接是 JSON 对象；B) 兜底从 content 里再取
+        // AI 可能返回嵌套的 JSON，所以这里先尝试直接解析，再从 message.content 字符串解析 JSON
         let payload = v
             .get("choices")
             .and_then(|c| c.get(0))
@@ -683,6 +731,7 @@ mod tree_api_v1 {
         }
 
         // 根据 pathNames 去重，避免重复返回路径中的技能，并去重整个列表
+        // 先删除在路径中已经存在的技能名称，再通过 HashSet 全局去重
         if let Some(ref path) = pathNames {
             let lower_path: Vec<String> = path.iter().map(|s| s.trim().to_lowercase()).collect();
             skills.retain(|s| {
@@ -703,6 +752,8 @@ mod tree_api_v1 {
         });
 
         // 4) 入库：确保父节点存在，并把 skills 都挂到它下面
+        // 通过事务遍历每个技能，若数据库中已存在相同 name 且 parent_id 一致则直接使用其 ID，
+        // 否则插入新记录到 industry_skill，并确保 growth_node 表中有对应记录。
         conn.execute("PRAGMA foreign_keys = ON;", [])
             .map_err(|e| e.to_string())?;
         let tx = conn.transaction().map_err(|e| format!("begin tx: {e}"))?;
@@ -749,6 +800,7 @@ mod tree_api_v1 {
         tx.commit().map_err(|e| e.to_string())?;
 
         // 5) 返回整棵树，让前端提取/居中
+        // 最后调用 list_industry_tree_v1 返回完整的技能树，前端根据新生成的子树进行展示。
         list_industry_tree_v1()
     }
 }
@@ -2674,7 +2726,7 @@ fn ai_generate_plan_by_range(
     goal: Option<String>,
 ) -> Result<Vec<PlanTaskOut>, String> {
     // AI 版本的计划生成：根据用户能力差距和时间范围生成学习任务
-    use chrono::{Duration, NaiveDate};
+    use chrono::NaiveDate;
 
     let start_d = NaiveDate::parse_from_str(&start, "%Y-%m-%d")
         .map_err(|e| e.to_string())?;
@@ -2720,7 +2772,7 @@ fn ai_generate_plan_by_range(
 
     // 准备 AI 提示词
     let mut descs = Vec::new();
-    for (_sid, name, imp, m, req) in &picked {
+    for (_sid, name, _imp, m, req) in &picked {
         let gap = req - m;
         descs.push(format!("{}(需求L{}, 当前掌握{}, 差距{})", name, req, m, gap));
     }

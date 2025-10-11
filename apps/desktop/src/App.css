@@ -8,6 +8,7 @@ logo.vite:hover {
   filter: drop-shadow(0 0 2em #61dafb);
 }
 :root {
+  /* 全局样式根选择器：定义字体、字号、颜色及抗锯齿等通用属性 */
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 16px;
   line-height: 24px;
@@ -24,6 +25,7 @@ logo.vite:hover {
 }
 
 .container {
+  /* 页面主体容器：垂直排列并居中显示内容，顶部留空 */
   margin: 0;
   padding-top: 10vh;
   display: flex;
@@ -33,6 +35,7 @@ logo.vite:hover {
 }
 
 .logo {
+  /* 应用标志的尺寸及滤镜动画效果 */
   height: 6em;
   padding: 1.5em;
   will-change: filter;
@@ -44,11 +47,13 @@ logo.vite:hover {
 }
 
 .row {
+  /* 用于包裹行内元素的 flex 容器，水平居中 */
   display: flex;
   justify-content: center;
 }
 
 a {
+  /* 链接元素的默认样式和颜色，悬停效果见下方 */
   font-weight: 500;
   color: #646cff;
   text-decoration: inherit;
@@ -64,6 +69,7 @@ h1 {
 
 input,
 button {
+  /* 全局按钮样式，设置鼠标样式为手形以表明可点击 */
   border-radius: 8px;
   border: 1px solid transparent;
   padding: 0.6em 1.2em;
