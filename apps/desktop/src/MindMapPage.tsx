@@ -656,8 +656,6 @@ function centerOnNodeIds(ids: number[]) {
             </g>
         </g>
         </svg>
-                {/* 已移除悬浮信息卡 */}
-
       </div>
 
       {/* 右侧详情（简单版） */}
