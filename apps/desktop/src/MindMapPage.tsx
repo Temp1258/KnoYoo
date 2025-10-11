@@ -222,6 +222,7 @@ function centerOnNodeIds(ids: number[]) {
       const cy = height / 2 - (p.y + nodeH / 2) * scale;
       setPan({ x: cx, y: cy });
     }
+    // 不滚动页面，避免画布操作导致页面整体滚动
     canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
     // 暂不加载笔记。后续点击“从AI生成”来补全该节点的子树。
   };
@@ -265,6 +266,7 @@ function centerOnNodeIds(ids: number[]) {
       });
 
       setSkillInput("");
+      // 不滚动页面，避免画布操作导致页面整体滚动
       canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
     } catch (e:any) {
       console.error(e);
@@ -349,6 +351,7 @@ function centerOnNodeIds(ids: number[]) {
                       if (sub) {
                         setTree([sub]); setActive(sub);
                         requestAnimationFrame(() => centerOnNodeIds([sub.id, ...(sub.children?.map(c=>c.id)||[])]));
+                        // 不滚动页面，避免画布操作导致页面整体滚动
                         canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
                       }
                     } catch (e) { console.error(e); }
@@ -569,6 +572,7 @@ function centerOnNodeIds(ids: number[]) {
                 });
             
                 setSkillInput("");
+                // 不滚动页面，避免画布操作导致页面整体滚动
                 canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
               } catch (e: any) {
                 console.error(e);
@@ -604,10 +608,15 @@ function centerOnNodeIds(ids: number[]) {
         style={{
           marginTop: 12,
           border: "1px solid #e5e7eb",
-          borderRadius: 8,
+          // 统一与计划卡片相同的圆角，让行业树画布更加柔和
+          borderRadius: 16,
           overflow: "hidden",
           position: "relative",
-          height: "70vh"     // 固定画布高度，滚轮只在画布内生效
+          /* 宽度占据剩余空间，避免右侧留白 */
+          flex: 1,
+          width: '100%',
+          /* 固定画布高度，滚轮只在画布内生效 */
+          height: "70vh"
         }}
       >
         <svg

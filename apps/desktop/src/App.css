@@ -1,4 +1,6 @@
-.logo.vite:hover {
+/* This file contains global styles for the application. It is generated from App.css.txt */
+/* Existing base styles from the template */
+logo.vite:hover {
   filter: drop-shadow(0 0 2em #747bff);
 }
 
@@ -125,3 +127,431 @@ button {
 .kebab-menu button:hover { background:#f5f5f5; }
 .note-editor-inline { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
 .note-editor-inline input, .note-editor-inline textarea { width:100%; border:1px solid #ccc; border-radius:6px; padding:6px; }
+
+/* === 全局主题与布局 === */
+/* 渐变背景及卡片玻璃效果。统一页面的蓝紫色柔和风格 */
+:root {
+  /* 背景渐变色（蓝 → 紫） */
+  --bg-start: #d3e5ff;
+  --bg-end:   #e7d5ff;
+  --bg-gradient: linear-gradient(120deg, var(--bg-start), var(--bg-end));
+  /* 卡片背景为半透明白，配合模糊产生毛玻璃效果 */
+  --card-bg: rgba(255, 255, 255, 0.6);
+  --card-backdrop: blur(10px);
+  /* 卡片阴影 */
+  --card-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  /* 边框颜色 */
+  --border-color: rgba(255, 255, 255, 0.4);
+  /* 主色调 */
+  --primary-color: #2153ff;
+  /* 字体颜色 */
+  --text-color: #1f2937;
+  /* 淡文字颜色 */
+  --muted-color: #6b7280;
+}
+
+body, html {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: 'Poppins', Inter, Avenir, Helvetica, Arial, sans-serif;
+  color: var(--text-color);
+  background: var(--bg-gradient);
+  background-attachment: fixed;
+}
+
+/* 外层容器 */
+.app-wrapper {
+  display: flex;
+  flex-direction: column;
+  /* 固定整体高度并隐藏主页面滚动，防止画布操作导致页面被拖动 */
+  height: 100vh;
+  min-height: 100vh;
+  overflow: hidden;
+}
+
+/* 顶部栏 */
+.topbar {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  padding: 10px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: transparent;
+}
+.topbar button {
+  width: 38px;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  border-radius: 12px;
+  cursor: pointer;
+  transition: background 0.2s, box-shadow 0.2s;
+  margin-left: 8px;
+}
+.topbar button:hover {
+  background: rgba(255, 255, 255, 0.8);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
+}
+.topbar button.active {
+  background: var(--primary-color);
+  color: #fff;
+}
+
+/* 主体布局：侧栏 + 内容 */
+.main-layout {
+  flex: 1;
+  display: flex;
+  overflow: hidden;
+}
+
+/* 侧栏 */
+.sidebar {
+  width: 300px;
+  flex-shrink: 0;
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  border-right: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.25s ease;
+  overflow: hidden;
+  /* 让笔记栏的上左下角为圆角，并留出底部空隙 */
+  border-radius: 16px 0 0 16px;
+  padding-bottom: 16px;
+  /* 为侧栏底部留出额外空隙，避免紧贴窗口底边 */
+  margin-bottom: 16px;
+  border-radius: 16px;
+}
+.sidebar.collapsed {
+  width: 40px;
+}
+.sidebar-header {
+  /* 改用 flex 布局，避免搜索输入框与按钮重叠；统一内边距 */
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.sidebar-header input[type="text"] {
+  /* 输入框占据剩余空间，允许在容器缩小时自适应 */
+  flex: 1;
+  min-width: 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.8);
+  outline: none;
+  font-size: 14px;
+}
+.sidebar-header .btn {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: none;
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.2s;
+  /* 确保顶栏搜索区按钮文字颜色为深色 */
+  color: var(--text-color);
+}
+.sidebar-header .btn:hover {
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.note-list {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 12px;
+}
+.note-row {
+  padding: 8px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  transition: background 0.2s;
+}
+.note-row:hover {
+  background: rgba(255, 255, 255, 0.5);
+}
+.note-row.active {
+  background: rgba(33, 83, 243, 0.18);
+}
+.note-row .note-title {
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.note-row .note-date {
+  font-size: 12px;
+  color: var(--muted-color);
+}
+.note-row .menu-btn {
+  margin-left: auto;
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  font-size: 18px;
+  line-height: 1;
+}
+.note-row .menu {
+  position: absolute;
+  right: 8px;
+  top: 36px;
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  box-shadow: var(--card-shadow);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  min-width: 120px;
+}
+.note-row .menu button {
+  padding: 8px 12px;
+  background: none;
+  border: none;
+  text-align: left;
+  cursor: pointer;
+  font-size: 14px;
+  /* 菜单选项使用深色文本，避免与浅色背景混淆 */
+  color: var(--text-color);
+}
+.note-row .menu button:hover {
+  /* 悬停时稍微加深背景，使其突出但仍易读 */
+  background: rgba(0, 0, 0, 0.05);
+}
+
+/* 侧栏底部 */
+.sidebar-footer {
+  padding: 8px 12px;
+  border-top: 1px solid var(--border-color);
+  display: flex;
+  flex-direction: column;
+  /* 增加垂直间距，避免按钮拥挤 */
+  gap: 8px;
+}
+.sidebar-footer .pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 14px;
+}
+.sidebar-footer button {
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: none;
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  cursor: pointer;
+  transition: background 0.2s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
+  /* 保证字体颜色为深色，在浅色按钮背景上清晰可见 */
+  color: var(--text-color);
+}
+.sidebar-footer button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.8);
+}
+.sidebar-footer button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* 展开/折叠按钮 */
+.collapse-btn,
+.expand-btn {
+  padding: 6px;
+  border-radius: 8px;
+  border: none;
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.collapse-btn:hover,
+.expand-btn:hover {
+  background: rgba(255, 255, 255, 0.8);
+}
+
+/* 在折叠状态下，为展开按钮设置主色背景与白色文字，提升辨识度 */
+.expand-btn {
+  background: var(--primary-color);
+  color: #fff;
+}
+
+/* 主内容区域 */
+.content-area {
+  flex: 1;
+  overflow-y: auto;
+  padding: 24px;
+}
+
+/* 卡片通用样式 */
+.card {
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--card-shadow);
+  margin-bottom: 24px;
+}
+
+/* 通用按钮 */
+.btn {
+  padding: 8px 12px;
+  border-radius: 8px;
+  border: none;
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  cursor: pointer;
+  font-size: 14px;
+  transition: background 0.2s;
+  /* 默认按钮文字颜色使用全局深色文本颜色，确保在浅色背景上有对比度 */
+  color: var(--text-color);
+}
+.btn:hover {
+  background: rgba(255, 255, 255, 0.8);
+}
+.btn.primary {
+  background: var(--primary-color);
+  color: #fff;
+  box-shadow: 0 2px 6px rgba(33, 83, 243, 0.3);
+}
+.btn.primary:hover {
+  background: #1949d4;
+}
+
+/* 输入框通用样式 */
+.input,
+.textarea {
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.8);
+  font-size: 14px;
+  resize: vertical;
+}
+.textarea {
+  min-height: 120px;
+}
+
+/* AI 聊天抽屉 */
+.chat-toggle {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 9999;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: none;
+  background: var(--primary-color);
+  color: #fff;
+  box-shadow: 0 4px 12px rgba(33, 83, 243, 0.3);
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.chat-toggle:hover {
+  background: #1949d4;
+}
+
+.chat-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 0;
+  overflow: hidden;
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  border-left: 1px solid var(--border-color);
+  z-index: 9998;
+  display: flex;
+  flex-direction: column;
+  transition: width 0.25s ease;
+}
+.chat-drawer.open {
+  width: 360px;
+}
+
+/* 聊天抽屉中的折叠按钮样式，与笔记栏一致但使用主色 */
+.chat-drawer .collapse-btn {
+  background: var(--primary-color);
+  color: #fff;
+}
+
+/* === 兼容原计划面板按钮与输入的样式 === */
+/* 为卡片中的原生按钮、输入框等赋予半透明背景与合适的字体颜色，并增加相邻按钮间距，避免重叠 */
+.card input[type="text"],
+.card input[type="number"],
+.card input[type="date"],
+.card select,
+.card textarea {
+  background: rgba(255, 255, 255, 0.85);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 6px 8px;
+  font-size: 14px;
+  color: var(--text-color);
+}
+
+/* 调整日期选择器的日历图标颜色，以便在浅色背景上清晰可见 */
+.card input[type="date"]::-webkit-calendar-picker-indicator {
+  /* 使用滤镜反转部分颜色，避免图标与白色背景融为一体 */
+  filter: invert(30%);
+}
+
+.card input::placeholder,
+.card textarea::placeholder {
+  color: var(--muted-color);
+}
+
+.card button {
+  background: var(--card-bg);
+  backdrop-filter: var(--card-backdrop);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 14px;
+  color: var(--text-color);
+  cursor: pointer;
+  transition: background 0.2s;
+  margin-right: 8px;
+  /* 移除原有按钮阴影，保持简约 */
+  box-shadow: none;
+}
+
+.card button:last-child {
+  margin-right: 0;
+}
+
+.card button:hover {
+  background: rgba(255, 255, 255, 0.8);
+}
+
+.card button.primary {
+  background: var(--primary-color);
+  color: #fff;
+}
+
+/* 调整卡片内复选框间距，避免文字贴合 */
+.card input[type="checkbox"] {
+  margin-right: 4px;
+}

@@ -2,6 +2,21 @@ import { useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import React from "react";
 import MindMapPage from "./MindMapPage";
+// 导入全局样式，确保渐变背景与卡片等样式生效
+import "./App.css";
+// 引入 FontAwesome 图标以渲染顶部与侧边栏按钮
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import {
+  faTree,
+  faHome as faHouse,
+  faUser,
+  faPlus,
+  faSearch,
+  faChevronLeft,
+  faChevronRight,
+  faArrowLeft,
+  faEllipsisVertical
+} from "@fortawesome/free-solid-svg-icons";
 
 
 // 给控制台用的临时桥
@@ -225,6 +240,27 @@ export default function App() {
   const pageSize = 10;
   const [totalNotes, setTotalNotes] = useState(0);
   const totalPages = Math.max(1, Math.ceil(totalNotes / pageSize));
+
+  // ===== 新增：全局视图状态与侧栏控制 =====
+  // view 表示当前主内容区显示的页面：plan（默认）、note（查看笔记）、mindmap（行业树）、me（个人中心）
+  const [view, setView] = useState<'plan' | 'note' | 'mindmap' | 'me'>('plan');
+  // 侧边栏是否折叠
+  const [isSidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // 当前选择查看的笔记 id；null 表示未选择
+  const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
+  const selectedNote: Note | null = selectedNoteId != null ? (list.find(n => n.id === selectedNoteId) || null) : null;
+
+  // 当选择某个笔记时切换到 note 视图并记录 ID
+  function handleSelectNote(n: Note) {
+    setSelectedNoteId(n.id);
+    setView('note');
+    setShowAddNote(false);
+  }
+  // 返回计划视图
+  function handleBackToPlan() {
+    setView('plan');
+    setSelectedNoteId(null);
+  }
 
   useEffect(() => { refresh(); }, [page]);
 
@@ -538,7 +574,7 @@ export default function App() {
                 </div>
               </>
             ) : (
-              <div style={{ display: "grid", gap: 6 }}>
+              <div style={{ display: "grid", gap: 8 }}>
                 <input
                   value={eTitle}
                   onChange={(e) => setETitle(e.target.value)}
@@ -567,7 +603,7 @@ export default function App() {
 
           <span style={{ fontSize: 12, opacity: 0.7 }}>{t.horizon}</span>
 
-          <div style={{ display: "flex", gap: 6 }}>
+          <div style={{ display: "flex", gap: 8 }}>
             {!editing ? (
               <>
                 <button onClick={() => startEdit(t)}>编辑</button>
@@ -652,7 +688,7 @@ export default function App() {
 
 
         <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <label>总目标</label>
             <input value={goal} onChange={e=>setGoal(e.target.value)} placeholder="例如：入门数据分析拿到实习" style={{ width: 260, padding: 6, borderRadius: 6, border: "1px solid #ddd" }}/>
             <button onClick={saveGoal}>确认</button>
@@ -663,7 +699,7 @@ export default function App() {
             </div>
           )}
 
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
             <span>起止</span>
             <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} />
             <span>→</span>
@@ -795,225 +831,138 @@ export default function App() {
   }
 
   return (
-    // ====== 新增导航分支 begin ======
-    (() => {
-      const [tab, setTab] = React.useState<"home" | "mindmap" | "me">("home");
-      (window as any).__knoyoo_setTab = setTab; // 调试用，可删
-      return (
-        <div>
-          <div style={{ display: "flex", gap: 12, padding: "8px 12px", borderBottom: "1px solid #eee", position: "sticky", top: 0, background: "#fff", zIndex: 9 }}>
-            <button onClick={() => setTab("home")} style={{ fontWeight: tab === "home" ? 700 : 400 }}>主页</button>
-            <button onClick={() => setTab("mindmap")} style={{ fontWeight: tab === "mindmap" ? 700 : 400 }}>行业图谱</button>
-            <button onClick={() => setTab("me")} style={{ fontWeight: tab === "me" ? 700 : 400 }}>我</button>
-          </div>
-          {tab === "home" && (
+    <div className="app-wrapper">
+      {/* 顶部导航：右侧图标（行业树、主页、我） */}
+      <div className="topbar">
+        <button
+          className={view === 'mindmap' ? 'active' : ''}
+          onClick={() => { setView('mindmap'); setSelectedNoteId(null); }}
+          title="行业树"
+        >
+          <FontAwesomeIcon icon={faTree} />
+        </button>
+        <button
+          className={view === 'plan' && selectedNoteId == null ? 'active' : ''}
+          onClick={() => { setView('plan'); setSelectedNoteId(null); }}
+          title="主页"
+        >
+          <FontAwesomeIcon icon={faHouse} />
+        </button>
+        <button
+          className={view === 'me' ? 'active' : ''}
+          onClick={() => { setView('me'); setSelectedNoteId(null); }}
+          title="我"
+        >
+          <FontAwesomeIcon icon={faUser} />
+        </button>
+      </div>
+      <div className="main-layout">
+        {/* 侧边栏：笔记列表与新增/搜索等 */}
+        <aside className={
+          isSidebarCollapsed ? 'sidebar collapsed' : 'sidebar'
+        }>
+          {isSidebarCollapsed ? (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%' }}>
+              <button className="expand-btn" onClick={() => setSidebarCollapsed(false)} title="展开笔记栏">
+                <FontAwesomeIcon icon={faChevronRight} />
+              </button>
+            </div>
+          ) : (
             <>
-              {/* 这里渲染你原有的主页内容（保持不变） */}
-              <h2 style={{marginBottom: 8}}>很高兴见到你，我们一同成长吧！</h2>
-              <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
-                <button onClick={async () => { setShowAISettings(v => !v); if (!showAISettings) await loadAIConfig(); }}>
-                  {showAISettings ? "收起 AI 设置" : "AI 设置"}
-                </button>
-                {aiMsg && <div style={{ fontSize: 12, opacity: 0.8 }}>{aiMsg}</div>}
-              </div>
-              {showAISettings && (
-                <div style={{ marginTop: 8, padding: 12, border: "1px dashed #ddd", borderRadius: 8 }}>
-                  <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", rowGap: 8, columnGap: 8, alignItems: "center" }}>
-                    <div>Provider</div>
-                    <select
-                      value={aiCfg.provider || ""}
-                      onChange={e => setAiCfg({ ...aiCfg, provider: e.target.value })}
-                    >
-                      <option value="">（未设置）</option>
-                      <option value="openai">OpenAI / 兼容</option>
-                      <option value="deepseek">DeepSeek</option>
-                      <option value="silicon">SiliconCloud</option>
-                      <option value="anthropic">Anthropic</option>
-                      <option value="ollama">Ollama（本地）</option>
-                    </select>
-
-                    <div>API Base</div>
-                    <input
-                      placeholder="https://api.openai.com/v1 或兼容地址"
-                      value={aiCfg.api_base || ""}
-                      onChange={e => setAiCfg({ ...aiCfg, api_base: e.target.value })}
-                    />
-
-                    <div>API Key</div>
-                    <input
-                      placeholder="sk-..."
-                      value={aiCfg.api_key || ""}
-                      onChange={e => setAiCfg({ ...aiCfg, api_key: e.target.value })}
-                      style={{ fontFamily: "monospace" }}
-                    />
-
-                    <div>Model</div>
-                    <input
-                      placeholder="如 gpt-4o-mini / deepseek-chat / claude-3-5-sonnet 等"
-                      value={aiCfg.model || ""}
-                      onChange={e => setAiCfg({ ...aiCfg, model: e.target.value })}
-                    />
-                  </div>
-
-                  <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-                    <button onClick={saveAIConfig}>保存</button>
-                    <button onClick={smokeAI}>冒烟自检</button>
-                  </div>
-                </div>
-              )}
-
-              {/* ---- 全文搜索区块移到顶部 ---- */}
-              <h3>笔记搜索</h3>
-              <input
-                value={q} onChange={(e) => setQ(e.target.value)} placeholder='关键字 / "短语" / a OR b'
-                style={{ padding: 8, borderRadius: 8, width: "100%" }}
-              />
-              <div style={{ marginTop: 8 }}>
-                <button onClick={onSearch} style={{ padding: "8px 12px" }}>搜索</button>
-              </div>
-              <ul style={{ marginTop: 16, lineHeight: 1.6 }}>
-                {results.map((hit) => (
-                  <li key={hit.id} style={{ marginBottom: 12 }}>
-                    <div style={{ fontWeight: 600 }}>{hit.title}</div>
-                    <div dangerouslySetInnerHTML={renderSnippet(hit.snippet)} />
-                  </li>
-                ))}
-              </ul>
-
-              {/* ---- 最近记录区块 ---- */}
-              <h3 style={{ marginTop: 24 }}>笔记仓库</h3>
-              <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 16 }}>
-                <button onClick={onExport}>导出到本地</button>
-                <button onClick={onImport}>从本地导入</button>
-              </div>
-              <ul>
-                {list.map(n => (
-                  <NoteItem key={n.id} note={n} onChanged={refresh} />
-                ))}
-              </ul>
-              {/* 删除“刷新”按钮（笔记列表分页区块） */}
-              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                <button disabled={page <= 1} onClick={() => setPage(p => Math.max(1, p - 1))}>上一页</button>
-                <span>第 {page} / {totalPages} 页</span>
-                <button disabled={page >= totalPages} onClick={() => setPage(p => Math.min(totalPages, p + 1))}>下一页</button>
-              </div>
-
-              {/* ---- 新增记录折叠按钮 ---- */}
-              <div style={{ marginTop: 24 }}>
-                <button onClick={() => setShowAddNote(v => !v)}>
-                  {showAddNote ? "收起新笔记" : "+笔记"}
-                </button>
-              </div>
-              {/* ---- 新增/编辑表单折叠区块 ---- */}
-              {showAddNote && (
-                <div style={{ marginTop: 12 }}>
-                  <h3>{editingId ? "编辑笔记" : "新笔记"}</h3>
+              <div className="sidebar-header">
+                {/* 折叠状态下不显示搜索输入框，避免与按钮重叠 */}
+                {!isSidebarCollapsed && (
                   <input
-                    value={title} onChange={(e) => setTitle(e.target.value)} placeholder="标题"
-                    style={{ width: "100%", padding: 8, borderRadius: 8, marginBottom: 8 }}
+                    type="text"
+                    value={q}
+                    onChange={(e) => setQ(e.target.value)}
+                    placeholder="搜索笔记…"
+                  />
+                )}
+                <button className="btn" onClick={onSearch} title="搜索">
+                  <FontAwesomeIcon icon={faSearch} />
+                </button>
+                <button className="btn" onClick={() => setShowAddNote(v => !v)} title="新增笔记">
+                  <FontAwesomeIcon icon={faPlus} />
+                </button>
+              </div>
+              {/* 新增笔记表单 */}
+              {showAddNote && (
+                <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                  <input
+                    className="input"
+                    value={title}
+                    onChange={(e) => setTitle(e.target.value)}
+                    placeholder="标题"
                   />
                   <textarea
-                    value={content} onChange={(e) => setContent(e.target.value)} placeholder="正文内容..."
-                    rows={4} style={{ width: "100%", padding: 8, borderRadius: 8 }}
+                    className="textarea"
+                    value={content}
+                    onChange={(e) => setContent(e.target.value)}
+                    placeholder="正文内容…"
+                    rows={4}
                   />
-                  <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
-                    <button onClick={onSave} disabled={saving} style={{ padding: "8px 12px" }}>
-                      {saving ? "保存中..." : (editingId ? "更新" : "保存")}
+                  <div style={{ display: 'flex', gap: 8 }}>
+                    <button className="btn primary" onClick={onSave} disabled={saving}>
+                      {saving ? '保存中…' : (editingId ? '更新' : '保存')}
                     </button>
                     {editingId && (
-                      <button onClick={() => { setEditingId(null); setTitle(""); setContent(""); }}>
-                        取消编辑
+                      <button className="btn" onClick={() => { setEditingId(null); setTitle(''); setContent(''); }}>
+                        取消
                       </button>
                     )}
                   </div>
                 </div>
               )}
-
-              {/* ---- 计划区块卡片包裹+可折叠 ---- */}
-              <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-                <div style={{
-                  display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8
-                }}>
-                  <h3 style={{ margin: 0 }}>计划</h3>
-                  <button onClick={() => setShowPlans(v => !v)}>
-                    {showPlans ? "隐藏" : "显示"}
+              {/* 笔记列表 */}
+              <div className="note-list">
+                {list.map(n => (
+                  <SidebarNoteItem
+                    key={n.id}
+                    note={n}
+                    onChanged={refresh}
+                    onSelect={() => handleSelectNote(n)}
+                    isActive={selectedNoteId === n.id}
+                  />
+                ))}
+              </div>
+              {/* 侧栏底部：翻页、导入导出、折叠 */}
+              <div className="sidebar-footer">
+                <div style={{ display: 'flex', gap: 8, marginBottom: 4 }}>
+                  <button className="btn" onClick={onExport} title="导出笔记">
+                    导出
+                  </button>
+                  <button className="btn" onClick={onImport} title="导入笔记">
+                    导入
                   </button>
                 </div>
-                {showPlans && <PlanPanel />}
-              </div>
-
-              { /* 周报和雷达图移至“我”页面 */ }
-
-              {/* 右下角开关按钮 */}
-              <button
-                style={{
-                  position: "fixed", right: 16, bottom: 16, zIndex: 9999,
-                  padding: "10px 12px", borderRadius: 8
-                }}
-                onClick={() => setChatOpen(v => !v)}
-              >
-                {chatOpen ? "关闭聊天" : "AI 聊天"}
-              </button>
-
-              {/* 右侧抽屉 */}
-              <div
-                style={{
-                  position: "fixed",
-                  top: 0, right: 0, height: "100vh",
-                  width: chatOpen ? 360 : 0,
-                  transition: "width .25s ease",
-                  overflow: "hidden",
-                  background: "#fff",
-                  borderLeft: "1px solid #eee",
-                  zIndex: 9998,
-                  display: "flex",
-                  flexDirection: "column"
-                }}
-              >
-                <div style={{ padding: 12, borderBottom: "1px solid #eee", fontWeight: 600 }}>
-                  与 AI 对话
+                <div className="pagination">
+                  <button className="btn" onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page <= 1}>
+                    <FontAwesomeIcon icon={faChevronLeft} />
+                  </button>
+                  <span>{page} / {totalPages}</span>
+                  <button className="btn" onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page >= totalPages}>
+                    <FontAwesomeIcon icon={faChevronRight} />
+                  </button>
                 </div>
-                <div style={{ flex: 1, overflowY: "auto", padding: 12 }}>
-                  {chatMsgs.map((m, i) => (
-                    <div key={i} style={{ marginBottom: 10, whiteSpace: "pre-wrap" }}>
-                      <div style={{ fontSize: 12, color: "#888" }}>
-                        {m.role === "user" ? "我" : "AI"}
-                      </div>
-                      <div>{m.content}</div>
-                    </div>
-                  ))}
-                  {chatMsgs.length === 0 && <div style={{ color: "#999" }}>开始提问吧～</div>}
-                </div>
-                <div style={{ padding: 12, borderTop: "1px solid #eee" }}>
-                  <textarea
-                    rows={3}
-                    style={{ width: "100%", boxSizing: "border-box" }}
-                    placeholder="输入消息…"
-                    value={chatInput}
-                    onChange={e => setChatInput(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                        e.preventDefault(); sendChat();
-                      }
-                    }}
-                  />
-                  <div style={{ marginTop: 8, display: "flex", justifyContent: "flex-end" }}>
-                    <button onClick={sendChat}>发送（Ctrl/Cmd+Enter）</button>
-                  </div>
-                </div>
+                <button className="collapse-btn" onClick={() => setSidebarCollapsed(true)} title="折叠笔记栏">
+                  <FontAwesomeIcon icon={faChevronLeft} />
+                </button>
               </div>
             </>
           )}
-          {tab === "mindmap" && (<MindMapPage />)}
-          {tab === "me" && (
-            <div style={{ padding: 16 }}>
-              {/* 我 页面：周报与能力雷达 */}
+        </aside>
+        {/* 主内容 */}
+        <div className="content-area">
+          {view === 'mindmap' && <MindMapPage />}
+          {view === 'me' && (
+            <div>
               <h2>我的成长</h2>
               {/* 周报区域 */}
-              <div style={{ marginTop: 16, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div className="card">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <h3 style={{ margin: 0 }}>周报</h3>
-                  <button onClick={genWeek}>生成周报</button>
+                  <button className="btn" onClick={genWeek}>生成周报</button>
                 </div>
                 {weekReport ? (
                   <div style={{ marginTop: 12 }}>
@@ -1032,29 +981,30 @@ export default function App() {
                     </div>
                   </div>
                 ) : (
-                  <div style={{ marginTop: 12, color: "#888" }}>尚未生成周报</div>
+                  <div style={{ marginTop: 12, color: '#888' }}>尚未生成周报</div>
                 )}
               </div>
               {/* 雷达图区域 */}
-              <div style={{ marginTop: 24, border: "1px solid #eee", borderRadius: 12, padding: 16 }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div className="card">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                   <h3 style={{ margin: 0 }}>能力雷达图</h3>
                   <button
+                    className="btn"
                     onClick={async () => {
                       setLoadingRadar(true);
                       try {
-                        await invoke("ai_analyze_topics");
-                        setRadarTick((v) => v + 1);
+                        await invoke('ai_analyze_topics');
+                        setRadarTick(v => v + 1);
                       } catch (e) {
                         console.error(e);
-                        alert("刷新雷达失败");
+                        alert('刷新雷达失败');
                       } finally {
                         setLoadingRadar(false);
                       }
                     }}
                     disabled={loadingRadar}
                   >
-                    {loadingRadar ? "刷新中..." : "刷新雷达"}
+                    {loadingRadar ? '刷新中…' : '刷新雷达'}
                   </button>
                 </div>
                 <div style={{ marginTop: 12 }}>
@@ -1063,10 +1013,151 @@ export default function App() {
               </div>
             </div>
           )}
+          {view === 'note' && selectedNote && (
+            <NoteDetail note={selectedNote} onBack={handleBackToPlan} onChanged={refresh} />
+          )}
+          {view === 'plan' && selectedNoteId == null && (
+            <div>
+              <h2 style={{ marginBottom: 8 }}>很高兴见到你，我们一同成长吧！</h2>
+              {/* AI 设置折叠 */}
+              <div style={{ marginTop: 8, marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+                <button className="btn" onClick={async () => { setShowAISettings(v => !v); if (!showAISettings) await loadAIConfig(); }}>
+                  {showAISettings ? '收起 AI 设置' : 'AI 设置'}
+                </button>
+                {aiMsg && <div style={{ fontSize: 12, opacity: 0.8 }}>{aiMsg}</div>}
+              </div>
+              {showAISettings && (
+                <div className="card" style={{ marginTop: 8 }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '120px 1fr', rowGap: 8, columnGap: 8, alignItems: 'center' }}>
+                    <div>Provider</div>
+                    <select
+                      value={aiCfg.provider || ''}
+                      onChange={e => setAiCfg({ ...aiCfg, provider: e.target.value })}
+                    >
+                      <option value="">（未设置）</option>
+                      <option value="openai">OpenAI / 兼容</option>
+                      <option value="deepseek">DeepSeek</option>
+                      <option value="silicon">SiliconCloud</option>
+                      <option value="anthropic">Anthropic</option>
+                      <option value="ollama">Ollama（本地）</option>
+                    </select>
+                    <div>API Base</div>
+                    <input
+                      className="input"
+                      placeholder="https://api.openai.com/v1 或兼容地址"
+                      value={aiCfg.api_base || ''}
+                      onChange={e => setAiCfg({ ...aiCfg, api_base: e.target.value })}
+                    />
+                    <div>API Key</div>
+                    <input
+                      className="input"
+                      placeholder="sk-..."
+                      value={aiCfg.api_key || ''}
+                      onChange={e => setAiCfg({ ...aiCfg, api_key: e.target.value })}
+                      style={{ fontFamily: 'monospace' }}
+                    />
+                    <div>Model</div>
+                    <input
+                      className="input"
+                      placeholder="如 gpt-4o-mini / deepseek-chat / claude-3-5-sonnet 等"
+                      value={aiCfg.model || ''}
+                      onChange={e => setAiCfg({ ...aiCfg, model: e.target.value })}
+                    />
+                  </div>
+                  <div style={{ marginTop: 10, display: 'flex', gap: 8 }}>
+                    <button className="btn primary" onClick={saveAIConfig}>保存</button>
+                    <button className="btn" onClick={smokeAI}>冒烟自检</button>
+                  </div>
+                </div>
+              )}
+              {/* 搜索结果区块 */}
+              {results.length > 0 && (
+                <div style={{ marginTop: 24 }}>
+                  <h3>搜索结果</h3>
+                  <ul style={{ listStyle: 'none', padding: 0, margin: 0 }}>
+                    {results.map(hit => (
+                      <li key={hit.id} style={{ marginBottom: 16 }}>
+                        <div style={{ fontWeight: 600 }} onClick={() => handleSelectNote({ id: hit.id, title: hit.title, content: '', created_at: '' })}>{hit.title}</div>
+                        <div dangerouslySetInnerHTML={renderSnippet(hit.snippet)} />
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {/* 计划区块 */}
+              <div className="card">
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                  <h3 style={{ margin: 0 }}>计划</h3>
+                  <button className="btn" onClick={() => setShowPlans(v => !v)}>
+                    {showPlans ? '隐藏' : '显示'}
+                  </button>
+                </div>
+                {showPlans && <PlanPanel />}
+              </div>
+            </div>
+          )}
         </div>
-      );
-    })()
-    // ====== 新增导航分支 end ======
+      </div>
+      {/* AI 聊天按钮与抽屉 */}
+      {/* 当聊天窗口关闭时，显示浮动的聊天按钮；展开后隐藏 */}
+      {!chatOpen && (
+        <button
+          className="chat-toggle"
+          onClick={() => setChatOpen(true)}
+        >
+          KnoYoo AI
+        </button>
+      )}
+      {/* 聊天抽屉 */}
+      <div className={chatOpen ? 'chat-drawer open' : 'chat-drawer'}>
+        {/* 聊天头部：标题 + 折叠按钮 */}
+        {chatOpen && (
+          <div
+            style={{
+              padding: 12,
+              borderBottom: `1px solid var(--border-color)`,
+              display: 'flex',
+              justifyContent: 'space-between',
+              alignItems: 'center'
+            }}
+          >
+            <span style={{ fontWeight: 600 }}>与 AI 对话</span>
+            <button className="collapse-btn" onClick={() => setChatOpen(false)} title="收起聊天">
+              <FontAwesomeIcon icon={faChevronRight} />
+            </button>
+          </div>
+        )}
+        {!chatOpen && (
+          <div style={{ padding: 12, borderBottom: `1px solid var(--border-color)`, fontWeight: 600 }}>与 AI 对话</div>
+        )}
+        <div style={{ flex: 1, overflowY: 'auto', padding: 12 }}>
+          {chatMsgs.map((m, i) => (
+            <div key={i} style={{ marginBottom: 10, whiteSpace: 'pre-wrap' }}>
+              <div style={{ fontSize: 12, color: '#888' }}>{m.role === 'user' ? '我' : 'AI'}</div>
+              <div>{m.content}</div>
+            </div>
+          ))}
+          {chatMsgs.length === 0 && <div style={{ color: '#999' }}>开始提问吧～</div>}
+        </div>
+        <div style={{ padding: 12, borderTop: `1px solid var(--border-color)` }}>
+          <textarea
+            rows={3}
+            style={{ width: '100%', boxSizing: 'border-box', borderRadius: 8, padding: 8, border: '1px solid var(--border-color)', resize: 'vertical', background: 'rgba(255,255,255,0.8)', color: 'var(--text-color)' }}
+            placeholder="输入消息…"
+            value={chatInput}
+            onChange={e => setChatInput(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+                e.preventDefault(); sendChat();
+              }
+            }}
+          />
+          <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+            <button className="btn primary" onClick={sendChat}>发送（Ctrl/Cmd+Enter）</button>
+          </div>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1144,5 +1235,232 @@ function NoteItem({ note, onChanged }: { note: Note; onChanged: () => void }) {
         </div>
       )}
     </li>
+  );
+}
+
+// 新侧边栏笔记项组件，带高亮与选择逻辑
+function SidebarNoteItem({
+  note,
+  onChanged,
+  onSelect,
+  isActive = false,
+}: {
+  note: Note;
+  onChanged: () => void;
+  onSelect?: () => void;
+  isActive?: boolean;
+}) {
+  const [menuOpen, setMenuOpen] = React.useState(false);
+  const [editing, setEditing] = React.useState(false);
+  const [title, setTitle] = React.useState(note.title);
+  const [content, setContent] = React.useState(note.content);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    const onDoc = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setMenuOpen(false);
+      }
+    };
+    document.addEventListener("click", onDoc);
+    return () => document.removeEventListener("click", onDoc);
+  }, []);
+
+  const save = async () => {
+    await invoke("update_note", { id: note.id, title, content });
+    setEditing(false);
+    onChanged();
+  };
+
+  const del = async () => {
+    if (confirm("确认删除这条笔记？")) {
+      await invoke("delete_note", { id: note.id });
+      onChanged();
+    }
+  };
+
+  const autoClassify = async () => {
+    try {
+      await invoke("classify_note_embed", { noteId: note.id });
+    } catch {
+      await invoke("classify_and_update", { noteId: note.id });
+    }
+    onChanged();
+  };
+
+  const handleSelect = () => {
+    if (!editing && !menuOpen) {
+      onSelect?.();
+    }
+  };
+
+  return (
+    <li
+      className={"note-row" + (isActive ? " active" : "")}
+      onClick={handleSelect}
+      style={{ position: "relative" }}
+    >
+      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+        <span className="note-title" style={{ flex: 1, fontWeight: 600 }}>
+          {note.title}
+        </span>
+        <button
+          className="menu-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            setMenuOpen((v) => !v);
+          }}
+          title="更多"
+        >
+          ⋯
+        </button>
+        {menuOpen && (
+          <div
+            ref={menuRef}
+            className="menu"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {!editing && (
+              <>
+                <button onClick={() => setEditing(true)}>编辑</button>
+                <button onClick={del}>删除</button>
+                <button onClick={autoClassify}>自动归类</button>
+              </>
+            )}
+          </div>
+        )}
+      </div>
+      <div className="note-date">{note.created_at}</div>
+      {editing && (
+        <div
+          className="note-editor-inline"
+          onClick={(e) => e.stopPropagation()}
+        >
+          <input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+          />
+          <textarea
+            rows={4}
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+          />
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn primary" onClick={save}>保存</button>
+            <button className="btn" onClick={() => setEditing(false)}>取消</button>
+          </div>
+        </div>
+      )}
+    </li>
+  );
+}
+
+/**
+ * 笔记详情视图：在主内容区展示单条笔记，提供查看、编辑、删除和自动归类等操作。
+ */
+function NoteDetail({
+  note,
+  onBack,
+  onChanged,
+}: {
+  note: Note;
+  onBack: () => void;
+  onChanged: () => void;
+}) {
+  const [editing, setEditing] = React.useState(false);
+  const [title, setTitle] = React.useState(note.title);
+  const [content, setContent] = React.useState(note.content);
+  const [saving, setSaving] = React.useState(false);
+
+  const save = async () => {
+    if (!title.trim() || !content.trim()) return;
+    setSaving(true);
+    try {
+      await invoke("update_note", { id: note.id, title, content });
+      setEditing(false);
+      onChanged();
+    } catch (e) {
+      console.error(e);
+      alert("保存失败：" + e);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const del = async () => {
+    if (confirm("确认删除这条笔记？")) {
+      try {
+        await invoke("delete_note", { id: note.id });
+        onChanged();
+        onBack();
+      } catch (e) {
+        console.error(e);
+        alert("删除失败：" + e);
+      }
+    }
+  };
+
+  const autoClassify = async () => {
+    try {
+      await invoke("classify_note_embed", { noteId: note.id });
+    } catch {
+      await invoke("classify_and_update", { noteId: note.id });
+    }
+    onChanged();
+  };
+
+  return (
+    <div className="card" style={{ position: "relative" }}>
+      {/* 返回按钮 */}
+      <button
+        className="btn"
+        onClick={onBack}
+        style={{ position: "absolute", top: 0, left: 0, margin: 8 }}
+      >
+        <FontAwesomeIcon icon={faArrowLeft} /> 返回
+      </button>
+      {/* 主体内容 */}
+      <div style={{ paddingTop: 32 }}>
+        {editing ? (
+          <>
+            <input
+              className="input"
+              value={title}
+              onChange={(e) => setTitle(e.target.value)}
+              placeholder="标题"
+            />
+            <textarea
+              className="textarea"
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              placeholder="正文内容…"
+              rows={8}
+            />
+            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+              <button
+                className="btn primary"
+                onClick={save}
+                disabled={saving}
+              >
+                {saving ? "保存中…" : "保存"}
+              </button>
+              <button className="btn" onClick={() => setEditing(false)}>取消</button>
+            </div>
+          </>
+        ) : (
+          <>
+            <h3 style={{ marginTop: 0 }}>{note.title}</h3>
+            <div style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{note.content}</div>
+          </>
+        )}
+        {!editing && (
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button className="btn" onClick={() => setEditing(true)}>编辑</button>
+            <button className="btn" onClick={autoClassify}>自动归类</button>
+            <button className="btn" onClick={del}>删除</button>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }

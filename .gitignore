@@ -53,6 +53,8 @@ Thumbs.db
 *.sln
 *.tmp
 *.bak
+*.db
+
 
 # Tauri bundle output (if any)
 **/bundle/
