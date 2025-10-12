@@ -1022,6 +1022,13 @@ struct Note {
     created_at: String,
 }
 
+/// 记录日期与数量，用于返回每天笔记贡献的统计结构体
+#[derive(serde::Serialize)]
+struct DateCount {
+    date: String,
+    count: i64,
+}
+
 /// 分页列表：page 从 1 开始，page_size 默认 10
 #[tauri::command]
 fn list_notes(page: Option<u32>, page_size: Option<u32>) -> Result<Vec<Note>, String> {
@@ -2558,6 +2565,36 @@ fn count_notes() -> Result<i64, String> {
     Ok(n)
 }
 
+/// 统计最近指定天数内每天的笔记新增数量。
+/// 返回的向量包含日期字符串（YYYY-MM-DD）及对应的笔记数量，按日期升序排列。
+#[tauri::command]
+fn list_note_contributions(days: u32) -> Result<Vec<DateCount>, String> {
+    use rusqlite::params;
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT substr(created_at, 1, 10) AS d, COUNT(*) AS c \
+             FROM notes \
+             WHERE date(created_at) >= date('now', '-' || ?1 || ' day') \
+             GROUP BY d \
+             ORDER BY d ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(params![days], |row| {
+            Ok(DateCount {
+                date: row.get::<_, String>(0)?,
+                count: row.get::<_, i64>(1)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut res = Vec::new();
+    for r in rows {
+        res.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(res)
+}
+
 #[tauri::command]
 fn get_plan_goal() -> Result<String, String> {
     let conn = open_db()?;
@@ -2971,6 +3008,7 @@ fn main() {
             ai_analyze_topics,
             list_ai_topics_top8,
             count_notes,
+            list_note_contributions,
             get_plan_goal,
             set_plan_goal,
             generate_plan_by_range,

@@ -15,11 +15,12 @@ import {
   faChevronLeft,
   faChevronRight,
   faArrowLeft,
-  faEllipsisVertical
+  faEllipsisVertical,
+  faMicrophone,
+  faStop,
+  faXmark,
+  faCircleXmark
 } from "@fortawesome/free-solid-svg-icons";
-
-// 本文件是前端的主视图组件，负责记笔记、搜索、计划管理、行业树、个人设置等功能。
-// 通过使用 React hooks 管理状态，并与后端 (Tauri) 命令交互完成数据的增删查改。
 
 
 // 给控制台用的临时桥
@@ -61,11 +62,7 @@ function DebugCounts() {
 
 type SkillGapRow = { name: string; required_level: number; mastery: number; gap: number };
 
-// RadarPanel 组件渲染一个雷达图，显示八个顶级技能维度的掌握度。
-// 通过调用后端接口获取技能得分，并在 SVG 中绘制多边形和交互提示。
-
- // 渲染雷达图面板，支持外部通过 reloadKey 触发刷新
- function RadarPanel({ reloadKey = 0 }: { reloadKey?: number }) {
+function RadarPanel({ reloadKey = 0 }: { reloadKey?: number }) {
   const [data, setData] = useState<SkillGapRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [, setMsg] = useState("");
@@ -220,6 +217,111 @@ type SkillGapRow = { name: string; required_level: number; mastery: number; gap:
   );
 }
 
+/**
+ * ContributionsCard 组件用于在个人成长页面展示用户最近四个月的每日贡献情况。
+ * 左侧为 16×7 的方格矩阵，对应约 4 个月（112 天），颜色深浅代表每日新增笔记数量；
+ * 右侧为一条折线图，展示同一时间范围内每日笔记数的变化趋势。
+ */
+function ContributionsCard() {
+  // contributions 数据：数组元素包含日期字符串和对应的笔记数量
+  const [counts, setCounts] = useState<Array<{ date: string; count: number }>>([]);
+
+  useEffect(() => {
+    // 查询最近 120 天内的每日笔记数量，若接口不可用则忽略错误
+    (async () => {
+      try {
+        const res = await invoke<Array<{ date: string; count: number }>>("list_note_contributions", { days: 120 });
+        setCounts(res || []);
+      } catch (e) {
+        console.error(e);
+      }
+    })();
+  }, []);
+
+  // 生成最近 112 天的日期列表（含今天），并查找对应的数量
+  const today = new Date();
+  const dates: { date: string; count: number }[] = [];
+  for (let i = 111; i >= 0; i--) {
+    const d = new Date(today.getTime() - i * 86400000);
+    const ds = d.toISOString().slice(0, 10);
+    const found = counts.find((c) => c.date === ds);
+    dates.push({ date: ds, count: found ? found.count : 0 });
+  }
+  // 提取最大值用于折线图纵轴缩放
+  const maxCount = dates.reduce((m, c) => Math.max(m, c.count), 0) || 1;
+
+  // 构建折线图路径字符串
+  const chartWidth = 320;
+  const chartHeight = 80;
+  const pts = dates.map((c, idx) => {
+    const x = (chartWidth / (dates.length - 1)) * idx;
+    const y = chartHeight - (c.count / maxCount) * chartHeight;
+    return [x, y];
+  });
+  const pathD = pts.map((p, idx) => `${idx === 0 ? 'M' : 'L'}${p[0]},${p[1]}`).join(' ');
+
+  // 颜色映射：根据数量决定方格颜色
+  function colorForCount(cnt: number): string {
+    if (cnt === 0) return '#e5e7eb'; // 灰色
+    if (cnt === 1) return '#c7d2fe'; // 浅紫
+    if (cnt === 2) return '#a5b4fc';
+    if (cnt === 3) return '#818cf8';
+    return '#6366f1'; // 最深
+  }
+
+  return (
+    <div className="card">
+      <h3 style={{ marginTop: 0 }}>每日贡献</h3>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        {/* 左侧方格矩阵 */}
+        <div
+          style={{
+            display: 'grid',
+            gridTemplateColumns: `repeat(16, 12px)`,
+            gridTemplateRows: `repeat(7, 12px)`,
+            gap: 2,
+          }}
+        >
+          {dates.map((c, idx) => (
+            <div
+              key={c.date}
+              title={`${c.date} : ${c.count}`}
+              style={{
+                width: 12,
+                height: 12,
+                borderRadius: 2,
+                background: colorForCount(c.count),
+              }}
+            />
+          ))}
+        </div>
+        {/* 右侧折线图 */}
+        <div style={{ flex: 1, minWidth: 200 }}>
+          <svg width={chartWidth} height={chartHeight + 20}>
+            {/* 折线 */}
+            <path d={pathD} fill="none" stroke="#4f46e5" strokeWidth={2} />
+            {/* 圆点 */}
+            {pts.map((p, idx) => (
+              <circle key={idx} cx={p[0]} cy={p[1]} r={2} fill="#4f46e5" />
+            ))}
+            {/* 横线刻度：4 条分隔 */}
+            {[0.25, 0.5, 0.75, 1].map((f, i) => {
+              const y = chartHeight - f * chartHeight;
+              const val = Math.round(f * maxCount);
+              return (
+                <g key={i}>
+                  <line x1={0} y1={y} x2={chartWidth} y2={y} stroke="#e5e7eb" strokeDasharray="2 2" />
+                  <text x={chartWidth + 4} y={y + 4} fontSize={9} fill="#6b7280">{val}</text>
+                </g>
+              );
+            })}
+          </svg>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function App() {
   // App 组件是应用的主要容器，包含记笔记列表、计划管理面板、AI 设置、行业树视图等子面板。
   // 使用大量 useState/useEffect hooks 来管理输入状态、分页、视图切换及与后端的交互。
@@ -250,6 +352,21 @@ export default function App() {
   const pageSize = 10;
   const [totalNotes, setTotalNotes] = useState(0);
   const totalPages = Math.max(1, Math.ceil(totalNotes / pageSize));
+
+  // ==== 语音录入相关状态 ====
+  // speechLang 表示语音识别的语言，默认中文，可选英文。
+  const [speechLang, setSpeechLang] = useState('zh-CN');
+  // listening 表示当前是否正在录音，避免重复启动识别
+  const [listening, setListening] = useState(false);
+  // recognitionRef 用于保存 SpeechRecognition 实例，以便在作用域内访问
+  const recognitionRef = useRef<any>(null);
+
+  // 累积语音识别结果的临时缓存，用于手动停止录音时一次性处理
+  const transcriptRef = useRef<string>('');
+
+  // voiceTarget 标识当前语音录入的目标字段：'title' 或 'content'，用于确定识别结果写入哪个输入框
+  // 当为 null 时，识别完成后默认同时写入标题和正文，并触发保存提示。
+  const [voiceTarget, setVoiceTarget] = useState<'title' | 'content' | null>(null);
 
   // ===== 新增：全局视图状态与侧栏控制 =====
   // view 表示当前主内容区显示的页面：plan（默认）、note（查看笔记）、mindmap（行业树）、me（个人中心）
@@ -328,34 +445,87 @@ export default function App() {
     }
   }
 
-  // async function onEdit(n: Note) {
-  //   setEditingId(n.id);
-  //   setTitle(n.title);
-  //   setContent(n.content);
-  // }
+  /**
+   * 启动语音录入：使用浏览器的 Web Speech API 将语音转换为文本，并填充到笔记表单中。
+   * 根据 speechLang 决定识别语言（默认中文，可选英文）。识别完成后，如果用户确认，则立即调用 onSave 保存笔记。
+   */
+  function startVoiceInput() {
+    try {
+      const SpeechRecognition: any = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        alert('当前浏览器不支持语音识别');
+        return;
+      }
+      const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
+      // 清空之前累计的语音文本
+      transcriptRef.current = '';
+      // 开启连续语音识别，需要手动调用 stop() 才会结束
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = speechLang;
+      recognition.onstart = () => {
+        setListening(true);
+      };
+      recognition.onend = () => {
+        // 识别结束时，仅重置录音状态，结果处理由 stopVoiceInput 控制
+        setListening(false);
+      };
+      recognition.onerror = (e: any) => {
+        console.error(e);
+        alert('语音识别出现错误，请重试');
+        setListening(false);
+      };
+      recognition.onresult = (e: any) => {
+        // 累积识别结果，每次返回的 results 中可能包含多段文本
+        for (let i = e.resultIndex; i < e.results.length; i++) {
+          const t: string = e.results[i][0].transcript || '';
+          transcriptRef.current += t;
+        }
+      };
+      recognition.start();
+    } catch (err) {
+      console.error(err);
+      alert('无法启动语音识别');
+    }
+  }
 
-  // async function onDelete(id: number) {
-  //   if (!confirm("确认删除？")) return;
-  //   await invoke("delete_note", { id });
-  //   await refresh();
-  // }
+  /**
+   * 停止录音：手动结束语音识别并处理累积的识别结果。
+   * 当用户点击停止录音按钮时触发，将当前累积的 transcript 填入笔记表单，并询问是否保存。
+   */
+  function stopVoiceInput() {
+    const rec: any = recognitionRef.current;
+    if (rec) {
+      try {
+        rec.stop();
+      } catch (_) {
+        // ignore
+      }
+    }
+    setListening(false);
+    const finalText = transcriptRef.current.trim();
+    if (finalText) {
+      // 根据 voiceTarget 确定将识别结果填入标题或正文
+      if (voiceTarget === 'title') {
+        setTitle(finalText);
+      } else if (voiceTarget === 'content') {
+        setContent(finalText);
+      } else {
+        // 未指定目标时，默认填充正文并生成标题摘要
+        setContent(finalText);
+        setTitle(finalText.substring(0, Math.min(20, finalText.length)));
+        // 同时询问用户是否立即保存为笔记
+        if (confirm(`识别到文本：${finalText}\n是否立即保存为笔记？`)) {
+          onSave();
+        }
+      }
+    }
+    // 清空缓存和目标
+    transcriptRef.current = '';
+    setVoiceTarget(null);
+  }
 
-  // async function aiClassifyLocal(noteId: number) {
-  //   try {
-  //     const hits = await invoke<Array<{ skill_id:number; name:string; delta:number; new_mastery:number }>>(
-  //       "classify_note_embed", { noteId }
-  //     );
-  //     if (Array.isArray(hits) && hits.length > 0) {
-  //       const msg = hits.map(h => `${h.name} +${h.delta} → ${h.new_mastery}`).join("，");
-  //       alert("AI归类（本地）：" + msg);
-  //     } else {
-  //       alert("AI未找到明显匹配（分数低于阈值）");
-  //     }
-  //   } catch (e:any) {
-  //     alert("AI归类失败：" + String(e));
-  //     console.error(e);
-  //   }
-  // }
 
   async function onSearch() {
     // 调用全文搜索接口，根据关键字检索笔记标题与内容，并高亮命中片段。
@@ -448,12 +618,14 @@ export default function App() {
     // 编辑态
     const [editId, setEditId] = useState<number | null>(null);
     const [eTitle, setETitle] = useState("");
+    // 不再展示分钟字段，但仍保留内部状态以传递原值
     const [eMinutes, setEMinutes] = useState("");
     const [eDue, setEDue] = useState("");
 
+    // 新计划表单字段：标题、起止日期
     const [newTitle, setNewTitle] = useState("");
-    const [newMinutes, setNewMinutes] = useState<number>(60);
-    const [newDue, setNewDue] = useState<string>(""); // 形如 "2025-09-19"
+    const [newStart, setNewStart] = useState<string>("");
+    const [newEnd, setNewEnd] = useState<string>("");
 
     // 新增计划的折叠
     const [showAddPlan, setShowAddPlan] = useState(false);
@@ -505,21 +677,22 @@ export default function App() {
     }
 
     function startEdit(t: PlanTask) {
-      // 初始化编辑模式，将当前任务的字段填入输入框。
+      // 开始编辑任务：设置编辑状态，并填充任务信息。
       setEditId(t.id);
       setETitle(t.title);
+      // 保存原分钟数以便提交时使用，虽然不再在界面中显示
       setEMinutes(String(t.minutes ?? 0));
       setEDue(t.due ?? "");
     }
     function cancelEdit() {
-      // 退出编辑模式，清空编辑字段。
+      // 取消编辑：清除编辑状态和信息。
       setEditId(null);
       setETitle("");
       setEMinutes("");
       setEDue("");
     }
     async function saveEdit(id: number) {
-      // 保存编辑后的任务信息：标题、分钟数、截止日期。
+      // 保存编辑：更新任务信息，并重新加载列表。
       const minutes = Number.parseInt(eMinutes || "0", 10);
       const due = eDue.trim() === "" ? null : eDue.trim();
       await invoke("update_plan_task", { id, title: eTitle, minutes, due });
@@ -528,8 +701,7 @@ export default function App() {
     }
 
     async function onAddPlanQuick() {
-      // 以当前输入的标题、分钟数和日期新增一条计划任务。
-      // 若未指定具体技能，则传入 null。
+      // 快速新增任务：根据输入标题和截止日期，调用 add_plan_task 命令创建新任务。
       const t = newTitle.trim();
       if (!t) { alert("标题必填"); return; }
       try {
@@ -537,10 +709,13 @@ export default function App() {
           horizon: horizon,
           skillId: null,           // 若后续想支持绑定具体 skill，可在此传 id
           title: t,
-          minutes: newMinutes || 60,
-          due: newDue || null
+          minutes: 60,
+          due: newEnd || null
         });
-        setNewTitle(""); setNewMinutes(60); setNewDue("");
+        // 清空表单字段
+        setNewTitle("");
+        setNewStart("");
+        setNewEnd("");
         await load();
       } catch (e:any) {
         alert("新增失败：" + String(e));
@@ -548,6 +723,7 @@ export default function App() {
     }
 
     function renderRow(t: PlanTask) {
+      // 渲染单行任务：根据编辑状态决定显示内容。
       const editing = editId === t.id;
       return (
         <li
@@ -570,10 +746,9 @@ export default function App() {
                   {t.title}
                 </div>
                 <div style={{ fontSize: 12, opacity: 0.8 }}>
-                  {`min: ${t.minutes ?? "-"}`}
                   {t.due ? (
                     <>
-                      {" • due: "}
+                      {"截止日期: "}
                       <span style={{ color: isOverdue(t) ? "#d32f2f" : "inherit" }}>{t.due}</span>
                     </>
                   ) : ""}
@@ -581,29 +756,19 @@ export default function App() {
                 </div>
               </>
             ) : (
-              <div style={{ display: "grid", gap: 8 }}>
+                <div style={{ display: "grid", gap: 8 }}>
                 <input
                   value={eTitle}
                   onChange={(e) => setETitle(e.target.value)}
-                  placeholder="title"
+                  placeholder="标题"
                   style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
                 />
-                <div style={{ display: "flex", gap: 8 }}>
-                  <input
-                    type="number"
-                    min={0}
-                    value={eMinutes}
-                    onChange={(e) => setEMinutes(e.target.value)}
-                    placeholder="minutes"
-                    style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd", width: 120 }}
-                  />
-                  <input
-                    type="date"
-                    value={eDue}
-                    onChange={(e) => setEDue(e.target.value)}
-                    style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
-                  />
-                </div>
+                <input
+                  type="date"
+                  value={eDue}
+                  onChange={(e) => setEDue(e.target.value)}
+                  style={{ padding: 6, borderRadius: 6, border: "1px solid #ddd" }}
+                />
               </div>
             )}
           </div>
@@ -628,6 +793,7 @@ export default function App() {
     }
 
     function groupTasks(list: PlanTask[]): Array<[string, PlanTask[]]> {
+      // 按日期和状态分组任务：将任务分为逾期、今天、本周、以后、无截止、已完成等类别。
       const today = new Date().toISOString().slice(0, 10);              // YYYY-MM-DD
       const endOfWeek = new Date(Date.now() + 6 * 86400000).toISOString().slice(0, 10);
 
@@ -658,66 +824,18 @@ export default function App() {
         .map(([k, label]) => [label, buckets[k]]);
     }
 
-    const [goal, setGoal] = useState("");
-    const [savedGoal, setSavedGoal] = useState("");
-    const [startDate, setStartDate] = useState(() => new Date().toISOString().slice(0,10));
-    const [endDate, setEndDate] = useState(() => {
-      const d = new Date(Date.now() + 6*86400000); return d.toISOString().slice(0,10);
-    });
-    useEffect(() => {
-      (async () => {
-        try {
-          const g = await invoke<string>("get_plan_goal");
-          setGoal(g || "");
-          setSavedGoal(g || "");
-        } catch {}
-      })();
-    }, []);
-    async function saveGoal() {
-      try {
-        await invoke("set_plan_goal", { goal });
-        setSavedGoal(goal);
-      } catch(e){}
-    }
-    async function genByRange() {
-      setLoading(true);
-      try {
-        const created = await invoke("ai_generate_plan_by_range", { start: startDate, end: endDate, goal });
-        await load(true);
-        setMsg(Array.isArray(created) && created.length>0 ? `生成 ${created.length} 条` : "未生成新任务（可能已有未完成或差距不足）");
-      } catch (e:any) {
-        setMsg(String(e));
-      } finally { setLoading(false); }
-    }
+    // 取消总目标与 AI 生成计划相关逻辑，不再保存/获取目标，也不再自动生成计划
 
     return (
       <div style={{ padding: 16, border: "1px solid #eee", borderRadius: 12, marginTop: 16 }}>
 
 
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 8, alignItems: "center", marginBottom: 8 }}>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <label>总目标</label>
-            <input value={goal} onChange={e=>setGoal(e.target.value)} placeholder="例如：入门数据分析拿到实习" style={{ width: 260, padding: 6, borderRadius: 6, border: "1px solid #ddd" }}/>
-            <button onClick={saveGoal}>确认</button>
-          </div>
-          {savedGoal && (
-            <div style={{ marginTop: 6, color: "#555" }}>
-              当前目标：{savedGoal}
-            </div>
-          )}
-
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-            <span>起止</span>
-            <input type="date" value={startDate} onChange={e=>setStartDate(e.target.value)} />
-            <span>→</span>
-            <input type="date" value={endDate} onChange={e=>setEndDate(e.target.value)} />
-            <button onClick={genByRange} disabled={loading}>生成计划</button>
-          </div>
-
-          <label style={{ marginLeft: 8 }}>
+        {/* 顶部筛选控制：只看未完成 / 分组显示 */}
+        <div style={{ display: "flex", flexWrap: "wrap", gap: 12, alignItems: "center", marginBottom: 8 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <input type="checkbox" checked={onlyTodo} onChange={e=>setOnlyTodo(e.target.checked)} /> 只看未完成
           </label>
-          <label style={{ marginLeft: 8 }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
             <input type="checkbox" checked={grouped} onChange={e=>setGrouped(e.target.checked)} /> 分组显示
           </label>
         </div>
@@ -731,27 +849,34 @@ export default function App() {
 
         {/* 折叠表单，仅在展开时渲染 */}
         {showAddPlan && (
-          <div style={{
-            display: "flex", gap: 8, alignItems: "center",
-            margin: "8px 0", padding: 8, border: "1px dashed #ddd", borderRadius: 8
-          }}>
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              alignItems: 'center',
+              margin: '8px 0',
+              padding: 8,
+              border: '1px dashed #ddd',
+              borderRadius: 8,
+              flexWrap: 'wrap'
+            }}
+          >
             <input
               value={newTitle}
               onChange={(e) => setNewTitle(e.target.value)}
-              placeholder="新增任务标题..."
+              placeholder="新增计划标题..."
               style={{ padding: 6, borderRadius: 6, width: 240 }}
             />
             <input
-              type="number"
-              value={newMinutes}
-              onChange={(e) => setNewMinutes(parseInt(e.target.value || "0", 10))}
-              placeholder="分钟"
-              style={{ width: 90, padding: 6, borderRadius: 6 }}
+              type="date"
+              value={newStart}
+              onChange={(e) => setNewStart(e.target.value)}
+              style={{ padding: 6, borderRadius: 6 }}
             />
             <input
               type="date"
-              value={newDue}
-              onChange={(e) => setNewDue(e.target.value)}
+              value={newEnd}
+              onChange={(e) => setNewEnd(e.target.value)}
               style={{ padding: 6, borderRadius: 6 }}
             />
             <button onClick={onAddPlanQuick}>添加计划</button>
@@ -893,22 +1018,48 @@ export default function App() {
                   <FontAwesomeIcon icon={faPlus} />
                 </button>
               </div>
-              {/* 新增笔记表单 */}
+              {/* 新增笔记表单 
+              笔记表单是*/}
+              
               {showAddNote && (
-                <div style={{ padding: '0 12px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+                <div className="card" style={{ padding: 12, display: 'flex', flexDirection: 'column', gap: 8 }}>
                   <input
                     className="input"
                     value={title}
                     onChange={(e) => setTitle(e.target.value)}
+                    onFocus={() => setVoiceTarget('title')}
                     placeholder="标题"
                   />
                   <textarea
                     className="textarea"
                     value={content}
                     onChange={(e) => setContent(e.target.value)}
+                    onFocus={() => setVoiceTarget('content')}
                     placeholder="正文内容…"
                     rows={4}
                   />
+                  {/* 语音录入控件：语言选择和录音按钮 */}
+                  <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                    {/* 语言选择，下拉框，可选中文或英文 */}
+                    <select
+                      className="input"
+                      style={{ width: 'auto' }}
+                      value={speechLang}
+                      onChange={(e) => setSpeechLang((e.target as HTMLSelectElement).value)}
+                    >
+                      <option value="zh-CN">中文</option>
+                      <option value="en-US">English</option>
+                    </select>
+                    <button className="btn" onClick={startVoiceInput} disabled={listening}>
+                      <FontAwesomeIcon icon={faMicrophone} style={{ marginRight: 4 }} />
+                      {listening ? '录音中…' : '录音'}
+                    </button>
+                    {/* 停止录音按钮：只有在录音过程中可点击 */}
+                    <button className="btn" onClick={stopVoiceInput} disabled={!listening}>
+                      <FontAwesomeIcon icon={faStop} style={{ marginRight: 4 }} />
+                      停止
+                    </button>
+                  </div>
                   <div style={{ display: 'flex', gap: 8 }}>
                     <button className="btn primary" onClick={onSave} disabled={saving}>
                       {saving ? '保存中…' : (editingId ? '更新' : '保存')}
@@ -1018,6 +1169,8 @@ export default function App() {
                   <RadarPanel reloadKey={radarTick} />
                 </div>
               </div>
+              {/* 每日贡献与趋势折线图 */}
+              <ContributionsCard />
             </div>
           )}
           {view === 'note' && selectedNote && (

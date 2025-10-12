@@ -1,4 +1,7 @@
 import React, {useEffect, useMemo, useState, useRef } from "react";
+// 导入 FontAwesomeIcon 和圆形 × 图标，用于根节点删除按钮
+import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
+import { faCircleXmark } from "@fortawesome/free-solid-svg-icons";
 
 type IndustryNode = {
   id: number;
@@ -137,22 +140,68 @@ export default function MindMapPage() {
   const nodeH = 36;
   const padLeft = 40;
 
+  /*
+   * === 动态节点宽度相关定义 ===
+   * 我们希望节点框能够根据名称长度自适应宽度，而不是固定值或简单截断。
+   * baseNodeW：最小基础宽度；maxNodeW：最大允许宽度；getNodeWidth：根据名称字符数估算宽度。
+   * widthMap：缓存当前树中每个节点 id 对应的动态宽度。
+   */
+  const baseNodeW = 160;
+  const maxNodeW = 400;
+  const getNodeWidth = (name: string) => {
+    // 按字符长度估算宽度：为避免过于拥挤，给固定的左右内边距，并限制最小/最大宽度
+    const len = name?.trim().length || 0;
+    // 对中文字符而言，每个字宽度更大，约 14px 左右；适当增大基数以避免长文本溢出
+    const estimated = 24 + len * 14;
+    return Math.min(maxNodeW, Math.max(baseNodeW, estimated));
+  };
+  // 根据当前树生成 id → 宽度的映射，用 useMemo 缓存避免重复计算。
+  const widthMap = useMemo(() => {
+    const map = new Map<number, number>();
+    const traverse = (n: IndustryNode) => {
+      map.set(n.id, getNodeWidth(n.name));
+      (n.children || []).forEach(traverse);
+    };
+    tree.forEach(traverse);
+    return map;
+  }, [tree]);
+
   // 计算每个节点坐标
+  // 使用动态列宽：根据每个节点名称的长度估算节点宽度，并在每层取最大宽度。
+  // 通过累加每列宽度 + 间距计算每一层的起始 x 坐标，使不同层之间不会重叠。
   const layout = useMemo(() => {
     const pos = new Map<number, Point>();
-    // 遍历每层节点，将节点按照固定列间距和行间距进行布局
+    // 计算每层的最大节点宽度
+    const colWidths: number[] = [];
+    layers.forEach((nodes, depth) => {
+      let maxW = 0;
+      nodes.forEach(n => {
+        const w = widthMap.get(n.id) ?? baseNodeW;
+        if (w > maxW) maxW = w;
+      });
+      colWidths[depth] = maxW;
+    });
+    // 根据列宽累加得到每层起始 x
+    const xPositions: number[] = [];
+    let x = padLeft;
+    const colGapDynamic = 60; // 固定列间距，避免节点过于拥挤
+    colWidths.forEach((w, depth) => {
+      xPositions[depth] = x;
+      x += w + colGapDynamic;
+    });
+    // 布局每个节点
     layers.forEach((nodes, depth) => {
       const totalH = (nodes.length - 1) * rowGap;
       const offsetY = (height - totalH) / 2;
       nodes.forEach((n, i) => {
         pos.set(n.id, {
-          x: padLeft + depth * colGap,
+          x: xPositions[depth],
           y: offsetY + i * rowGap
         });
       });
     });
     return pos;
-  }, [layers]);
+  }, [layers, widthMap]);
 
 // 递归在树中寻找指定 id 的节点
 function findNodeById(roots: IndustryNode[], id: number): IndustryNode | null {
@@ -215,15 +264,28 @@ function extractSubtree(roots: IndustryNode[], id: number): IndustryNode | null 
 // 把一组节点的“包围盒中心”居中显示（基于当前 layout/scale）
 function centerOnNodeIds(ids: number[]) {
   // 计算这些节点在世界坐标系下的最小外接矩形，将其中心对齐到视图中心
+  // 收集各节点的布局点；若没有则直接返回
   const pts = ids.map(id => layout.get(id)).filter(Boolean) as Point[];
   if (pts.length === 0) return;
-  const minX = Math.min(...pts.map(p => p.x));
-  const maxX = Math.max(...pts.map(p => p.x));
+  // 根据动态宽度计算每个节点的左边界和右边界
+  const minX = Math.min(
+    ...ids.map(id => {
+      const p = layout.get(id);
+      return p ? p.x : 0;
+    }),
+  );
+  const maxX = Math.max(
+    ...ids.map(id => {
+      const p = layout.get(id);
+      const w = widthMap.get(id) ?? baseNodeW;
+      return p ? p.x + w : 0;
+    }),
+  );
   const minY = Math.min(...pts.map(p => p.y));
   const maxY = Math.max(...pts.map(p => p.y));
-  const cxWorld = (minX + maxX) / 2 + nodeW / 2;
+  // 节点高度固定，因此在垂直方向上加上半个节点高度
+  const cxWorld = (minX + maxX) / 2;
   const cyWorld = (minY + maxY) / 2 + nodeH / 2;
-
   const cx = width / 2 - cxWorld * scale;
   const cy = height / 2 - cyWorld * scale;
   setPan({ x: cx, y: cy });
@@ -236,7 +298,9 @@ function centerOnNodeIds(ids: number[]) {
     // 自动居中到被点击的节点
     const p = layout.get(node.id);
     if (p) {
-      const cx = width / 2 - (p.x + nodeW / 2) * scale;
+      // 使用动态宽度居中选中的节点：x 坐标 + 宽度的一半
+      const w = widthMap.get(node.id) ?? baseNodeW;
+      const cx = width / 2 - (p.x + w / 2) * scale;
       const cy = height / 2 - (p.y + nodeH / 2) * scale;
       setPan({ x: cx, y: cy });
     }
@@ -254,13 +318,20 @@ function centerOnNodeIds(ids: number[]) {
       const p = layout.get(n.id);
       (n.children || []).forEach(c => {
         const q = layout.get(c.id);
-        if (p && q) list.push({ from: { x: p.x + nodeW, y: p.y + nodeH / 2 }, to: { x: q.x, y: q.y + nodeH / 2 } });
+        if (p && q) {
+          // 使用动态宽度计算父节点出口点：节点右侧 x 坐标 = x + 宽度
+          const parentW = widthMap.get(n.id) ?? baseNodeW;
+          list.push({
+            from: { x: p.x + parentW, y: p.y + nodeH / 2 },
+            to: { x: q.x, y: q.y + nodeH / 2 },
+          });
+        }
         walk(c);
       });
     };
     tree.forEach(walk);
     return list;
-  }, [tree, layout]);
+  }, [tree, layout, widthMap]);
 
   
   const addCustomRoot = async () => {
@@ -400,9 +471,11 @@ function centerOnNodeIds(ids: number[]) {
                       console.error(e); alert(`删除失败：${e?.message ?? String(e)}`);
                     }
                   }}
-                  style={{ border: "none", background: "transparent", color: "#ef4444", cursor: "pointer" }}
+                  className="root-delete-btn"
                   title="删除该根"
-                >×</button>
+                >
+                  <FontAwesomeIcon icon={faCircleXmark} />
+                </button>
               </span>
             ))}
             {/* 根列表右侧，新增一键清空 */}
@@ -420,11 +493,13 @@ function centerOnNodeIds(ids: number[]) {
                   alert(`清空失败：${e?.message ?? String(e)}`);
                 }
               }}
+              className="btn"
               style={{ marginLeft: 8, flex: "0 0 auto" }}
             >
-              清空根节点
+              清空历史记录
             </button>
             <button
+              className="btn"
               onClick={() => {
                 // 收集所有节点 ID 并居中整个树
                 const ids: number[] = [];
@@ -470,7 +545,7 @@ function centerOnNodeIds(ids: number[]) {
               ×
             </button>
           </div>
-          <button onClick={onSaveTree} style={{ marginTop: 8, marginBottom: 12 }}>
+          <button className="btn" onClick={onSaveTree} style={{ marginTop: 8, marginBottom: 12 }}>
             保存当前行业树
           </button>
           {savedTrees.length === 0 ? (
@@ -495,6 +570,7 @@ function centerOnNodeIds(ids: number[]) {
                   </div>
                   <div style={{ marginTop: 4, display: "flex", gap: 4 }}>
                     <button
+                      className="btn"
                       onClick={async () => {
                         try {
                           const loaded = await tauriInvoke<IndustryNode[]>(
@@ -525,6 +601,7 @@ function centerOnNodeIds(ids: number[]) {
                       加载
                     </button>
                     <button
+                      className="btn"
                       onClick={async () => {
                         if (!confirm(`确认删除行业树“${t.name}”吗？`)) return;
                         try {
@@ -549,13 +626,15 @@ function centerOnNodeIds(ids: number[]) {
         <h2 style={{ margin: 0 }}>行业树</h2>
         <div style={{ display: "flex", gap: 8 }}>
           <input
+            className="input"
             placeholder="手动输入一个行业/能力，如 Data Scientist"
             value={skillInput}
             onChange={e => setSkillInput(e.target.value)}
             style={{ width: 320, height: 32, padding: "0 8px" }}
           />
-          <button onClick={addCustomRoot}>添加为根节点</button>
+          <button className="btn" onClick={addCustomRoot}>添加根节点</button>
           <button
+            className="btn primary"
             onClick={async () => {
               /*
                * === AI 子树生成过程 ===
@@ -623,6 +702,7 @@ function centerOnNodeIds(ids: number[]) {
 
           {/* 打开保存/管理行业树面板 */}
           <button
+            className="btn"
             onClick={() => {
               const next = !showSavedPanel;
               if (next) {
@@ -662,9 +742,7 @@ function centerOnNodeIds(ids: number[]) {
         height="100%"
         /* 使用 viewBox 指定原始坐标系，保持内部元素布局不变 */
         viewBox={`0 0 ${width} ${height}`}
-        /* 取消默认的 preserveAspectRatio 设置，使 SVG 填充父容器而不留空白。默认情况下，SVG 会保持 viewBox 的宽高比，
-           当父容器的宽高比与 viewBox 不一致时会留下空白区域。此处设置 none，让画布拉伸以铺满整个可用区域。*/
-        preserveAspectRatio="none"
+        /* 移除 preserveAspectRatio=none，改用默认策略以保持纵横比，避免文本被挤压。 */
         style={{ background: "#f8fafc", cursor: drag ? "grabbing" : "grab" }}
         onMouseDown={onMouseDown}
         onMouseMove={onMouseMove}
@@ -689,9 +767,16 @@ function centerOnNodeIds(ids: number[]) {
                 const selected = active?.id === n.id;
                 return (
                 <g key={n.id} transform={`translate(${p.x}, ${p.y})`} onClick={() => onSelect(n)} style={{ cursor: "pointer" }}>
-                    <rect width={nodeW} height={nodeH} rx={8} ry={8}
+                    {/* 根据名称长度动态调整节点宽度 */}
+                    <rect
+                        width={widthMap.get(n.id) ?? baseNodeW}
+                        height={nodeH}
+                        rx={8}
+                        ry={8}
                         fill={selected ? "#0ea5e9" : "#ffffff"}
-                        stroke={selected ? "#0284c7" : "#cbd5e1"} strokeWidth={selected ? 2 : 1} />
+                        stroke={selected ? "#0284c7" : "#cbd5e1"}
+                        strokeWidth={selected ? 2 : 1}
+                    />
                     <text x={8} y={22} fontSize={13} fill={selected ? "#ffffff" : "#111827"}>{n.name}</text>
                 </g>
                 );
@@ -706,12 +791,10 @@ function centerOnNodeIds(ids: number[]) {
         {active ? (
           <div>
             <div style={{ fontWeight: 600 }}>{active.name}</div>
-            <div style={{ color: "#6b7280", fontSize: 13, marginTop: 4 }}>
-              required={active.required_level} · importance={active.importance}
-              {typeof active.mastery === "number" ? ` · mastery=${active.mastery}` : ""}
-            </div>
+            {/* 去除详细等级信息，仅显示节点名称，避免画面底部出现冗余文字 */}
             <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
               <button
+                className="btn"
                 onClick={async () => {
                   try {
                     const notes = await tauriInvoke<any[]>("list_skill_notes_v1", { skill_id: active.id, limit: 50 });
@@ -726,6 +809,7 @@ function centerOnNodeIds(ids: number[]) {
                 查看关联笔记
               </button>
               <button
+                className="btn"
                 title="下一轮加入：加入到计划"
                 onClick={() => alert("下一轮将加入：把该节点添加到计划")}
               >

@@ -11,21 +11,26 @@ logo.vite:hover {
   /* 全局样式根选择器：定义字体、字号、颜色及抗锯齿等通用属性 */
   font-family: Inter, Avenir, Helvetica, Arial, sans-serif;
   font-size: 16px;
+  /* 行高：确保文字间距一致 */
   line-height: 24px;
   font-weight: 400;
 
+  /* 文字颜色：深灰色 */
   color: #0f0f0f;
   background-color: #f6f6f6;
 
+  /* 字体合成：禁用系统字体合成 */
   font-synthesis: none;
+  /* 文本渲染：优化文字清晰度 */
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* 文本大小调整：确保文字比例一致 */
   -webkit-text-size-adjust: 100%;
 }
 
+/* 容器样式：居中布局 */
 .container {
-  /* 页面主体容器：垂直排列并居中显示内容，顶部留空 */
   margin: 0;
   padding-top: 10vh;
   display: flex;
@@ -34,24 +39,27 @@ logo.vite:hover {
   text-align: center;
 }
 
+/* 图标样式：固定大小，过渡效果 */
 .logo {
-  /* 应用标志的尺寸及滤镜动画效果 */
   height: 6em;
   padding: 1.5em;
   will-change: filter;
   transition: 0.75s;
 }
 
+/* 图标悬停效果 */
 .logo.tauri:hover {
   filter: drop-shadow(0 0 2em #24c8db);
 }
 
+/* 行布局：水平居中 */
 .row {
   /* 用于包裹行内元素的 flex 容器，水平居中 */
   display: flex;
   justify-content: center;
 }
 
+/* 链接样式：粗体，蓝色，无下划线 */
 a {
   /* 链接元素的默认样式和颜色，悬停效果见下方 */
   font-weight: 500;
@@ -59,14 +67,17 @@ a {
   text-decoration: inherit;
 }
 
+/* 链接悬停效果 */
 a:hover {
   color: #535bf2;
 }
 
+/* 标题样式：居中 */
 h1 {
   text-align: center;
 }
 
+/* 输入框和按钮样式：圆角边框，透明背景 */
 input,
 button {
   /* 全局按钮样式，设置鼠标样式为手形以表明可点击 */
@@ -82,27 +93,33 @@ button {
   box-shadow: 0 2px 2px rgba(0, 0, 0, 0.2);
 }
 
+/* 按钮样式：鼠标悬停时显示指针 */
 button {
   cursor: pointer;
 }
 
+/* 按钮悬停效果 */
 button:hover {
   border-color: #396cd8;
 }
+/* 按钮激活效果 */
 button:active {
   border-color: #396cd8;
   background-color: #e8e8e8;
 }
 
+/* 输入框和按钮样式：无边框，聚焦时显示边框 */
 input,
 button {
   outline: none;
 }
 
+/* 输入框样式：右侧留出间距 */
 #greet-input {
   margin-right: 5px;
 }
 
+/* 暗色模式样式 */
 @media (prefers-color-scheme: dark) {
   :root {
     color: #f6f6f6;
@@ -113,24 +130,34 @@ button {
     color: #24c8db;
   }
 
+  /* 暗色模式下的输入框和按钮样式 */
   input,
   button {
     color: #ffffff;
     background-color: #0f0f0f98;
   }
+  /* 暗色模式下的按钮激活效果 */
   button:active {
     background-color: #0f0f0f69;
   }
 }
 
+/* 笔记列表项样式 */
 .note-item { position: relative; padding: 6px 0; }
+/* 笔记行布局 */
 .note-line { display:flex; align-items:center; gap:8px; }
+/* 笔记标题 */
 .note-title { flex:1; }
+/* 笔记时间 */
 .note-time { color:#666; font-size:12px; margin-top:2px; }
+/* 下拉菜单按钮 */
 .kebab-btn { border:1px solid #ccc; background:#fff; border-radius:6px; padding:2px 6px; cursor:pointer; }
+/* 下拉菜单 */
 .kebab-menu { position:absolute; right:0; top:28px; background:#fff; border:1px solid #ddd; border-radius:8px; box-shadow:0 6px 18px rgba(0,0,0,.12); display:flex; flex-direction:column; }
 .kebab-menu button { padding:8px 12px; background:none; border:none; text-align:left; cursor:pointer; }
+/* 下拉菜单按钮悬停效果 */
 .kebab-menu button:hover { background:#f5f5f5; }
+/* 内联编辑器 */
 .note-editor-inline { margin-top:8px; display:flex; flex-direction:column; gap:6px; }
 .note-editor-inline input, .note-editor-inline textarea { width:100%; border:1px solid #ccc; border-radius:6px; padding:6px; }
 
@@ -166,7 +193,7 @@ body, html {
   background-attachment: fixed;
 }
 
-/* 外层容器 */
+/* 外层容器样式 */
 .app-wrapper {
   display: flex;
   flex-direction: column;
@@ -176,7 +203,7 @@ body, html {
   overflow: hidden;
 }
 
-/* 顶部栏 */
+/* 顶部栏样式 */
 .topbar {
   display: flex;
   justify-content: flex-end;
@@ -187,27 +214,30 @@ body, html {
   z-index: 20;
   background: transparent;
 }
+/* 顶部栏按钮统一样式：白底黑字，带轻边框 */
 .topbar button {
   width: 38px;
   height: 38px;
   display: flex;
   align-items: center;
   justify-content: center;
-  border: none;
-  background: var(--card-bg);
-  backdrop-filter: var(--card-backdrop);
   border-radius: 12px;
   cursor: pointer;
-  transition: background 0.2s, box-shadow 0.2s;
+  transition: background 0.2s, box-shadow 0.2s, color 0.2s, border-color 0.2s;
   margin-left: 8px;
+  background: #ffffff;
+  color: #111827;
+  border: 1px solid var(--border-color);
 }
 .topbar button:hover {
-  background: rgba(255, 255, 255, 0.8);
+  background: #f5f5f5;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1);
 }
+/* 激活状态：仍然是白底，但文字和边框采用主色以突出 */
 .topbar button.active {
-  background: var(--primary-color);
-  color: #fff;
+  background: #ffffff;
+  color: var(--primary-color);
+  border-color: var(--primary-color);
 }
 
 /* 主体布局：侧栏 + 内容 */
@@ -255,23 +285,24 @@ body, html {
   background: rgba(255, 255, 255, 0.8);
   outline: none;
   font-size: 14px;
+  /* 搜索框文字颜色设为深色 */
+  color: var(--text-color);
 }
 .sidebar-header .btn {
   padding: 6px 8px;
   border-radius: 8px;
-  border: none;
-  background: var(--card-bg);
-  backdrop-filter: var(--card-backdrop);
+  border: 1px solid var(--border-color);
+  background: #ffffff;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.2s;
-  /* 确保顶栏搜索区按钮文字颜色为深色 */
-  color: var(--text-color);
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+  /* 搜索区按钮文字颜色仍采用深色，提高可读性 */
+  color: #111827;
 }
 .sidebar-header .btn:hover {
-  background: rgba(255, 255, 255, 0.8);
+  background: #f5f5f5;
 }
 
 .note-list {
@@ -420,28 +451,36 @@ body, html {
 }
 
 /* 通用按钮 */
+/* 通用按钮样式：统一白底黑字，并提供轻微边框 */
 .btn {
   padding: 8px 12px;
   border-radius: 8px;
-  border: none;
-  background: var(--card-bg);
-  backdrop-filter: var(--card-backdrop);
+  border: 1px solid var(--border-color);
+  background: #ffffff;
   cursor: pointer;
   font-size: 14px;
-  transition: background 0.2s;
-  /* 默认按钮文字颜色使用全局深色文本颜色，确保在浅色背景上有对比度 */
-  color: var(--text-color);
+  transition: background 0.2s, color 0.2s, border-color 0.2s;
+  color: #111827;
 }
+/* 悬停时略微调高背景亮度 */
 .btn:hover {
-  background: rgba(255, 255, 255, 0.8);
+  background: #f5f5f5;
 }
+/* 主按钮采用主色边框和文字颜色，但仍保持白色背景 */
 .btn.primary {
-  background: var(--primary-color);
-  color: #fff;
-  box-shadow: 0 2px 6px rgba(33, 83, 243, 0.3);
+  background: #ffffff;
+  color: var(--primary-color);
+  border: 1px solid var(--primary-color);
+  box-shadow: none;
 }
 .btn.primary:hover {
-  background: #1949d4;
+  background: rgba(33, 83, 243, 0.1);
+}
+
+/* 具有阴影效果的按钮：用于语音录入控制等突出按钮 */
+.btn.shadowed {
+  /* 使用与卡片相同的阴影，使按钮具有浮起感 */
+  box-shadow: var(--card-shadow);
 }
 
 /* 输入框通用样式 */
@@ -454,6 +493,12 @@ body, html {
   background: rgba(255, 255, 255, 0.8);
   font-size: 14px;
   resize: vertical;
+  /* 保证输入文本为深色，提高在浅色背景上的可读性 */
+  color: var(--text-color);
+  /* 使用 border-box 盒模型，确保 width 计算包含边框和内边距，避免撑出父容器 */
+  box-sizing: border-box;
+  /* 为输入框添加轻微阴影，使其浮起效果与卡片统一 */
+  box-shadow: var(--card-shadow);
 }
 .textarea {
   min-height: 120px;
@@ -560,4 +605,23 @@ body, html {
 /* 调整卡片内复选框间距，避免文字贴合 */
 .card input[type="checkbox"] {
   margin-right: 4px;
+}
+
+/* 自定义：行业树根节点删除按钮为圆形并带柔和颜色 */
+.root-delete-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+  border: 1px solid rgba(239, 68, 68, 0.2);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 12px;
+  padding: 0;
+}
+.root-delete-btn:hover {
+  background: rgba(239, 68, 68, 0.2);
 }
