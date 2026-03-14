@@ -3,18 +3,26 @@
   "private": true,
   "version": "0.3.0",
   "type": "module",
+  "packageManager": "pnpm@10.18.3",
+  "engines": {
+    "node": ">=18.18.0",
+    "pnpm": ">=10.15.0"
+  },
   "scripts": {
     "dev": "vite",
-    "build": "tsc && vite build",
+    "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@fortawesome/free-solid-svg-icons": "^7.1.0",
     "@fortawesome/react-fontawesome": "^3.1.0",
     "@knoyoo/shared": "workspace:*",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-opener": "^2",
+    "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-opener": "^2.5.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0"
   },
