@@ -15,23 +15,44 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "format": "prettier --write \"src/**/*.{ts,tsx,css}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,tsx,css}\"",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
-    "@fortawesome/free-solid-svg-icons": "^7.1.0",
-    "@fortawesome/react-fontawesome": "^3.1.0",
     "@knoyoo/shared": "workspace:*",
+    "@tailwindcss/postcss": "^4.2.1",
+    "@tailwindcss/vite": "^4.2.1",
     "@tauri-apps/api": "^2.8.0",
+    "@tauri-apps/plugin-dialog": "^2.6.0",
     "@tauri-apps/plugin-opener": "^2.5.0",
+    "lucide-react": "^0.577.0",
     "react": "^19.1.0",
-    "react-dom": "^19.1.0"
+    "react-dom": "^19.1.0",
+    "react-router": "^7.13.1",
+    "tailwindcss": "^4.2.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@tauri-apps/cli": "^2.8.4",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",
+    "eslint": "^10.0.3",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.5.2",
+    "jsdom": "^29.0.0",
+    "postcss": "^8.5.8",
+    "prettier": "^3.8.1",
     "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "typescript-eslint": "^8.57.0",
+    "vite": "^7.0.4",
+    "vitest": "^4.1.0"
   }
 }

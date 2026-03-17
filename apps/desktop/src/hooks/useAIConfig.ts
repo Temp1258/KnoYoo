@@ -10,8 +10,9 @@ export function useAIConfig() {
     try {
       const cfg = await tauriInvoke<AIConfig>("get_ai_config");
       setAiCfg(cfg || {});
-    } catch (e: any) {
-      setAiMsg(String(e));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setAiMsg(message);
     }
   }, []);
 
@@ -19,8 +20,9 @@ export function useAIConfig() {
     try {
       await tauriInvoke("set_ai_config", { cfg: aiCfg });
       setAiMsg("已保存");
-    } catch (e: any) {
-      setAiMsg(String(e));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setAiMsg(message);
     }
   }, [aiCfg]);
 
@@ -29,9 +31,10 @@ export function useAIConfig() {
       const r = await tauriInvoke<string>("ai_smoketest");
       setAiMsg(r);
       return r;
-    } catch (e: any) {
-      setAiMsg(String(e));
-      return String(e);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setAiMsg(message);
+      return message;
     }
   }, []);
 

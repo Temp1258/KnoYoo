@@ -24,8 +24,9 @@ export function useNotes() {
   }, [page]);
 
   useEffect(() => {
-    refresh();
-  }, [refresh]);
+    void refresh();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   const onSearch = useCallback(async () => {
     const q2 = q.trim();

@@ -1,0 +1,13 @@
+/* Minimal custom CSS for SVG mind map canvas */
+.mindmap-canvas {
+  cursor: grab;
+  user-select: none;
+}
+
+.mindmap-canvas:active {
+  cursor: grabbing;
+}
+
+.mindmap-canvas text {
+  pointer-events: none;
+}

@@ -62,7 +62,6 @@ export function extractSubtree(roots: IndustryNode[], id: number): IndustryNode 
     name: n.name,
     required_level: n.required_level,
     importance: n.importance,
-    mastery: n.mastery ?? null,
     children: (n.children || []).map(clone),
   });
   return clone(src);

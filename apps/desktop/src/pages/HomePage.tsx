@@ -1,80 +1,52 @@
-import React, { useState } from "react";
+import { useState } from "react";
 import PlanPanel from "../components/Plan/PlanPanel";
+import CalendarView from "../components/Plan/CalendarView";
 import AISettingsPanel from "../components/AI/AISettingsPanel";
 import { useAIConfig } from "../hooks/useAIConfig";
-import type { Hit, Note } from "../types";
+import { Settings, ChevronDown, ChevronUp } from "lucide-react";
+import Button from "../components/ui/Button";
+import SegmentedControl from "../components/ui/SegmentedControl";
 
-interface Props {
-  results: Hit[];
-  onSelectNote: (note: Note) => void;
-}
-
-/** Safe snippet renderer: replaces [mark]/[/mark] with <mark> elements */
-function HighlightedSnippet({ snippet }: { snippet: string }) {
-  const parts = snippet.split(/\[\/?(mark)\]/);
-  const elements: React.ReactNode[] = [];
-  let inMark = false;
-
-  for (let i = 0; i < parts.length; i++) {
-    if (parts[i] === "mark") {
-      inMark = !inMark;
-      continue;
-    }
-    if (inMark) {
-      elements.push(<mark key={i}>{parts[i]}</mark>);
-    } else {
-      elements.push(parts[i]);
-    }
-  }
-
-  return <span>{elements}</span>;
-}
-
-export default function HomePage({ results, onSelectNote }: Props) {
+export default function HomePage() {
   const [showAISettings, setShowAISettings] = useState(false);
+  const [view, setView] = useState<"list" | "calendar">("list");
   const { loadConfig } = useAIConfig();
 
   return (
     <div>
-      <h2 style={{ marginBottom: 8 }}>Know More About You!</h2>
-      <div style={{ marginTop: 8, marginBottom: 12, display: "flex", gap: 8, alignItems: "center" }}>
-        <button
-          className="btn"
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center gap-4">
+          <h1 className="text-[28px] font-bold tracking-tight m-0">计划</h1>
+          <SegmentedControl
+            options={[
+              { value: "list" as const, label: "列表" },
+              { value: "calendar" as const, label: "日历" },
+            ]}
+            value={view}
+            onChange={setView}
+          />
+        </div>
+        <Button
+          variant="ghost"
+          size="sm"
           onClick={async () => {
             setShowAISettings((v) => !v);
             if (!showAISettings) await loadConfig();
           }}
         >
-          {showAISettings ? "收起 AI 设置" : "AI 设置"}
-        </button>
+          <Settings size={14} />
+          {showAISettings ? "收起设置" : "AI 设置"}
+          {showAISettings ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+        </Button>
       </div>
-      {showAISettings && <AISettingsPanel />}
 
-      {results.length > 0 && (
-        <div style={{ marginTop: 24 }}>
-          <h3>搜索结果</h3>
-          <ul style={{ listStyle: "none", padding: 0, margin: 0 }}>
-            {results.map((hit) => (
-              <li key={hit.id} style={{ marginBottom: 16 }}>
-                <div
-                  style={{ fontWeight: 600, cursor: "pointer" }}
-                  onClick={() => onSelectNote({ id: hit.id, title: hit.title, content: "", created_at: "" })}
-                >
-                  {hit.title}
-                </div>
-                <HighlightedSnippet snippet={hit.snippet} />
-              </li>
-            ))}
-          </ul>
+      {showAISettings && (
+        <div className="mb-6">
+          <AISettingsPanel />
         </div>
       )}
 
-      <div className="card">
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <h3 style={{ margin: 0 }}>计划</h3>
-        </div>
-        <PlanPanel />
-      </div>
+      {view === "list" ? <PlanPanel /> : <CalendarView />}
     </div>
   );
 }

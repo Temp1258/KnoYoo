@@ -1,0 +1,490 @@
+use directories::ProjectDirs;
+use rusqlite::Connection;
+use std::path::PathBuf;
+
+/// 获取应用数据目录的路径（不同操作系统位置各异）
+/// 如果目录不存在则会自动创建。
+pub fn app_data_dir() -> Result<PathBuf, String> {
+    let proj = ProjectDirs::from("", "KnoYoo", "Desktop")
+        .ok_or_else(|| "cannot resolve app data dir".to_string())?;
+    let base = proj.data_dir();
+    let dir = base.join("data");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+pub fn app_db_path() -> Result<PathBuf, String> {
+    Ok(app_data_dir()?.join("notes.db"))
+}
+
+/// 打开 SQLite 数据库并执行必要的初始化。
+/// 包含表、索引、触发器以及视图的创建。
+pub fn open_db() -> Result<Connection, String> {
+    let db_path = app_db_path()?;
+    tracing::info!("Database opened at {}", db_path.display());
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+    conn.execute_batch(
+        r#"
+    PRAGMA foreign_keys = ON;
+
+    -- 笔记主表 + FTS5 + 触发器
+    CREATE TABLE IF NOT EXISTS notes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      title TEXT NOT NULL,
+      content TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts
+      USING fts5(title, content, content='notes', content_rowid='id');
+
+    CREATE TRIGGER IF NOT EXISTS notes_ai AFTER INSERT ON notes BEGIN
+      INSERT INTO notes_fts(rowid, title, content)
+        VALUES (new.id, new.title, new.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS notes_ad AFTER DELETE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, content)
+        VALUES('delete', old.id, old.title, old.content);
+    END;
+    CREATE TRIGGER IF NOT EXISTS notes_au AFTER UPDATE ON notes BEGIN
+      INSERT INTO notes_fts(notes_fts, rowid, title, content)
+        VALUES('delete', old.id, old.title, old.content);
+      INSERT INTO notes_fts(rowid, title, content)
+        VALUES (new.id, new.title, new.content);
+    END;
+
+    -- 先删历史重复，再加唯一索引（避免导入造成重复）
+    DELETE FROM notes
+    WHERE id NOT IN (
+      SELECT MIN(id) FROM notes
+      GROUP BY title, content, created_at
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_dedupe
+      ON notes(title, content, created_at);
+
+    -- === Sprint4 计划引擎最小数据面（唯一保留版本） ===
+    CREATE TABLE IF NOT EXISTS industry_skill (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      parent_id INTEGER REFERENCES industry_skill(id) ON DELETE SET NULL,
+      name TEXT NOT NULL UNIQUE,
+      required_level INTEGER NOT NULL DEFAULT 3, -- L1~L5 -> 1~5
+      importance INTEGER NOT NULL DEFAULT 3      -- 1~5
+    );
+
+    CREATE TABLE IF NOT EXISTS plan_task (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      horizon TEXT NOT NULL CHECK (horizon IN ('WEEK','QTR')),
+      skill_id INTEGER REFERENCES industry_skill(id) ON DELETE SET NULL,
+      title TEXT NOT NULL,
+      minutes INTEGER,                            -- 周任务才用；季度里程碑可为 NULL
+      due TEXT,                                   -- ISO8601，可为空
+      status TEXT NOT NULL DEFAULT 'TODO' CHECK (status IN ('TODO','DONE'))
+    );
+
+    -- 笔记与技能映射（保留）
+    CREATE TABLE IF NOT EXISTS note_skill_map (
+      note_id INTEGER NOT NULL,
+      skill_id INTEGER NOT NULL,
+      weight INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY(note_id, skill_id),
+      FOREIGN KEY(note_id) REFERENCES notes(id),
+      FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
+    );
+
+    -- 约束与索引
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_open_unique
+      ON plan_task(horizon, skill_id)
+      WHERE status <> 'DONE';
+    CREATE INDEX IF NOT EXISTS idx_plan_hsd ON plan_task(horizon, status, due);
+    CREATE INDEX IF NOT EXISTS idx_note_skill_note ON note_skill_map(note_id);
+    CREATE INDEX IF NOT EXISTS idx_note_skill_skill ON note_skill_map(skill_id);
+
+    -- ==== 行业树快照表 ===
+    CREATE TABLE IF NOT EXISTS saved_industry_tree (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      data TEXT NOT NULL
+    );
+
+    -- 计划分组
+    CREATE TABLE IF NOT EXISTS plan_group (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      color TEXT,
+      sort_order INTEGER DEFAULT 0,
+      created_at TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+
+    -- 应用配置（AI 等）
+    CREATE TABLE IF NOT EXISTS app_kv (
+      key TEXT PRIMARY KEY,
+      val TEXT NOT NULL
+    );
+    "#,
+    )
+    .map_err(|e| e.to_string())?;
+
+    // === 新增：plan_task.minutes 字段可空迁移 ===
+    migrate_plan_minutes_nullable(&conn)?;
+    // === 新增：plan_task 层级字段迁移 ===
+    migrate_plan_task_hierarchy(&conn)?;
+    // === 新增：notes.is_favorite 字段迁移 ===
+    migrate_notes_favorite(&conn)?;
+    Ok(conn)
+}
+
+/// 数据库迁移：将 plan_task.minutes 字段改为可为空。
+/// 检查表结构，如果 minutes 已经可空则跳过；否则重建表并迁移数据。
+fn migrate_plan_minutes_nullable(conn: &rusqlite::Connection) -> Result<(), String> {
+    let mut notnull = false;
+    {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(plan_task)")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(1)?,
+                    r.get::<_, i64>(3)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let (name, nn) = row.map_err(|e| e.to_string())?;
+            if name == "minutes" && nn != 0 {
+                notnull = true;
+                break;
+            }
+        }
+    }
+
+    if !notnull {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        r#"
+    BEGIN;
+      CREATE TABLE IF NOT EXISTS _plan_task_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        horizon TEXT NOT NULL CHECK (horizon IN ('WEEK','QTR')),
+        skill_id INTEGER REFERENCES industry_skill(id) ON DELETE SET NULL,
+        title TEXT NOT NULL,
+        minutes INTEGER,              -- 允许为 NULL（里程碑/总目标）
+        due TEXT,
+        status TEXT NOT NULL DEFAULT 'TODO' CHECK (status IN ('TODO','DONE'))
+      );
+      INSERT INTO _plan_task_new(id,horizon,skill_id,title,minutes,due,status)
+        SELECT id,horizon,skill_id,title,minutes,due,status FROM plan_task;
+      DROP TABLE plan_task;
+      ALTER TABLE _plan_task_new RENAME TO plan_task;
+
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_plan_open_unique
+        ON plan_task(horizon, skill_id)
+        WHERE status <> 'DONE';
+      CREATE INDEX IF NOT EXISTS idx_plan_hsd ON plan_task(horizon, status, due);
+    COMMIT;
+    "#,
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
+/// 迁移：给 plan_task 添加 group_id, parent_id, sort_order, description 字段
+fn migrate_plan_task_hierarchy(conn: &rusqlite::Connection) -> Result<(), String> {
+    // Check if group_id column already exists
+    let mut has_group_id = false;
+    {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(plan_task)")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let name = row.map_err(|e| e.to_string())?;
+            if name == "group_id" {
+                has_group_id = true;
+                break;
+            }
+        }
+    }
+    if has_group_id {
+        return Ok(());
+    }
+    conn.execute_batch(
+        r#"
+        ALTER TABLE plan_task ADD COLUMN group_id INTEGER REFERENCES plan_group(id) ON DELETE SET NULL;
+        ALTER TABLE plan_task ADD COLUMN parent_id INTEGER REFERENCES plan_task(id) ON DELETE CASCADE;
+        ALTER TABLE plan_task ADD COLUMN sort_order INTEGER DEFAULT 0;
+        ALTER TABLE plan_task ADD COLUMN description TEXT;
+        "#,
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 迁移：给 notes 添加 is_favorite 字段
+fn migrate_notes_favorite(conn: &rusqlite::Connection) -> Result<(), String> {
+    let mut has_col = false;
+    {
+        let mut stmt = conn
+            .prepare("PRAGMA table_info(notes)")
+            .map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map([], |r| r.get::<_, String>(1))
+            .map_err(|e| e.to_string())?;
+        for row in rows {
+            let name = row.map_err(|e| e.to_string())?;
+            if name == "is_favorite" {
+                has_col = true;
+                break;
+            }
+        }
+    }
+    if has_col {
+        return Ok(());
+    }
+    conn.execute_batch("ALTER TABLE notes ADD COLUMN is_favorite INTEGER DEFAULT 0;")
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 读取 KV
+pub fn kv_get(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, String> {
+    use rusqlite::OptionalExtension;
+    conn.query_row("SELECT val FROM app_kv WHERE key=?1", [key], |r| r.get(0))
+        .optional()
+        .map_err(|e| e.to_string())
+}
+
+/// Read AI configuration from app_kv table
+pub fn read_ai_config(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<String, String>, String> {
+    let mut out = std::collections::HashMap::new();
+    let keys = ["provider", "api_base", "api_key", "model"];
+    for k in keys {
+        if let Some(v) = kv_get(conn, k)? {
+            out.insert(k.to_string(), v);
+        }
+    }
+    Ok(out)
+}
+
+/// Collect all descendant node IDs (including the root) using iterative DFS
+pub fn collect_subtree_ids(conn: &rusqlite::Connection, root_id: i64) -> Result<Vec<i64>, String> {
+    let mut stack = vec![root_id];
+    let mut all_ids: Vec<i64> = Vec::new();
+    while let Some(id) = stack.pop() {
+        all_ids.push(id);
+        let mut stmt = conn
+            .prepare("SELECT id FROM industry_skill WHERE parent_id=?1")
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt
+            .query(rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
+            let cid: i64 = r.get(0).map_err(|e| e.to_string())?;
+            stack.push(cid);
+        }
+    }
+    Ok(all_ids)
+}
+
+/// Delete subtree: remove note_skill_map and industry_skill for all given IDs
+pub fn delete_subtree_by_ids(tx: &rusqlite::Transaction, all_ids: &mut Vec<i64>) -> Result<(), String> {
+    // Delete mappings first
+    for sid in all_ids.iter() {
+        tx.execute("DELETE FROM note_skill_map WHERE skill_id=?1", rusqlite::params![sid])
+            .map_err(|e| e.to_string())?;
+    }
+    // Delete skills from child to parent
+    all_ids.sort_unstable();
+    all_ids.reverse();
+    for sid in all_ids.iter() {
+        tx.execute("DELETE FROM industry_skill WHERE id=?1", rusqlite::params![sid])
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+/// Run database integrity check on startup
+#[tauri::command]
+pub fn check_db_health() -> Result<String, String> {
+    let conn = open_db()?;
+    let result: String = conn
+        .query_row("PRAGMA integrity_check", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if result != "ok" {
+        tracing::error!("Database integrity check failed: {}", result);
+    } else {
+        tracing::info!("Database integrity check: ok");
+    }
+    Ok(result)
+}
+
+#[cfg(test)]
+mod tests {
+    use rusqlite::Connection;
+
+    /// Create an in-memory database with the same schema used by open_db().
+    fn test_db() -> Connection {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        conn.execute_batch(
+            r#"
+            PRAGMA foreign_keys = ON;
+
+            CREATE TABLE IF NOT EXISTS notes (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL,
+              content TEXT NOT NULL,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            );
+
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_dedupe
+              ON notes(title, content, created_at);
+
+            CREATE TABLE IF NOT EXISTS industry_skill (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              parent_id INTEGER REFERENCES industry_skill(id) ON DELETE SET NULL,
+              name TEXT NOT NULL UNIQUE,
+              required_level INTEGER NOT NULL DEFAULT 3,
+              importance INTEGER NOT NULL DEFAULT 3
+            );
+
+            CREATE TABLE IF NOT EXISTS note_skill_map (
+              note_id INTEGER NOT NULL,
+              skill_id INTEGER NOT NULL,
+              weight INTEGER NOT NULL DEFAULT 1,
+              PRIMARY KEY(note_id, skill_id),
+              FOREIGN KEY(note_id) REFERENCES notes(id),
+              FOREIGN KEY(skill_id) REFERENCES industry_skill(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS app_kv (
+              key TEXT PRIMARY KEY,
+              val TEXT NOT NULL
+            );
+            "#,
+        )
+        .expect("init schema");
+        conn
+    }
+
+    #[test]
+    fn kv_get_missing_key_returns_none() {
+        let conn = test_db();
+        let result = super::kv_get(&conn, "nonexistent").unwrap();
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn kv_get_existing_key_returns_some() {
+        let conn = test_db();
+        conn.execute(
+            "INSERT INTO app_kv(key, val) VALUES(?1, ?2)",
+            rusqlite::params!["provider", "openai"],
+        )
+        .unwrap();
+        let result = super::kv_get(&conn, "provider").unwrap();
+        assert_eq!(result, Some("openai".to_string()));
+    }
+
+    #[test]
+    fn collect_subtree_ids_finds_all_descendants() {
+        let conn = test_db();
+        // Build a tree: root(1) -> child(2) -> grandchild(3), root(1) -> child(4)
+        conn.execute(
+            "INSERT INTO industry_skill(id, name, parent_id) VALUES(1, 'Root', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO industry_skill(id, name, parent_id) VALUES(2, 'Child1', 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO industry_skill(id, name, parent_id) VALUES(3, 'Grandchild', 2)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO industry_skill(id, name, parent_id) VALUES(4, 'Child2', 1)",
+            [],
+        )
+        .unwrap();
+
+        let mut ids = super::collect_subtree_ids(&conn, 1).unwrap();
+        ids.sort();
+        assert_eq!(ids, vec![1, 2, 3, 4]);
+    }
+
+    #[test]
+    fn collect_subtree_ids_leaf_returns_single() {
+        let conn = test_db();
+        conn.execute(
+            "INSERT INTO industry_skill(id, name, parent_id) VALUES(1, 'Root', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO industry_skill(id, name, parent_id) VALUES(2, 'Leaf', 1)",
+            [],
+        )
+        .unwrap();
+
+        let ids = super::collect_subtree_ids(&conn, 2).unwrap();
+        assert_eq!(ids, vec![2]);
+    }
+
+    #[test]
+    fn delete_subtree_by_ids_removes_all_related() {
+        let conn = test_db();
+        // Create skill tree
+        conn.execute(
+            "INSERT INTO industry_skill(id, name, parent_id) VALUES(1, 'Root', NULL)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO industry_skill(id, name, parent_id) VALUES(2, 'Child', 1)",
+            [],
+        )
+        .unwrap();
+        // Add a note and mapping
+        conn.execute(
+            "INSERT INTO notes(id, title, content) VALUES(1, 'n', 'c')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO note_skill_map(note_id, skill_id, weight) VALUES(1, 2, 1)",
+            [],
+        )
+        .unwrap();
+
+        let mut ids = vec![1, 2];
+        {
+            let tx = conn.unchecked_transaction().unwrap();
+            super::delete_subtree_by_ids(&tx, &mut ids).unwrap();
+            tx.commit().unwrap();
+        }
+
+        let skill_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM industry_skill", [], |r| r.get(0))
+            .unwrap();
+        let map_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM note_skill_map", [], |r| r.get(0))
+            .unwrap();
+
+        assert_eq!(skill_count, 0);
+        assert_eq!(map_count, 0);
+        // The note itself should still exist
+        let note_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(note_count, 1);
+    }
+}

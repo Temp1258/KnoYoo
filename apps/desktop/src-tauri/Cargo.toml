@@ -14,6 +14,20 @@ edition = "2021"
 name = "desktop_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+# Allow common patterns that pedantic flags unnecessarily
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+
+[profile.release]
+strip = true
+lto = true
+codegen-units = 1
+opt-level = "s"
+
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
@@ -26,4 +40,7 @@ serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled", "unlock_notify"] }
 directories = "5"
 chrono = { version = "0.4", features = ["serde", "clock"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tauri-plugin-dialog = "2"
 

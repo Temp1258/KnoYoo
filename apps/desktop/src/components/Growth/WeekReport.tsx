@@ -1,5 +1,8 @@
 import { useState } from "react";
+import { FileText } from "lucide-react";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
+import Card from "../ui/Card";
+import Button from "../ui/Button";
 import type { WeekReport as WeekReportType } from "../../types";
 
 export default function WeekReport() {
@@ -11,36 +14,40 @@ export default function WeekReport() {
   };
 
   return (
-    <div className="card">
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <h3 style={{ margin: 0 }}>周报</h3>
-        <button className="btn" onClick={genWeek}>
-          生成周报
-        </button>
+    <Card>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-[17px] font-semibold m-0">周报</h3>
+        <Button size="sm" onClick={genWeek}>
+          <FileText size={13} /> 生成周报
+        </Button>
       </div>
       {weekReport ? (
-        <div style={{ marginTop: 12 }}>
-          <div>
-            统计周期：{weekReport.start} → {weekReport.end}
+        <div className="grid grid-cols-2 gap-4">
+          <div className="space-y-1">
+            <div className="text-[11px] text-text-tertiary uppercase tracking-wide">统计周期</div>
+            <div className="text-[14px] font-medium">
+              {weekReport.start} → {weekReport.end}
+            </div>
           </div>
-          <div>完成任务：{weekReport.tasks_done}</div>
-          <div>学习时间：{weekReport.minutes_done} 分钟</div>
-          <div>新增笔记：{weekReport.new_notes}</div>
-          <div>平均掌握度：{weekReport.avg_mastery.toFixed(1)}</div>
-          <div style={{ marginTop: 8 }}>
-            <strong>主要差距：</strong>
-            <ul>
-              {weekReport.top_gaps.map(([name, required, mastery, gap], idx) => (
-                <li key={idx}>
-                  {name}：要求{required}，掌握{mastery}，差距{gap}
-                </li>
-              ))}
-            </ul>
+          <div className="space-y-1">
+            <div className="text-[11px] text-text-tertiary uppercase tracking-wide">完成任务</div>
+            <div className="text-[20px] font-bold text-accent">{weekReport.tasks_done}</div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-[11px] text-text-tertiary uppercase tracking-wide">学习时间</div>
+            <div className="text-[20px] font-bold">
+              {weekReport.minutes_done}{" "}
+              <span className="text-[13px] font-normal text-text-secondary">分钟</span>
+            </div>
+          </div>
+          <div className="space-y-1">
+            <div className="text-[11px] text-text-tertiary uppercase tracking-wide">新增笔记</div>
+            <div className="text-[20px] font-bold">{weekReport.new_notes}</div>
           </div>
         </div>
       ) : (
-        <div style={{ marginTop: 12, color: "#888" }}>尚未生成周报</div>
+        <div className="text-[13px] text-text-tertiary py-6 text-center">尚未生成周报</div>
       )}
-    </div>
+    </Card>
   );
 }

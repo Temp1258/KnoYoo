@@ -1,9 +1,12 @@
 import { useState, useEffect } from "react";
-import { FontAwesomeIcon } from "@fortawesome/react-fontawesome";
-import { faArrowLeft } from "@fortawesome/free-solid-svg-icons";
+import { ArrowLeft, Pencil, Trash2 } from "lucide-react";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import { useToast } from "../common/Toast";
-import type { Note, ClassifyHit } from "../../types";
+import Card from "../ui/Card";
+import Button from "../ui/Button";
+import Input from "../ui/Input";
+import Textarea from "../ui/Textarea";
+import type { Note } from "../../types";
 
 interface Props {
   note: Note;
@@ -17,9 +20,7 @@ export default function NoteDetail({ note, onBack, onChanged }: Props) {
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
   const [saving, setSaving] = useState(false);
-  const [skillHits, setSkillHits] = useState<ClassifyHit[]>([]);
 
-  // Load skill associations for this note
   useEffect(() => {
     setTitle(note.title);
     setContent(note.content);
@@ -56,90 +57,57 @@ export default function NoteDetail({ note, onBack, onChanged }: Props) {
     }
   };
 
-  const autoClassify = async () => {
-    try {
-      const hits = await tauriInvoke<ClassifyHit[]>("classify_note_embed", { noteId: note.id });
-      if (hits && hits.length > 0) {
-        setSkillHits(hits);
-        const msg = hits.map((h) => `${h.name} +${h.delta} → ${h.new_mastery}`).join("，");
-        showToast(`已归类：${msg}`);
-      } else {
-        showToast("未命中任何技能", "info");
-      }
-    } catch {
-      try {
-        const hits = await tauriInvoke<ClassifyHit[]>("classify_and_update", { noteId: note.id });
-        if (hits && hits.length > 0) {
-          setSkillHits(hits);
-          const msg = hits.map((h) => `${h.name} +${h.delta} → ${h.new_mastery}`).join("，");
-          showToast(`已归类：${msg}`);
-        } else {
-          showToast("未命中任何技能", "info");
-        }
-      } catch (e) {
-        showToast("归类失败", "error");
-      }
-    }
-    onChanged();
-  };
-
   return (
-    <div className="card" style={{ position: "relative" }}>
-      <button className="btn" onClick={onBack} style={{ position: "absolute", top: 0, left: 0, margin: 8 }}>
-        <FontAwesomeIcon icon={faArrowLeft} /> 返回
-      </button>
-      <div style={{ paddingTop: 32 }}>
-        {editing ? (
-          <>
-            <input
-              className="input"
-              value={title}
-              onChange={(e) => setTitle(e.target.value)}
-              placeholder="标题"
-            />
-            <textarea
-              className="textarea"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              placeholder="正文内容..."
-              rows={8}
-            />
-            <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
-              <button className="btn primary" onClick={save} disabled={saving}>
-                {saving ? "保存中..." : "保存"}
-              </button>
-              <button className="btn" onClick={() => setEditing(false)}>取消</button>
-            </div>
-          </>
-        ) : (
-          <>
-            <h3 style={{ marginTop: 0 }}>{note.title}</h3>
-            <div style={{ whiteSpace: "pre-wrap", marginTop: 8 }}>{note.content}</div>
-          </>
-        )}
-        {!editing && (
-          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-            <button className="btn" onClick={() => setEditing(true)}>编辑</button>
-            <button className="btn" onClick={autoClassify}>自动归类</button>
-            <button className="btn" onClick={del}>删除</button>
-          </div>
-        )}
-        {/* Skill association display */}
-        {skillHits.length > 0 && (
-          <div className="skill-hits-section">
-            <h4>关联技能</h4>
-            <div className="skill-hits-list">
-              {skillHits.map((h) => (
-                <span key={h.skill_id} className="skill-tag">
-                  {h.name}
-                  <span className="skill-delta">+{h.delta}</span>
-                  <span className="skill-mastery">→ {h.new_mastery}</span>
-                </span>
-              ))}
-            </div>
-          </div>
-        )}
+    <Card>
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-4">
+        <Button variant="ghost" size="sm" onClick={onBack}>
+          <ArrowLeft size={15} />
+          返回
+        </Button>
       </div>
-    </div>
+
+      {editing ? (
+        <div className="space-y-3">
+          <Input
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="标题"
+            className="text-[15px] font-semibold"
+          />
+          <Textarea
+            value={content}
+            onChange={(e) => setContent(e.target.value)}
+            placeholder="正文内容..."
+            rows={10}
+          />
+          <div className="flex gap-2">
+            <Button variant="primary" onClick={save} disabled={saving}>
+              {saving ? "保存中..." : "保存"}
+            </Button>
+            <Button onClick={() => setEditing(false)}>取消</Button>
+          </div>
+        </div>
+      ) : (
+        <>
+          <h3 className="text-[17px] font-semibold text-text m-0 mb-2">{note.title}</h3>
+          <div className="text-[13px] text-text-secondary whitespace-pre-wrap leading-relaxed">
+            {note.content}
+          </div>
+        </>
+      )}
+
+      {/* Action bar */}
+      {!editing && (
+        <div className="flex gap-2 mt-5 pt-4 border-t border-border">
+          <Button size="sm" onClick={() => setEditing(true)}>
+            <Pencil size={13} /> 编辑
+          </Button>
+          <Button variant="danger" size="sm" onClick={del}>
+            <Trash2 size={13} /> 删除
+          </Button>
+        </div>
+      )}
+    </Card>
   );
 }

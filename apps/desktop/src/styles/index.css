@@ -1,0 +1,121 @@
+@import "tailwindcss";
+@source "..";
+
+@theme {
+  /* === Colors === */
+  --color-bg: #f9fafb;
+  --color-bg-secondary: #ffffff;
+  --color-bg-tertiary: #f3f4f6;
+  --color-border: #e5e7eb;
+  --color-text: #111827;
+  --color-text-secondary: #6b7280;
+  --color-text-tertiary: #9ca3af;
+  --color-accent: #0071e3;
+  --color-accent-hover: #0077ed;
+  --color-accent-light: #0071e314;
+  --color-danger: #ff3b30;
+  --color-danger-light: #ff3b3014;
+  --color-success: #34c759;
+  --color-success-light: #34c75914;
+
+  /* === Typography === */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+
+  --text-caption: 11px;
+  --text-body-sm: 13px;
+  --text-body: 15px;
+  --text-title3: 17px;
+  --text-title2: 20px;
+  --text-title1: 28px;
+
+  /* === Shadows === */
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.04);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.06);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.08);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.12);
+
+  /* === Radius === */
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+  --radius-full: 9999px;
+}
+
+/* === Base Styles === */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  font-family: var(--font-sans);
+  font-size: var(--text-body);
+  line-height: 1.5;
+  color: var(--color-text);
+  background-color: var(--color-bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+#root {
+  height: 100%;
+}
+
+/* === Dark Mode === */
+.dark {
+  --color-bg: #111113;
+  --color-bg-secondary: #1c1c1e;
+  --color-bg-tertiary: #2c2c2e;
+  --color-border: #38383a;
+  --color-text: #f5f5f7;
+  --color-text-secondary: #98989d;
+  --color-text-tertiary: #636366;
+  --color-accent: #0a84ff;
+  --color-accent-hover: #409cff;
+  --color-accent-light: #0a84ff1a;
+  --color-danger: #ff453a;
+  --color-danger-light: #ff453a1a;
+  --color-success: #30d158;
+  --color-success-light: #30d1581a;
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+/* === Scrollbar === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-text-tertiary);
+  border-radius: var(--radius-full);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-text-secondary);
+}
+
+/* === Focus Ring === */
+:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+/* === Selection === */
+::selection {
+  background: var(--color-accent-light);
+  color: var(--color-text);
+}

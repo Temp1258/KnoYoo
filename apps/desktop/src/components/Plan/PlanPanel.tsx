@@ -1,37 +1,56 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
+import { Plus, FolderPlus } from "lucide-react";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import { useToast } from "../common/Toast";
-import type { PlanTask } from "../../types";
+import TaskRow from "./TaskRow";
+import TaskForm from "./TaskForm";
+import PlanGroupHeader from "./PlanGroupHeader";
+import SegmentedControl from "../ui/SegmentedControl";
+import Button from "../ui/Button";
+import Card from "../ui/Card";
+import type { PlanTask, PlanGroup } from "../../types";
 
 export default function PlanPanel() {
-  const { showToast, showConfirm } = useToast();
+  const { showConfirm, showToast } = useToast();
   const [horizon] = useState<"WEEK" | "QTR">("WEEK");
-  const [onlyTodo, setOnlyTodo] = useState(false);
-  const [grouped, setGrouped] = useState(true);
+  const [filter, setFilter] = useState<"all" | "todo" | "done">("all");
   const [tasks, setTasks] = useState<PlanTask[]>([]);
+  const [groups, setGroups] = useState<PlanGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [msg, setMsg] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [addParentId, setAddParentId] = useState<number | null>(null);
+  const [addGroupId, setAddGroupId] = useState<number | null>(null);
 
   const [editId, setEditId] = useState<number | null>(null);
   const [eTitle, setETitle] = useState("");
-  const [eMinutes, setEMinutes] = useState("");
   const [eDue, setEDue] = useState("");
 
-  const [newTitle, setNewTitle] = useState("");
-  const [newStart, setNewStart] = useState("");
-  const [newEnd, setNewEnd] = useState("");
-  const [showAddPlan, setShowAddPlan] = useState(false);
+  const [collapsed, setCollapsed] = useState<Set<number>>(new Set());
 
   const todayStr = () => new Date().toISOString().slice(0, 10);
   const isOverdue = (t: PlanTask) => t.due != null && t.status !== "DONE" && t.due < todayStr();
+
+  async function loadGroups() {
+    try {
+      const res = await tauriInvoke<PlanGroup[]>("list_plan_groups");
+      setGroups(res || []);
+    } catch {
+      /* ignore */
+    }
+  }
 
   async function load(preserveMsg = false) {
     setLoading(true);
     if (!preserveMsg) setMsg("");
     try {
+      const onlyTodo = filter === "todo";
       const args = onlyTodo ? { horizon, status: "TODO" } : { horizon };
       const res = (await tauriInvoke("list_plan_tasks", args)) as PlanTask[];
-      const sorted = [...res].sort((a, b) => {
+      let filtered = res;
+      if (filter === "done") filtered = res.filter((t) => t.status === "DONE");
+      const sorted = [...filtered].sort((a, b) => {
+        if (a.sort_order !== b.sort_order) return a.sort_order - b.sort_order;
         const aOver = isOverdue(a),
           bOver = isOverdue(b);
         if (aOver !== bOver) return aOver ? -1 : 1;
@@ -41,8 +60,9 @@ export default function PlanPanel() {
         return ad.localeCompare(bd);
       });
       setTasks(sorted);
-    } catch (e: any) {
-      setMsg(String(e));
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      setMsg(message);
     } finally {
       setLoading(false);
     }
@@ -50,7 +70,8 @@ export default function PlanPanel() {
 
   useEffect(() => {
     load();
-  }, [horizon, onlyTodo]);
+    loadGroups();
+  }, [horizon, filter]);
 
   async function toggle(t: PlanTask) {
     const next = t.status === "DONE" ? "TODO" : "DONE";
@@ -68,205 +89,223 @@ export default function PlanPanel() {
   function startEdit(t: PlanTask) {
     setEditId(t.id);
     setETitle(t.title);
-    setEMinutes(String(t.minutes ?? 0));
     setEDue(t.due ?? "");
   }
+
   function cancelEdit() {
     setEditId(null);
     setETitle("");
-    setEMinutes("");
     setEDue("");
   }
+
   async function saveEdit(id: number) {
-    const minutes = Number.parseInt(eMinutes || "0", 10);
     const due = eDue.trim() === "" ? null : eDue.trim();
-    await tauriInvoke("update_plan_task", { id, title: eTitle, minutes, due });
+    await tauriInvoke("update_plan_task", {
+      id,
+      title: eTitle,
+      minutes: 60,
+      due,
+    });
     cancelEdit();
     await load();
   }
 
-  async function onAddPlanQuick() {
-    const t = newTitle.trim();
-    if (!t) {
-      showToast("标题必填", "error");
-      return;
-    }
+  async function createGroup() {
+    const name = prompt("输入分组名称：");
+    if (!name?.trim()) return;
     try {
-      await tauriInvoke<number>("add_plan_task", {
-        horizon,
-        skillId: null,
-        title: t,
-        minutes: 60,
-        due: newEnd || null,
+      await tauriInvoke<PlanGroup>("create_plan_group", {
+        name: name.trim(),
+        color: null,
       });
-      setNewTitle("");
-      setNewStart("");
-      setNewEnd("");
-      await load();
-      showToast("计划已添加");
-    } catch (e: any) {
-      showToast("新增失败：" + String(e), "error");
+      await loadGroups();
+      showToast("分组已创建");
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      showToast("创建失败: " + message, "error");
     }
   }
 
-  function renderRow(t: PlanTask) {
-    const editing = editId === t.id;
+  function toggleGroupCollapse(gid: number) {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(gid)) next.delete(gid);
+      else next.add(gid);
+      return next;
+    });
+  }
+
+  // Build hierarchy: group tasks by group_id, then parent/child
+  const { groupedData, ungroupedTasks } = useMemo(() => {
+    const topLevel = tasks.filter((t) => t.parent_id == null);
+    const childMap = new Map<number, PlanTask[]>();
+    for (const t of tasks) {
+      if (t.parent_id != null) {
+        const arr = childMap.get(t.parent_id) || [];
+        arr.push(t);
+        childMap.set(t.parent_id, arr);
+      }
+    }
+
+    const byGroup = new Map<number, PlanTask[]>();
+    const ungrouped: PlanTask[] = [];
+    for (const t of topLevel) {
+      if (t.group_id != null) {
+        const arr = byGroup.get(t.group_id) || [];
+        arr.push(t);
+        byGroup.set(t.group_id, arr);
+      } else {
+        ungrouped.push(t);
+      }
+    }
+
+    return {
+      groupedData: { byGroup, childMap },
+      ungroupedTasks: ungrouped,
+    };
+  }, [tasks]);
+
+  function renderTask(t: PlanTask, indent = 0) {
+    const children = groupedData.childMap.get(t.id) || [];
+    const hasChildren = children.length > 0;
+    const doneChildren = children.filter((c) => c.status === "DONE").length;
+
     return (
-      <li key={t.id} className="plan-task-row">
-        <input type="checkbox" checked={t.status === "DONE"} onChange={() => toggle(t)} />
-        <div>
-          {!editing ? (
-            <>
-              <div className={`plan-task-title ${t.status === "DONE" ? "done" : ""}`}>{t.title}</div>
-              <div className="plan-task-meta">
-                {t.due ? (
-                  <>
-                    {"截止日期: "}
-                    <span className={isOverdue(t) ? "overdue" : ""}>{t.due}</span>
-                  </>
-                ) : (
-                  ""
-                )}
-                {typeof t.skill_id === "number" ? ` · skill: ${t.skill_id}` : ""}
-              </div>
-            </>
-          ) : (
-            <div style={{ display: "grid", gap: 8 }}>
-              <input
-                value={eTitle}
-                onChange={(e) => setETitle(e.target.value)}
-                placeholder="标题"
-                className="input"
-              />
-              <input
-                type="date"
-                value={eDue}
-                onChange={(e) => setEDue(e.target.value)}
-                className="input"
-              />
-            </div>
-          )}
+      <div key={t.id}>
+        <div style={{ paddingLeft: indent * 20 }}>
+          <TaskRow
+            task={t}
+            isOverdue={isOverdue(t)}
+            editing={editId === t.id}
+            eTitle={eTitle}
+            eDue={eDue}
+            onToggle={() => toggle(t)}
+            onEdit={() => startEdit(t)}
+            onDelete={() => del(t)}
+            onSaveEdit={() => saveEdit(t.id)}
+            onCancelEdit={cancelEdit}
+            onETitle={setETitle}
+            onEDue={setEDue}
+            hasChildren={hasChildren}
+            childProgress={hasChildren ? `${doneChildren}/${children.length}` : undefined}
+            onAddChild={() => {
+              setAddParentId(t.id);
+              setAddGroupId(t.group_id);
+              setShowAdd(true);
+            }}
+          />
         </div>
-        <span className="plan-task-horizon">{t.horizon}</span>
-        <div className="plan-task-actions">
-          {!editing ? (
-            <>
-              <button className="btn" onClick={() => startEdit(t)}>编辑</button>
-              <button className="btn" onClick={() => del(t)}>删除</button>
-            </>
-          ) : (
-            <>
-              <button className="btn" onClick={() => saveEdit(t.id)}>保存</button>
-              <button className="btn" onClick={cancelEdit}>取消</button>
-            </>
-          )}
-        </div>
-      </li>
+        {children.map((c) => renderTask(c, indent + 1))}
+      </div>
     );
   }
 
-  function groupTasks(list: PlanTask[]): Array<[string, PlanTask[]]> {
-    const today = new Date().toISOString().slice(0, 10);
-    const endOfWeek = new Date(Date.now() + 6 * 86400000).toISOString().slice(0, 10);
-    const buckets: Record<string, PlanTask[]> = {
-      overdue: [],
-      today: [],
-      week: [],
-      later: [],
-      nodue: [],
-      done: [],
-    };
-
-    for (const t of list) {
-      if (t.status === "DONE") { buckets.done.push(t); continue; }
-      if (!t.due) { buckets.nodue.push(t); continue; }
-      if (t.due < today) buckets.overdue.push(t);
-      else if (t.due === today) buckets.today.push(t);
-      else if (t.due <= endOfWeek) buckets.week.push(t);
-      else buckets.later.push(t);
-    }
-
-    const order: Array<[keyof typeof buckets, string]> = [
-      ["overdue", "逾期"],
-      ["today", "今天"],
-      ["week", "本周"],
-      ["later", "以后"],
-      ["nodue", "无截止"],
-      ["done", "已完成"],
-    ];
-
-    return order
-      .filter(([k]) => !(onlyTodo && k === "done"))
-      .map(([k, label]) => [label, buckets[k]]);
-  }
-
   return (
-    <div className="plan-panel">
-      <div className="plan-filters">
-        <label className="filter-label">
-          <input type="checkbox" checked={onlyTodo} onChange={(e) => setOnlyTodo(e.target.checked)} /> 只看未完成
-        </label>
-        <label className="filter-label">
-          <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} /> 分组显示
-        </label>
-      </div>
-
-      <div style={{ display: "flex", gap: 8, alignItems: "center", margin: "8px 0" }}>
-        <button className="btn" onClick={() => setShowAddPlan((v) => !v)}>
-          {showAddPlan ? "收起" : "+计划"}
-        </button>
-      </div>
-
-      {showAddPlan && (
-        <div className="plan-add-form">
-          <input
-            value={newTitle}
-            onChange={(e) => setNewTitle(e.target.value)}
-            placeholder="新增计划标题..."
-            className="input"
-            style={{ width: 240 }}
-          />
-          <input
-            type="date"
-            value={newStart}
-            onChange={(e) => setNewStart(e.target.value)}
-            className="input"
-          />
-          <input
-            type="date"
-            value={newEnd}
-            onChange={(e) => setNewEnd(e.target.value)}
-            className="input"
-          />
-          <button className="btn" onClick={onAddPlanQuick}>添加计划</button>
+    <div className="space-y-4">
+      {/* Toolbar */}
+      <div className="flex items-center justify-between">
+        <SegmentedControl
+          options={[
+            { value: "all" as const, label: "全部" },
+            { value: "todo" as const, label: "未完成" },
+            { value: "done" as const, label: "已完成" },
+          ]}
+          value={filter}
+          onChange={setFilter}
+        />
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" size="sm" onClick={createGroup}>
+            <FolderPlus size={14} />
+            分组
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            onClick={() => {
+              setAddParentId(null);
+              setAddGroupId(null);
+              setShowAdd((v) => !v);
+            }}
+          >
+            <Plus size={14} />
+            新增
+          </Button>
         </div>
+      </div>
+
+      {/* Add form */}
+      {showAdd && (
+        <TaskForm
+          horizon={horizon}
+          groupId={addGroupId}
+          parentId={addParentId}
+          onAdded={() => {
+            setShowAdd(false);
+            setAddParentId(null);
+            setAddGroupId(null);
+            load();
+          }}
+        />
       )}
 
-      {msg && <div className="plan-msg">{msg}</div>}
+      {msg && <div className="text-[13px] text-danger px-1">{msg}</div>}
 
+      {/* Task list */}
       {loading ? (
-        <div>Loading...</div>
-      ) : grouped ? (
-        <>
-          {groupTasks(tasks).map(([label, items]) =>
-            items.length === 0 ? null : (
-              <div key={label} style={{ marginBottom: 12 }}>
-                <div className="plan-group-label">
-                  {label} · {items.length}
-                </div>
-                <ul className="plan-task-list">
-                  {items.map((t) => renderRow(t))}
-                </ul>
-              </div>
-            )
-          )}
-          {tasks.length === 0 && <div className="plan-empty">暂无任务</div>}
-        </>
+        <div className="text-[13px] text-text-secondary py-8 text-center">加载中...</div>
       ) : (
-        <ul className="plan-task-list">
-          {tasks.map((t) => renderRow(t))}
-          {tasks.length === 0 && <li className="plan-empty">暂无任务</li>}
-        </ul>
+        <div className="space-y-3">
+          {/* Grouped tasks */}
+          {groups.map((g) => {
+            const groupTasks = groupedData.byGroup.get(g.id) || [];
+            const allInGroup = tasks.filter(
+              (t) => t.group_id === g.id || groupTasks.some((gt) => gt.id === t.parent_id),
+            );
+            const doneCount = allInGroup.filter((t) => t.status === "DONE").length;
+            const isExpanded = !collapsed.has(g.id);
+
+            return (
+              <div key={g.id}>
+                <Card padding="sm">
+                  <PlanGroupHeader
+                    group={g}
+                    expanded={isExpanded}
+                    taskCount={allInGroup.length}
+                    doneCount={doneCount}
+                    onToggle={() => toggleGroupCollapse(g.id)}
+                    onChanged={() => {
+                      loadGroups();
+                      load();
+                    }}
+                  />
+                  {isExpanded && groupTasks.length > 0 && (
+                    <div className="divide-y divide-border border-t border-border">
+                      {groupTasks.map((t) => renderTask(t))}
+                    </div>
+                  )}
+                </Card>
+              </div>
+            );
+          })}
+
+          {/* Ungrouped tasks */}
+          {ungroupedTasks.length > 0 && (
+            <div>
+              {groups.length > 0 && (
+                <div className="text-[12px] font-medium text-text-secondary uppercase tracking-wide mb-2 px-1">
+                  未分组
+                </div>
+              )}
+              <Card padding="sm" className="divide-y divide-border">
+                {ungroupedTasks.map((t) => renderTask(t))}
+              </Card>
+            </div>
+          )}
+
+          {tasks.length === 0 && (
+            <div className="text-[13px] text-text-tertiary py-12 text-center">暂无任务</div>
+          )}
+        </div>
       )}
     </div>
   );
