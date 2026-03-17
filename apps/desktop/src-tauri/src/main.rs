@@ -98,6 +98,10 @@ fn main() {
             coach::get_learning_stats,
             coach::export_skill_template,
             coach::import_skill_template,
+            coach::export_learning_markdown,
+            coach::get_share_card_data,
+            coach::ai_skill_gap_analysis,
+            coach::list_gallery_templates,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

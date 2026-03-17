@@ -141,3 +141,31 @@ export type LearningStats = {
   total_notes: number;
   completion_pct: number;
 };
+
+export type ShareCardData = {
+  career_goal: string;
+  current_streak: number;
+  best_streak: number;
+  total_skills: number;
+  mastered_skills: number;
+  total_notes: number;
+  total_tasks_done: number;
+  total_minutes: number;
+  avg_progress: number;
+  top_skills: string[];
+  date: string;
+};
+
+export type MarkdownExport = {
+  content: string;
+  filename: string;
+};
+
+export type GalleryTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  skill_count: number;
+  sub_skill_count: number;
+  category: string;
+};

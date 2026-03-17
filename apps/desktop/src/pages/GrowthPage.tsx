@@ -5,6 +5,9 @@ import CareerGoalCard from "../components/Growth/CareerGoalCard";
 import StreakCard from "../components/Growth/StreakCard";
 import DailyTip from "../components/Growth/DailyTip";
 import SkillAnalytics from "../components/Growth/SkillAnalytics";
+import SkillGapAnalysis from "../components/Growth/SkillGapAnalysis";
+import ShareCard from "../components/Growth/ShareCard";
+import ExportSection from "../components/Growth/ExportSection";
 
 export default function GrowthPage() {
   return (
@@ -19,11 +22,17 @@ export default function GrowthPage() {
 
       <SkillAnalytics />
 
+      <SkillGapAnalysis />
+
       <CoachReport />
 
       <WeekReportCard />
 
       <ContributionsCard />
+
+      <ExportSection />
+
+      <ShareCard />
     </div>
   );
 }

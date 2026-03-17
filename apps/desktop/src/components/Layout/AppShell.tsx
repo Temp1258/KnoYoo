@@ -5,6 +5,7 @@ import ChatDrawer from "../AI/ChatDrawer";
 import OllamaBanner from "../AI/OllamaBanner";
 import { useNotes } from "../../hooks/useNotes";
 import { ErrorBoundary } from "../common/ErrorBoundary";
+import ProductTour from "../common/ProductTour";
 import { useState, useEffect } from "react";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import type { Note } from "../../types";
@@ -75,6 +76,9 @@ export default function AppShell() {
 
       {/* AI Chat Drawer */}
       <ChatDrawer selectedNoteId={selectedNoteId} />
+
+      {/* Product Tour (first visit) */}
+      <ProductTour />
     </div>
   );
 }

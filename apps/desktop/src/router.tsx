@@ -4,6 +4,7 @@ import HomePage from "./pages/HomePage";
 import MindMapPage from "./MindMapPage";
 import GrowthPage from "./pages/GrowthPage";
 import OnboardingPage from "./pages/OnboardingPage";
+import TemplateGalleryPage from "./pages/TemplateGalleryPage";
 
 const router = createBrowserRouter([
   {
@@ -16,6 +17,7 @@ const router = createBrowserRouter([
       { index: true, element: <HomePage /> },
       { path: "mindmap", element: <MindMapPage /> },
       { path: "growth", element: <GrowthPage /> },
+      { path: "templates", element: <TemplateGalleryPage /> },
     ],
   },
 ]);
