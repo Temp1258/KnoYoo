@@ -5,6 +5,7 @@ mod db;
 mod growth;
 mod models;
 mod notes;
+mod onboarding;
 mod plan;
 mod tree;
 
@@ -77,6 +78,16 @@ fn main() {
             ai::ai_chat_with_context,
             ai::ai_generate_notes_from_file,
             db::check_db_health,
+            // Onboarding & Coach
+            onboarding::list_career_templates,
+            onboarding::check_needs_onboarding,
+            onboarding::mark_onboarded,
+            onboarding::apply_career_template,
+            onboarding::ai_generate_career_tree,
+            onboarding::list_skill_progress,
+            onboarding::ai_coach_weekly_report,
+            onboarding::get_career_goal,
+            onboarding::set_career_goal,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -57,7 +57,7 @@ export default function ChatDrawer({ selectedNoteId }: Props) {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-          <span className="text-[14px] font-semibold text-text">KnoYoo AI</span>
+          <span className="text-[14px] font-semibold text-text">AI 成长教练</span>
           <button
             className="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-bg-tertiary transition-colors cursor-pointer"
             onClick={() => setChatOpen(false)}
@@ -90,7 +90,7 @@ export default function ChatDrawer({ selectedNoteId }: Props) {
           ))}
 
           {chatMsgs.length === 0 && (
-            <div className="text-[13px] text-text-tertiary text-center py-8">开始提问吧~</div>
+            <div className="text-[13px] text-text-tertiary text-center py-8">向 AI 教练提问，获取个性化学习建议</div>
           )}
 
           {sending && (

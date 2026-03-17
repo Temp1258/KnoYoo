@@ -9,7 +9,7 @@ import {
   extractSubtree,
   getNodeWidth,
 } from "./utils/treeUtils";
-import type { IndustryNode, Point, SkillNote } from "./types";
+import type { IndustryNode, Point, SkillNote, SkillProgress } from "./types";
 import { BASE_NODE_W, MAX_NODE_W, NODE_H, ROW_GAP, PAD_LEFT, COL_GAP_DYNAMIC } from "./constants";
 import MindMapCanvas from "./components/MindMap/MindMapCanvas";
 import NodePreviewTooltip from "./components/MindMap/NodePreviewTooltip";
@@ -41,9 +41,21 @@ export default function MindMapPage() {
     x: number;
     y: number;
   } | null>(null);
+  const [progressMap, setProgressMap] = useState<Map<number, number>>(new Map());
 
   const width = 1200;
   const height = 800;
+
+  // Load skill progress for node coloring
+  useEffect(() => {
+    tauriInvoke<SkillProgress[]>("list_skill_progress").then((list) => {
+      const m = new Map<number, number>();
+      for (const sp of list || []) {
+        m.set(sp.skill_id, sp.progress);
+      }
+      setProgressMap(m);
+    }).catch(console.error);
+  }, [tree]);
 
   const refreshRoots = async () => {
     try {
@@ -420,6 +432,7 @@ export default function MindMapPage() {
           layout={layout}
           widthMap={widthMap}
           active={active}
+          progressMap={progressMap}
           onCanvasWheel={onCanvasWheel}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}

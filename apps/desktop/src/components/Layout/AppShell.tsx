@@ -1,15 +1,24 @@
-import { Outlet } from "react-router";
+import { Outlet, useNavigate } from "react-router";
 import NavSidebar from "./NavSidebar";
 import NoteSidebar from "./NoteSidebar";
 import ChatDrawer from "../AI/ChatDrawer";
 import { useNotes } from "../../hooks/useNotes";
 import { ErrorBoundary } from "../common/ErrorBoundary";
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import type { Note } from "../../types";
 
 export default function AppShell() {
   const notes = useNotes();
   const [selectedNoteId, setSelectedNoteId] = useState<number | null>(null);
+  const navigate = useNavigate();
+
+  // First-launch detection: redirect to onboarding if needed
+  useEffect(() => {
+    tauriInvoke<boolean>("check_needs_onboarding").then((needs) => {
+      if (needs) navigate("/onboarding", { replace: true });
+    }).catch(console.error);
+  }, [navigate]);
 
   const selectedNote: Note | null =
     selectedNoteId != null ? notes.list.find((n) => n.id === selectedNoteId) || null : null;

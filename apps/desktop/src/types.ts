@@ -86,3 +86,27 @@ export type Point = {
   x: number;
   y: number;
 };
+
+// === Onboarding & Coach types ===
+
+export type CareerTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  skills: TemplateSkill[];
+};
+
+export type TemplateSkill = {
+  name: string;
+  importance: number;
+  children: string[];
+};
+
+export type SkillProgress = {
+  skill_id: number;
+  skill_name: string;
+  total_tasks: number;
+  done_tasks: number;
+  note_count: number;
+  progress: number; // 0.0 ~ 1.0
+};
