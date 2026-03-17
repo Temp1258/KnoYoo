@@ -1,11 +1,11 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
-import { Sparkles, ArrowRight, Loader2, Briefcase } from "lucide-react";
+import { Sparkles, ArrowRight, Loader2, Briefcase, Cpu, Check } from "lucide-react";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 import Button from "../components/ui/Button";
 import Input from "../components/ui/Input";
 import Card from "../components/ui/Card";
-import type { CareerTemplate } from "../types";
+import type { CareerTemplate, OllamaStatus } from "../types";
 
 type Step = "welcome" | "choose" | "custom" | "ai-config" | "loading" | "done";
 
@@ -22,6 +22,7 @@ export default function OnboardingPage() {
   const [apiBase, setApiBase] = useState("");
   const [apiKey, setApiKey] = useState("");
   const [model, setModel] = useState("");
+  const [ollamaStatus, setOllamaStatus] = useState<OllamaStatus | null>(null);
 
   useEffect(() => {
     tauriInvoke<CareerTemplate[]>("list_career_templates").then(setTemplates).catch(console.error);
@@ -32,6 +33,8 @@ export default function OnboardingPage() {
       if (cfg.api_key) setApiKey(cfg.api_key);
       if (cfg.model) setModel(cfg.model);
     }).catch(console.error);
+    // Detect Ollama
+    tauriInvoke<OllamaStatus>("detect_ollama").then(setOllamaStatus).catch(console.error);
   }, []);
 
   async function applyTemplate(templateId: string) {
@@ -125,6 +128,36 @@ export default function OnboardingPage() {
           </div>
 
           <Card padding="lg">
+            {/* Ollama quick setup */}
+            {ollamaStatus?.running && ollamaStatus.models.length > 0 && (
+              <div className="mb-4 p-3 rounded-lg bg-blue-500/5 border border-blue-500/15">
+                <div className="flex items-center gap-2 mb-2">
+                  <Cpu size={16} className="text-blue-500" />
+                  <span className="text-[13px] font-medium text-text">检测到本地 Ollama</span>
+                </div>
+                <div className="text-[12px] text-text-secondary mb-2">无需 API Key，一键使用本地模型：</div>
+                <div className="flex flex-wrap gap-1.5">
+                  {ollamaStatus.models.slice(0, 4).map((m) => (
+                    <Button
+                      key={m}
+                      size="sm"
+                      variant="primary"
+                      onClick={async () => {
+                        await tauriInvoke("auto_configure_ollama", { model: m });
+                        setApiKey("ollama");
+                        setApiBase("http://localhost:11434");
+                        setProvider("ollama");
+                        setModel(m);
+                        setStep("custom");
+                      }}
+                    >
+                      <Check size={12} /> {m}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+            )}
+
             <div className="space-y-4">
               <div>
                 <label className="text-[12px] text-text-secondary mb-1 block">Provider</label>

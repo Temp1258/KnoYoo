@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod coach;
 mod db;
 mod growth;
 mod models;
@@ -88,6 +89,15 @@ fn main() {
             onboarding::ai_coach_weekly_report,
             onboarding::get_career_goal,
             onboarding::set_career_goal,
+            // Coach enhancements
+            coach::record_activity,
+            coach::get_streak_info,
+            coach::detect_ollama,
+            coach::auto_configure_ollama,
+            coach::get_daily_tip,
+            coach::get_learning_stats,
+            coach::export_skill_template,
+            coach::import_skill_template,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

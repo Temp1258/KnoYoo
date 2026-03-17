@@ -2,6 +2,7 @@ import { Outlet, useNavigate } from "react-router";
 import NavSidebar from "./NavSidebar";
 import NoteSidebar from "./NoteSidebar";
 import ChatDrawer from "../AI/ChatDrawer";
+import OllamaBanner from "../AI/OllamaBanner";
 import { useNotes } from "../../hooks/useNotes";
 import { ErrorBoundary } from "../common/ErrorBoundary";
 import { useState, useEffect } from "react";
@@ -18,6 +19,8 @@ export default function AppShell() {
     tauriInvoke<boolean>("check_needs_onboarding").then((needs) => {
       if (needs) navigate("/onboarding", { replace: true });
     }).catch(console.error);
+    // Record daily activity on app open
+    tauriInvoke("record_activity").catch(console.error);
   }, [navigate]);
 
   const selectedNote: Note | null =
@@ -55,6 +58,7 @@ export default function AppShell() {
       {/* Main Content */}
       <main className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto px-6 py-6">
+          <OllamaBanner />
           <ErrorBoundary>
             <Outlet
               context={{

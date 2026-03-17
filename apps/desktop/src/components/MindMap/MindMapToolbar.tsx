@@ -6,6 +6,8 @@ import {
   Crosshair,
   Trash2,
   Download,
+  Upload,
+  Share2,
   ZoomIn,
   ZoomOut,
 } from "lucide-react";
@@ -28,6 +30,8 @@ export interface MindMapToolbarProps {
   onZoomIn?: () => void;
   onZoomOut?: () => void;
   onExportPng?: () => void;
+  onExportTemplate?: () => void;
+  onImportTemplate?: () => void;
 }
 
 export default React.memo(function MindMapToolbar({
@@ -45,6 +49,8 @@ export default React.memo(function MindMapToolbar({
   onZoomIn,
   onZoomOut,
   onExportPng,
+  onExportTemplate,
+  onImportTemplate,
 }: MindMapToolbarProps) {
   return (
     <div className="space-y-3">
@@ -95,6 +101,16 @@ export default React.memo(function MindMapToolbar({
             {onExportPng && (
               <Button variant="ghost" size="sm" onClick={onExportPng}>
                 <Download size={12} /> PNG
+              </Button>
+            )}
+            {onExportTemplate && (
+              <Button variant="ghost" size="sm" onClick={onExportTemplate}>
+                <Share2 size={12} /> 导出模板
+              </Button>
+            )}
+            {onImportTemplate && (
+              <Button variant="ghost" size="sm" onClick={onImportTemplate}>
+                <Upload size={12} /> 导入模板
               </Button>
             )}
           </>
