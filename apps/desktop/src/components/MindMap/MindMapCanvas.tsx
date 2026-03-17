@@ -19,6 +19,7 @@ export interface MindMapCanvasProps {
   layout: Map<number, Point>;
   widthMap: Map<number, number>;
   active: IndustryNode | null;
+  progressMap?: Map<number, number>; // skill_id -> progress (0~1)
   onCanvasWheel: (e: React.WheelEvent<HTMLDivElement>) => void;
   onMouseDown: (e: React.MouseEvent<SVGSVGElement>) => void;
   onMouseMove: (e: React.MouseEvent<SVGSVGElement>) => void;
@@ -26,6 +27,20 @@ export interface MindMapCanvasProps {
   onSelect: (node: IndustryNode) => void;
   onNodeHover?: (node: IndustryNode, e: React.MouseEvent) => void;
   onNodeLeave?: () => void;
+}
+
+/** Get node fill color based on progress: gray (0) -> yellow (partial) -> green (done) */
+function getProgressColor(progress: number | undefined): string | null {
+  if (progress === undefined || progress <= 0) return null; // use default
+  if (progress >= 0.8) return "var(--color-success)"; // green
+  if (progress >= 0.3) return "#f59e0b"; // amber/yellow
+  return "#fbbf24"; // light yellow
+}
+
+function getProgressTextColor(progress: number | undefined): string | null {
+  if (progress === undefined || progress <= 0) return null;
+  if (progress >= 0.3) return "#ffffff";
+  return "var(--color-text)";
 }
 
 export default React.memo(function MindMapCanvas({
@@ -40,6 +55,7 @@ export default React.memo(function MindMapCanvas({
   layout,
   widthMap,
   active,
+  progressMap,
   onCanvasWheel,
   onMouseDown,
   onMouseMove,
@@ -83,6 +99,33 @@ export default React.memo(function MindMapCanvas({
             {layers.flat().map((n) => {
               const p = layout.get(n.id)!;
               const selected = active?.id === n.id;
+              const prog = progressMap?.get(n.id);
+              const progFill = getProgressColor(prog);
+              const progText = getProgressTextColor(prog);
+              const nodeW = widthMap.get(n.id) ?? BASE_NODE_W;
+
+              let fill: string;
+              let textFill: string;
+              let stroke: string;
+              let strokeW: number;
+
+              if (selected) {
+                fill = "var(--color-accent)";
+                textFill = "#ffffff";
+                stroke = "var(--color-accent-hover)";
+                strokeW = 2;
+              } else if (progFill) {
+                fill = progFill;
+                textFill = progText || "var(--color-text)";
+                stroke = progFill;
+                strokeW = 1.5;
+              } else {
+                fill = "var(--color-bg-secondary)";
+                textFill = "var(--color-text)";
+                stroke = "var(--color-border)";
+                strokeW = 1;
+              }
+
               return (
                 <g
                   key={n.id}
@@ -93,19 +136,30 @@ export default React.memo(function MindMapCanvas({
                   style={{ cursor: "pointer" }}
                 >
                   <rect
-                    width={widthMap.get(n.id) ?? BASE_NODE_W}
+                    width={nodeW}
                     height={NODE_H}
                     rx={6}
                     ry={6}
-                    fill={selected ? "var(--color-accent)" : "var(--color-bg-secondary)"}
-                    stroke={selected ? "var(--color-accent-hover)" : "var(--color-border)"}
-                    strokeWidth={selected ? 2 : 1}
+                    fill={fill}
+                    stroke={stroke}
+                    strokeWidth={strokeW}
                   />
+                  {/* Progress bar background */}
+                  {prog !== undefined && prog > 0 && !selected && (
+                    <rect
+                      x={0}
+                      y={NODE_H - 3}
+                      width={nodeW * Math.min(prog, 1)}
+                      height={3}
+                      rx={1.5}
+                      fill="rgba(255,255,255,0.4)"
+                    />
+                  )}
                   <text
                     x={8}
                     y={22}
                     fontSize={13}
-                    fill={selected ? "#ffffff" : "var(--color-text)"}
+                    fill={textFill}
                   >
                     {n.name}
                   </text>

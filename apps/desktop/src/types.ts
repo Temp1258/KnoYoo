@@ -86,3 +86,58 @@ export type Point = {
   x: number;
   y: number;
 };
+
+// === Onboarding & Coach types ===
+
+export type CareerTemplate = {
+  id: string;
+  name: string;
+  description: string;
+  skills: TemplateSkill[];
+};
+
+export type TemplateSkill = {
+  name: string;
+  importance: number;
+  children: string[];
+};
+
+export type SkillProgress = {
+  skill_id: number;
+  skill_name: string;
+  total_tasks: number;
+  done_tasks: number;
+  note_count: number;
+  progress: number; // 0.0 ~ 1.0
+};
+
+// === Coach Enhancement types ===
+
+export type StreakInfo = {
+  current_streak: number;
+  best_streak: number;
+  total_active_days: number;
+  active_today: boolean;
+};
+
+export type OllamaStatus = {
+  running: boolean;
+  models: string[];
+};
+
+export type SkillRadarItem = {
+  name: string;
+  progress: number;
+  importance: number;
+};
+
+export type LearningStats = {
+  radar: SkillRadarItem[];
+  total_skills: number;
+  active_skills: number;
+  mastered_skills: number;
+  avg_progress: number;
+  monthly_minutes: number;
+  total_notes: number;
+  completion_pct: number;
+};

@@ -9,7 +9,7 @@ import {
   extractSubtree,
   getNodeWidth,
 } from "./utils/treeUtils";
-import type { IndustryNode, Point, SkillNote } from "./types";
+import type { IndustryNode, Point, SkillNote, SkillProgress } from "./types";
 import { BASE_NODE_W, MAX_NODE_W, NODE_H, ROW_GAP, PAD_LEFT, COL_GAP_DYNAMIC } from "./constants";
 import MindMapCanvas from "./components/MindMap/MindMapCanvas";
 import NodePreviewTooltip from "./components/MindMap/NodePreviewTooltip";
@@ -41,9 +41,21 @@ export default function MindMapPage() {
     x: number;
     y: number;
   } | null>(null);
+  const [progressMap, setProgressMap] = useState<Map<number, number>>(new Map());
 
   const width = 1200;
   const height = 800;
+
+  // Load skill progress for node coloring
+  useEffect(() => {
+    tauriInvoke<SkillProgress[]>("list_skill_progress").then((list) => {
+      const m = new Map<number, number>();
+      for (const sp of list || []) {
+        m.set(sp.skill_id, sp.progress);
+      }
+      setProgressMap(m);
+    }).catch(console.error);
+  }, [tree]);
 
   const refreshRoots = async () => {
     try {
@@ -304,6 +316,47 @@ export default function MindMapPage() {
     }
   };
 
+  const handleExportTemplate = async () => {
+    try {
+      const json = await tauriInvoke<string>("export_skill_template");
+      // Create a download
+      const blob = new Blob([json], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = "knoyoo-template.json";
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast("模板已导出");
+    } catch (e: any) {
+      showToast(`导出失败：${e?.message ?? String(e)}`, "error");
+    }
+  };
+
+  const handleImportTemplate = () => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = ".json";
+    input.onchange = async (e) => {
+      const file = (e.target as HTMLInputElement).files?.[0];
+      if (!file) return;
+      try {
+        const text = await file.text();
+        await tauriInvoke("import_skill_template", { jsonStr: text });
+        await refreshRoots();
+        const allTrees = await tauriInvoke<IndustryNode[]>("list_industry_tree_v1");
+        if (allTrees?.length) {
+          setTree(allTrees);
+          setActive(allTrees[0]);
+        }
+        showToast("模板导入成功");
+      } catch (e: any) {
+        showToast(`导入失败：${e?.message ?? String(e)}`, "error");
+      }
+    };
+    input.click();
+  };
+
   const handleClearAll = async () => {
     if (!roots.length) return;
     const ok = await showConfirm(`确认清空 ${roots.length} 个根节点及其子树？该操作不可撤销。`);
@@ -381,6 +434,8 @@ export default function MindMapPage() {
         onToggleSavedPanel={handleToggleSavedPanel}
         onZoomIn={() => setScale((s) => Math.min(3, s * 1.2))}
         onZoomOut={() => setScale((s) => Math.max(0.3, s / 1.2))}
+        onExportTemplate={handleExportTemplate}
+        onImportTemplate={handleImportTemplate}
         onExportPng={() => {
           const svg = canvasRef.current?.querySelector("svg");
           if (!svg) return;
@@ -420,6 +475,7 @@ export default function MindMapPage() {
           layout={layout}
           widthMap={widthMap}
           active={active}
+          progressMap={progressMap}
           onCanvasWheel={onCanvasWheel}
           onMouseDown={onMouseDown}
           onMouseMove={onMouseMove}

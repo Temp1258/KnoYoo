@@ -263,12 +263,23 @@ pub fn ai_chat_with_context(
     };
 
     // 5. Build system prompt
+    // Get career goal for context
+    let career_goal = crate::db::kv_get(&conn, "career_goal")?.unwrap_or_default();
+    let goal_ctx = if career_goal.is_empty() {
+        String::new()
+    } else {
+        format!("用户的职业目标是：{}\n\n", career_goal)
+    };
+
     let system_prompt = format!(
-        "你是 KnoYoo 智能学习助手。以下是用户的学习数据，请利用这些信息回答问题。\n\n\
+        "你是 KnoYoo AI 成长教练，一个温暖、专业的职业发展顾问。{}\
+以下是用户的学习数据，请结合这些信息提供针对性的学习建议和指导。\
+回答时请用教练的口吻，既鼓励又务实。\n\n\
         ## 最近笔记\n{}\n\
         ## 待办计划\n{}\n\
         ## 技能树\n{}\n\
         {}",
+        goal_ctx,
         if notes_ctx.is_empty() { "暂无笔记\n" } else { &notes_ctx },
         if plans_ctx.is_empty() { "暂无计划\n" } else { &plans_ctx },
         if tree_ctx.is_empty() { "暂无技能\n" } else { &tree_ctx },

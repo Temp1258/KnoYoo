@@ -131,6 +131,8 @@ pub fn open_db() -> Result<Connection, String> {
     migrate_plan_task_hierarchy(&conn)?;
     // === 新增：notes.is_favorite 字段迁移 ===
     migrate_notes_favorite(&conn)?;
+    // === 新增：activity_log 学习打卡表 ===
+    migrate_activity_log(&conn)?;
     Ok(conn)
 }
 
@@ -249,6 +251,17 @@ fn migrate_notes_favorite(conn: &rusqlite::Connection) -> Result<(), String> {
     }
     conn.execute_batch("ALTER TABLE notes ADD COLUMN is_favorite INTEGER DEFAULT 0;")
         .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// 迁移：创建 activity_log 学习打卡表
+fn migrate_activity_log(conn: &rusqlite::Connection) -> Result<(), String> {
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS activity_log (
+            date TEXT PRIMARY KEY
+        );",
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
