@@ -167,11 +167,14 @@ export default function OnboardingPage() {
                   onChange={(e) => setProvider(e.target.value)}
                 >
                   <option value="">（请选择）</option>
-                  <option value="openai">OpenAI / 兼容</option>
-                  <option value="deepseek">DeepSeek</option>
+                  <option value="deepseek">DeepSeek（推荐）</option>
                   <option value="silicon">SiliconCloud</option>
-                  <option value="anthropic">Anthropic</option>
+                  <option value="dashscope">通义千问</option>
+                  <option value="zhipu">智谱 GLM</option>
+                  <option value="moonshot">Moonshot / Kimi</option>
                   <option value="ollama">Ollama（本地）</option>
+                  <option value="openai">OpenAI（需科学上网）</option>
+                  <option value="anthropic">Anthropic（需科学上网）</option>
                 </select>
               </div>
               <div>
@@ -194,7 +197,7 @@ export default function OnboardingPage() {
               <div>
                 <label className="text-[12px] text-text-secondary mb-1 block">模型</label>
                 <Input
-                  placeholder="deepseek-chat / gpt-4o-mini"
+                  placeholder="deepseek-chat / qwen-plus / glm-4-flash"
                   value={model}
                   onChange={(e) => setModel(e.target.value)}
                 />

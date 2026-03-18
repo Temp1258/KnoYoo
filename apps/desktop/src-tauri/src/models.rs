@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 // === Constants ===
-pub const DEFAULT_MODEL: &str = "gpt-4o-mini";
+pub const DEFAULT_MODEL: &str = "deepseek-chat";
 pub const DEFAULT_PAGE_SIZE: u32 = 10;
 pub const MAX_PAGE_SIZE: u32 = 100;
 
@@ -177,7 +177,7 @@ mod tests {
 
     #[test]
     fn default_model_is_set() {
-        assert_eq!(DEFAULT_MODEL, "gpt-4o-mini");
+        assert_eq!(DEFAULT_MODEL, "deepseek-chat");
     }
 
     #[test]
