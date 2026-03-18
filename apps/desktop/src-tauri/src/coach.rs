@@ -906,7 +906,8 @@ pub fn list_gallery_templates() -> Result<Vec<GalleryTemplate>, String> {
         .into_iter()
         .map(|t| {
             let sub_count: usize = t.skills.iter().map(|s| s.children.len()).sum();
-            let category = categorize_template(&t.id.clone());
+            let id = t.id.clone();
+            let category = categorize_template(&id);
             GalleryTemplate {
                 id: t.id,
                 name: t.name,
