@@ -1,4 +1,4 @@
-import { ZoomIn, ZoomOut, Maximize, RotateCcw } from "lucide-react";
+import { ZoomIn, ZoomOut, Maximize } from "lucide-react";
 
 interface Props {
   scale: number;
