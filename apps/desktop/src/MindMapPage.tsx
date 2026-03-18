@@ -554,8 +554,6 @@ export default function MindMapPage() {
         onAddCustomRoot={addCustomRoot}
         onAiExpand={aiExpand}
         onToggleSavedPanel={handleToggleSavedPanel}
-        onZoomIn={() => setScale((s) => Math.min(MAX_SCALE, s * 1.2))}
-        onZoomOut={() => setScale((s) => Math.max(MIN_SCALE, s / 1.2))}
         onExportTemplate={handleExportTemplate}
         onImportTemplate={handleImportTemplate}
         onExportPng={() => {

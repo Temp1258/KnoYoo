@@ -25,8 +25,6 @@ export interface MindMapToolbarProps {
   onAddCustomRoot: () => void;
   onAiExpand: () => void;
   onToggleSavedPanel: () => void;
-  onZoomIn?: () => void;
-  onZoomOut?: () => void;
   onExportPng?: () => void;
   onExportTemplate?: () => void;
   onImportTemplate?: () => void;
@@ -44,8 +42,6 @@ export default React.memo(function MindMapToolbar({
   onAddCustomRoot,
   onAiExpand,
   onToggleSavedPanel,
-  onZoomIn,
-  onZoomOut,
   onExportPng,
   onExportTemplate,
   onImportTemplate,
