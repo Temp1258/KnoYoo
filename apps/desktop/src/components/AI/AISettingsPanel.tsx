@@ -39,7 +39,7 @@ export default function AISettingsPanel() {
             <button
               key={p.label}
               onClick={() => applyPreset(p)}
-              className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 text-[12px] whitespace-nowrap rounded-md border transition-colors cursor-pointer ${
                 aiCfg.provider === p.provider
                   ? "border-accent bg-accent/10 text-accent font-medium"
                   : "border-border text-text-secondary hover:border-accent/30 hover:bg-bg-tertiary"
@@ -55,7 +55,7 @@ export default function AISettingsPanel() {
             <button
               key={p.label}
               onClick={() => applyPreset(p)}
-              className={`px-3 py-1.5 text-[12px] rounded-md border transition-colors cursor-pointer ${
+              className={`px-3 py-1.5 text-[12px] whitespace-nowrap rounded-md border transition-colors cursor-pointer ${
                 aiCfg.provider === p.provider
                   ? "border-accent bg-accent/10 text-accent font-medium"
                   : "border-border text-text-secondary hover:border-accent/30 hover:bg-bg-tertiary"
