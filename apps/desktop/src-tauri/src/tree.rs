@@ -1,7 +1,7 @@
 use rusqlite::{params, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
-use crate::db::{kv_get, open_db};
+use crate::db::open_db;
 use crate::models::{IndustryNode, SavedTreeRow, SkillNote};
 
 /// 列出完整的行业技能树。
@@ -231,14 +231,8 @@ pub fn ai_expand_node_v2(
 ) -> Result<Vec<IndustryNode>, String> {
     let mut conn = open_db().map_err(|e| e.to_string())?;
 
-    let get_kv = |key: &str| -> Result<Option<String>, String> {
-        kv_get(&conn, key)
-    };
-
-    let api_base = get_kv("api_base")?
-        .ok_or_else(|| "缺少 app_kv['api_base']，请在 AI 设置 里配置".to_string())?;
-    let api_key = get_kv("api_key")?
-        .ok_or_else(|| "缺少 app_kv['api_key']，请在 AI 设置 里配置".to_string())?;
+    let cfg = crate::db::read_ai_config(&conn)?;
+    let config = crate::ai_client::AiClientConfig::from_map(&cfg).map_err(|e| e.to_string())?;
 
     let max_n = limit.unwrap_or(0);
     let prompt = if let Some(ref path) = pathNames {
@@ -277,31 +271,15 @@ pub fn ai_expand_node_v2(
         }
     };
 
-    let endpoint = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "model": get_kv("model")?.unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string()),
-        "temperature": 0.2,
-        "messages": [
-            { "role": "system", "content": "你是一个技能扩展助手，只能输出严格 JSON。" },
-            { "role": "user",   "content": prompt }
-        ],
-        "response_format": { "type": "json_object" }
-    });
+    let messages = vec![
+        serde_json::json!({ "role": "system", "content": "你是一个技能扩展助手，只能输出严格 JSON。" }),
+        serde_json::json!({ "role": "user",   "content": prompt }),
+    ];
 
-    let resp = ureq::post(&endpoint)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(body)
-        .map_err(|e| format!("调用 AI 接口失败：{e}"))?;
+    let content_str = crate::ai_client::chat_json(&config, messages, 0.2)
+        .map_err(|e| e.to_string())?;
 
-    let resp_body: crate::models::ChatCompletionResponse = resp
-        .into_json()
-        .map_err(|e| format!("解析 AI 响应失败：{e}"))?;
-    let content_str = resp_body.choices.first()
-        .and_then(|c| c.message.content.as_deref())
-        .ok_or("AI 未返回有效内容")?;
-
-    let payload: serde_json::Value = serde_json::from_str(content_str)
+    let payload: serde_json::Value = serde_json::from_str(&content_str)
         .unwrap_or_else(|_| serde_json::json!({}));
 
     let mut skills: Vec<String> = Vec::new();

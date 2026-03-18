@@ -242,6 +242,9 @@ pub fn add_plan_task(
     Ok(id)
 }
 
+/// Remove duplicate TODO tasks. Only considers tasks as duplicates when they share
+/// the same title, horizon, and due date — preserving intentionally created same-name tasks
+/// with different due dates. DONE tasks are never touched.
 #[tauri::command]
 pub fn cleanup_plan_duplicates(horizon: Option<String>) -> Result<u32, String> {
     let conn = open_db()?;
@@ -249,12 +252,12 @@ pub fn cleanup_plan_duplicates(horizon: Option<String>) -> Result<u32, String> {
     let (sql, params): (String, Vec<String>) = if let Some(h) = horizon {
         (
             "DELETE FROM plan_task
-              WHERE status <> 'DONE'
+              WHERE status = 'TODO'
                 AND horizon = ?1
                 AND id NOT IN (
                   SELECT MAX(id) FROM plan_task
-                   WHERE status <> 'DONE' AND horizon = ?1
-                   GROUP BY horizon, skill_id
+                   WHERE status = 'TODO' AND horizon = ?1
+                   GROUP BY title, horizon, due
                 )"
             .to_string(),
             vec![h],
@@ -262,11 +265,11 @@ pub fn cleanup_plan_duplicates(horizon: Option<String>) -> Result<u32, String> {
     } else {
         (
             "DELETE FROM plan_task
-              WHERE status <> 'DONE'
+              WHERE status = 'TODO'
                 AND id NOT IN (
                   SELECT MAX(id) FROM plan_task
-                   WHERE status <> 'DONE'
-                   GROUP BY horizon, skill_id
+                   WHERE status = 'TODO'
+                   GROUP BY title, horizon, due
                 )"
             .to_string(),
             vec![],
@@ -529,21 +532,7 @@ pub fn ai_generate_plan_by_range(
     let goal_str = goal.unwrap_or_default().trim().to_string();
 
     let cfg = crate::db::read_ai_config(&tx)?;
-    let api_base = cfg
-        .get("api_base")
-        .cloned()
-        .unwrap_or_default()
-        .trim_end_matches('/')
-        .to_string();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-    if api_base.is_empty() || api_key.is_empty() {
-        return Err("AI 配置缺失，请先配置 api_base 和 api_key".into());
-    }
-    let url = format!("{}/v1/chat/completions", api_base);
+    let config = crate::ai_client::AiClientConfig::from_map(&cfg).map_err(|e| e.to_string())?;
 
     let sys_msg = "你是一个成长计划教练，需要根据用户的能力差距和时间范围生成学习任务。\
 每条任务必须包含三个字段：title（简洁明了的行动），minutes（一个合理的学习时长，单位分钟，可为 0 表示里程碑），due（任务截止日期，格式 YYYY-MM-DD），并且 due 必须在给定的时间范围内。\
@@ -555,31 +544,13 @@ pub fn ai_generate_plan_by_range(
         format!("能力差距列表：{}。时间范围：{} 到 {}。总目标：{}。请生成对应的任务。", desc_str, start, end, goal_str)
     };
 
-    let payload = serde_json::json!({
-        "model": model,
-        "temperature": 0.3,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {"role":"system","content": sys_msg},
-            {"role":"user","content": user_msg}
-        ]
-    });
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": sys_msg}),
+        serde_json::json!({"role": "user", "content": user_msg}),
+    ];
 
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(payload)
-        .map_err(|e| format!("AI 调用失败: {}", e))?;
-    if resp.status() >= 300 {
-        return Err(format!("AI HTTP {}", resp.status()));
-    }
-    let resp_body: crate::models::ChatCompletionResponse = resp
-        .into_json()
-        .map_err(|e| format!("解析 AI 响应失败: {}", e))?;
-    let content = resp_body.choices.first()
-        .and_then(|c| c.message.content.as_deref())
-        .ok_or("AI 未返回有效内容")?;
-    let parsed: serde_json::Value = serde_json::from_str(content)
+    let content = crate::ai_client::chat_json(&config, messages, 0.3).map_err(|e| e.to_string())?;
+    let parsed: serde_json::Value = serde_json::from_str(&content)
         .map_err(|e| format!("AI JSON 解析失败: {}", e))?;
     let tasks = parsed["tasks"].as_array()
         .ok_or("AI 未返回 tasks 数组".to_string())?;

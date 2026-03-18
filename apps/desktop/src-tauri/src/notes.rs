@@ -106,6 +106,9 @@ pub fn search_notes(query: String) -> Result<Vec<Hit>, String> {
         return like_search(&conn, &query);
     }
 
+    // Escape FTS5 special characters by quoting the query to prevent FTS syntax injection
+    let fts_query = format!("\"{}\"", query.replace('"', "\"\""));
+
     let mut stmt = conn
         .prepare(
             "SELECT n.id, n.title,
@@ -120,7 +123,7 @@ pub fn search_notes(query: String) -> Result<Vec<Hit>, String> {
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map([&query], |row| {
+        .query_map([&fts_query], |row| {
             Ok(Hit {
                 id: row.get(0)?,
                 title: row.get(1)?,

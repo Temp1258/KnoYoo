@@ -20,7 +20,7 @@ import Card from "./components/ui/Card";
 import Button from "./components/ui/Button";
 
 export default function MindMapPage() {
-  const { showToast, showConfirm } = useToast();
+  const { showToast, showConfirm, showPrompt } = useToast();
   const [tree, setTree] = useState<IndustryNode[]>([]);
   const [active, setActive] = useState<IndustryNode | null>(null);
   const [skillInput, setSkillInput] = useState("");
@@ -48,13 +48,15 @@ export default function MindMapPage() {
 
   // Load skill progress for node coloring
   useEffect(() => {
-    tauriInvoke<SkillProgress[]>("list_skill_progress").then((list) => {
-      const m = new Map<number, number>();
-      for (const sp of list || []) {
-        m.set(sp.skill_id, sp.progress);
-      }
-      setProgressMap(m);
-    }).catch(console.error);
+    tauriInvoke<SkillProgress[]>("list_skill_progress")
+      .then((list) => {
+        const m = new Map<number, number>();
+        for (const sp of list || []) {
+          m.set(sp.skill_id, sp.progress);
+        }
+        setProgressMap(m);
+      })
+      .catch(console.error);
   }, [tree]);
 
   const refreshRoots = async () => {
@@ -67,9 +69,16 @@ export default function MindMapPage() {
   };
 
   // Load roots on mount
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => {
-    void refreshRoots();
+    let cancelled = false;
+    tauriInvoke<IndustryNode[]>("list_root_nodes_v1")
+      .then((r) => {
+        if (!cancelled) setRoots(r || []);
+      })
+      .catch(console.error);
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   const onMouseDown = (e: React.MouseEvent<SVGSVGElement>) => {
@@ -247,7 +256,7 @@ export default function MindMapPage() {
       showToast("当前没有可以保存的行业树", "error");
       return;
     }
-    const name = prompt("请输入行业树的名称：");
+    const name = await showPrompt("请输入行业树的名称：");
     if (!name || !name.trim()) return;
     try {
       await tauriInvoke<number>("save_industry_tree_v1", {

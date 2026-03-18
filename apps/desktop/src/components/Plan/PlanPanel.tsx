@@ -11,7 +11,7 @@ import Card from "../ui/Card";
 import type { PlanTask, PlanGroup } from "../../types";
 
 export default function PlanPanel() {
-  const { showConfirm, showToast } = useToast();
+  const { showConfirm, showToast, showPrompt } = useToast();
   const [horizon] = useState<"WEEK" | "QTR">("WEEK");
   const [filter, setFilter] = useState<"all" | "todo" | "done">("all");
   const [tasks, setTasks] = useState<PlanTask[]>([]);
@@ -111,7 +111,7 @@ export default function PlanPanel() {
   }
 
   async function createGroup() {
-    const name = prompt("输入分组名称：");
+    const name = await showPrompt("输入分组名称：");
     if (!name?.trim()) return;
     try {
       await tauriInvoke<PlanGroup>("create_plan_group", {

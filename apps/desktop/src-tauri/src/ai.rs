@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use crate::ai_client::{self, AiClientConfig};
 use crate::db::open_db;
 use crate::models::ChatMessage;
 
@@ -10,9 +11,17 @@ pub fn get_ai_config() -> Result<HashMap<String, String>, String> {
     crate::db::read_ai_config(&conn)
 }
 
+/// Allowed keys for AI configuration — prevents overwriting arbitrary app_kv entries.
+const ALLOWED_AI_KEYS: &[&str] = &["provider", "api_base", "api_key", "model"];
+
 /// 写入 AI 配置：传 {provider?, api_base?, api_key?, model?}，仅更新提供的键
 #[tauri::command]
 pub fn set_ai_config(cfg: HashMap<String, String>) -> Result<(), String> {
+    for k in cfg.keys() {
+        if !ALLOWED_AI_KEYS.contains(&k.as_str()) {
+            return Err(format!("不允许的配置键: {k}"));
+        }
+    }
     let mut conn = open_db()?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     for (k, v) in cfg {
@@ -59,57 +68,30 @@ pub fn extract_json(s: &str) -> Option<String> {
     None
 }
 
+/// Maximum characters for AI input text to prevent abuse.
+const AI_INPUT_CHAR_LIMIT: usize = 4000;
+
 /// 向 OpenAI 兼容接口发起归类请求，返回 (skill_name, delta) 列表
 pub fn ai_pick_skills(text: &str, cfg: &HashMap<String, String>) -> Result<Vec<(String, i64)>, String> {
-    let api_base = cfg.get("api_base").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-
-    if api_base.is_empty() {
-        return Err("api_base is empty".into());
-    }
-    if api_key.is_empty() {
-        return Err("api_key is empty".into());
-    }
-
-    let url = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
+    let config = AiClientConfig::from_map(cfg).map_err(String::from)?;
 
     let system = r#"你是一个技能归类助手。请从用户文本中提取最相关的"行业技能"，
 将输出限制在 8 项内，并严格返回 JSON 数组：
 [{"name":"技能名称","delta":整数(1~20)}]
 只输出 JSON，不要有其他文字。"#;
 
-    let user = format!("用户文本：\n{}", text);
+    // Truncate and wrap user input with delimiters to prevent prompt injection
+    let sanitized: String = text.chars().take(AI_INPUT_CHAR_LIMIT).collect();
+    let user = format!("---BEGIN USER TEXT---\n{}\n---END USER TEXT---", sanitized);
 
-    let body = serde_json::json!({
-        "model": model,
-        "temperature": 0.2,
-        "messages": [
-            {"role":"system", "content": system},
-            {"role":"user", "content": user}
-        ]
-    });
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": system}),
+        serde_json::json!({"role": "user", "content": user}),
+    ];
 
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(body)
-        .map_err(|e| format!("http error: {}", e))?;
+    let content = ai_client::chat(&config, messages, 0.2).map_err(String::from)?;
 
-    let status = resp.status();
-    if status < 200 || status >= 300 {
-        return Err(format!("api status {}", status));
-    }
-
-    let resp_body: crate::models::ChatCompletionResponse = resp.into_json().map_err(|e| format!("解析 AI 响应失败：{e}"))?;
-    let content = resp_body.choices.first()
-        .and_then(|c| c.message.content.as_deref())
-        .ok_or("AI 未返回有效内容")?;
-
-    let json_s = extract_json(content).ok_or("model did not return JSON")?;
+    let json_s = extract_json(&content).ok_or("model did not return JSON")?;
     let arr: serde_json::Value =
         serde_json::from_str(&json_s).map_err(|e| format!("bad json: {}", e))?;
 
@@ -120,13 +102,7 @@ pub fn ai_pick_skills(text: &str, cfg: &HashMap<String, String>) -> Result<Vec<(
             if name.is_empty() {
                 continue;
             }
-            let mut delta = it.get("delta").and_then(|x| x.as_i64()).unwrap_or(10);
-            if delta < 1 {
-                delta = 1;
-            }
-            if delta > 20 {
-                delta = 20;
-            }
+            let delta = it.get("delta").and_then(|x| x.as_i64()).unwrap_or(10).clamp(1, 20);
             out.push((name.to_string(), delta));
         }
     }
@@ -137,44 +113,14 @@ pub fn ai_pick_skills(text: &str, cfg: &HashMap<String, String>) -> Result<Vec<(
 pub fn ai_chat(messages: Vec<ChatMessage>) -> Result<String, String> {
     tracing::info!("AI chat: {} messages", messages.len());
     let cfg = get_ai_config()?;
-    let api_base = cfg.get("api_base").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-    if api_base.trim().is_empty() {
-        return Err("api_base is empty".into());
-    }
-    if api_key.trim().is_empty() {
-        return Err("api_key is empty".into());
-    }
+    let config = AiClientConfig::from_map(&cfg).map_err(String::from)?;
 
-    let url = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "model": model,
-        "temperature": 0.2,
-        "messages": messages
-            .into_iter()
-            .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
-            .collect::<Vec<_>>()
-    });
+    let msg_values: Vec<serde_json::Value> = messages
+        .into_iter()
+        .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
+        .collect();
 
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(body)
-        .map_err(|e| format!("http error: {}", e))?;
-
-    if resp.status() < 200 || resp.status() >= 300 {
-        return Err(format!("api status {}", resp.status()));
-    }
-    let resp_body: crate::models::ChatCompletionResponse = resp.into_json().map_err(|e| format!("解析 AI 响应失败：{e}"))?;
-    let content = resp_body.choices.first()
-        .and_then(|c| c.message.content.as_deref())
-        .unwrap_or("")
-        .to_string();
-    Ok(content)
+    ai_client::chat(&config, msg_values, 0.2).map_err(String::from)
 }
 
 /// AI chat with automatic context: gathers recent notes, plans, skill tree
@@ -263,7 +209,6 @@ pub fn ai_chat_with_context(
     };
 
     // 5. Build system prompt
-    // Get career goal for context
     let career_goal = crate::db::kv_get(&conn, "career_goal")?.unwrap_or_default();
     let goal_ctx = if career_goal.is_empty() {
         String::new()
@@ -286,7 +231,7 @@ pub fn ai_chat_with_context(
         selected_ctx,
     );
 
-    // 6. Prepend system message to user messages
+    // 6. Build message list
     let mut full_messages: Vec<serde_json::Value> = vec![
         serde_json::json!({"role": "system", "content": system_prompt}),
     ];
@@ -294,43 +239,10 @@ pub fn ai_chat_with_context(
         full_messages.push(serde_json::json!({"role": m.role, "content": m.content}));
     }
 
-    // 7. Call AI API
+    // 7. Call AI API via ai_client
     let cfg = get_ai_config()?;
-    let api_base = cfg.get("api_base").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-    if api_base.trim().is_empty() {
-        return Err("api_base is empty".into());
-    }
-    if api_key.trim().is_empty() {
-        return Err("api_key is empty".into());
-    }
-
-    let url = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
-    let body = serde_json::json!({
-        "model": model,
-        "temperature": 0.3,
-        "messages": full_messages
-    });
-
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(body)
-        .map_err(|e| format!("http error: {}", e))?;
-
-    if resp.status() < 200 || resp.status() >= 300 {
-        return Err(format!("api status {}", resp.status()));
-    }
-    let resp_body: crate::models::ChatCompletionResponse = resp.into_json().map_err(|e| format!("解析 AI 响应失败：{e}"))?;
-    let content = resp_body.choices.first()
-        .and_then(|c| c.message.content.as_deref())
-        .unwrap_or("")
-        .to_string();
-    Ok(content)
+    let config = AiClientConfig::from_map(&cfg).map_err(String::from)?;
+    ai_client::chat(&config, full_messages, 0.3).map_err(String::from)
 }
 
 /// Read a file (TXT/MD), send to AI to extract knowledge points, save as notes
@@ -340,14 +252,20 @@ pub fn ai_generate_notes_from_file(filePath: String) -> Result<Vec<crate::models
     use std::fs;
 
     let path = std::path::Path::new(&filePath);
-    if !path.exists() {
-        return Err("文件不存在".into());
+
+    // Security: canonicalize path and validate it exists
+    let canonical = path.canonicalize().map_err(|_| "文件不存在或路径无效".to_string())?;
+
+    // Reject paths containing suspicious traversal patterns
+    let path_str = canonical.to_string_lossy();
+    if path_str.contains("..") {
+        return Err("不允许的文件路径".into());
     }
 
-    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let text = match ext.as_str() {
         "txt" | "md" | "markdown" | "text" => {
-            fs::read_to_string(path).map_err(|e| format!("读取文件失败: {e}"))?
+            fs::read_to_string(&canonical).map_err(|e| format!("读取文件失败: {e}"))?
         }
         _ => return Err(format!("不支持的文件格式: .{}，目前支持 .txt 和 .md", ext)),
     };
@@ -360,17 +278,7 @@ pub fn ai_generate_notes_from_file(filePath: String) -> Result<Vec<crate::models
     let truncated: String = text.chars().take(8000).collect();
 
     let cfg = get_ai_config()?;
-    let api_base = cfg.get("api_base").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-    if api_base.trim().is_empty() || api_key.trim().is_empty() {
-        return Err("AI 配置缺失，请先配置 api_base 和 api_key".into());
-    }
-
-    let url = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
+    let config = AiClientConfig::from_map(&cfg).map_err(String::from)?;
 
     let sys = "你是知识提取助手。请阅读用户提供的文本，从中提取 3~8 个关键知识点，每个知识点作为一条独立笔记。\
 输出严格 JSON：{\"notes\":[{\"title\":\"简短标题\",\"content\":\"详细内容（100~300字）\"}, ...]}。\
@@ -378,36 +286,15 @@ pub fn ai_generate_notes_from_file(filePath: String) -> Result<Vec<crate::models
 
     let usr = format!("请从以下文本中提取知识点：\n\n{}", truncated);
 
-    let payload = serde_json::json!({
-        "model": model,
-        "temperature": 0.3,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {"role": "system", "content": sys},
-            {"role": "user", "content": usr}
-        ]
-    });
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": sys}),
+        serde_json::json!({"role": "user", "content": usr}),
+    ];
 
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(payload)
-        .map_err(|e| format!("AI 调用失败: {e}"))?;
+    let content = ai_client::chat_json(&config, messages, 0.3).map_err(String::from)?;
 
-    if resp.status() >= 300 {
-        return Err(format!("AI HTTP {}", resp.status()));
-    }
-
-    let resp_body: crate::models::ChatCompletionResponse = resp
-        .into_json()
-        .map_err(|e| format!("解析 AI 响应失败: {e}"))?;
-    let content = resp_body
-        .choices
-        .first()
-        .and_then(|c| c.message.content.as_deref())
-        .ok_or("AI 未返回有效内容")?;
     let parsed: serde_json::Value =
-        serde_json::from_str(content).map_err(|e| format!("AI JSON 解析失败: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("AI JSON 解析失败: {e}"))?;
     let notes_arr = parsed["notes"]
         .as_array()
         .ok_or("AI 未返回 notes 数组")?;

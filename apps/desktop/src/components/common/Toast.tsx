@@ -1,6 +1,7 @@
 import { useState, useCallback, createContext, useContext } from "react";
 import { X } from "lucide-react";
 import Button from "../ui/Button";
+import Input from "../ui/Input";
 
 type ToastType = "success" | "error" | "info";
 
@@ -13,11 +14,13 @@ interface ToastItem {
 interface ToastContextValue {
   showToast: (message: string, type?: ToastType) => void;
   showConfirm: (message: string) => Promise<boolean>;
+  showPrompt: (message: string, defaultValue?: string) => Promise<string | null>;
 }
 
 const ToastContext = createContext<ToastContextValue>({
   showToast: () => {},
   showConfirm: () => Promise.resolve(false),
+  showPrompt: () => Promise.resolve(null),
 });
 
 export const useToast = () => useContext(ToastContext);
@@ -42,6 +45,11 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     message: string;
     resolve: (v: boolean) => void;
   } | null>(null);
+  const [promptState, setPromptState] = useState<{
+    message: string;
+    value: string;
+    resolve: (v: string | null) => void;
+  } | null>(null);
 
   const showToast = useCallback((message: string, type: ToastType = "success") => {
     const id = ++nextId;
@@ -58,13 +66,29 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const showPrompt = useCallback((message: string, defaultValue = ""): Promise<string | null> => {
+    return new Promise((resolve) => {
+      setPromptState({ message, value: defaultValue, resolve });
+    });
+  }, []);
+
   const handleConfirm = (result: boolean) => {
     confirmState?.resolve(result);
     setConfirmState(null);
   };
 
+  const handlePromptSubmit = () => {
+    promptState?.resolve(promptState.value);
+    setPromptState(null);
+  };
+
+  const handlePromptCancel = () => {
+    promptState?.resolve(null);
+    setPromptState(null);
+  };
+
   return (
-    <ToastContext.Provider value={{ showToast, showConfirm }}>
+    <ToastContext.Provider value={{ showToast, showConfirm, showPrompt }}>
       {children}
 
       {/* Toast notifications */}
@@ -96,6 +120,31 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
             <div className="flex justify-end gap-2">
               <Button onClick={() => handleConfirm(false)}>取消</Button>
               <Button variant="primary" onClick={() => handleConfirm(true)}>
+                确认
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Prompt dialog */}
+      {promptState && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 backdrop-blur-sm">
+          <div className="bg-bg-secondary rounded-xl shadow-lg border border-border w-full max-w-sm mx-4 p-5">
+            <p className="text-[14px] text-text m-0 mb-3 whitespace-pre-wrap">
+              {promptState.message}
+            </p>
+            <Input
+              value={promptState.value}
+              onChange={(e) =>
+                setPromptState((prev) => (prev ? { ...prev, value: e.target.value } : null))
+              }
+              onKeyDown={(e) => e.key === "Enter" && handlePromptSubmit()}
+              autoFocus
+            />
+            <div className="flex justify-end gap-2 mt-4">
+              <Button onClick={handlePromptCancel}>取消</Button>
+              <Button variant="primary" onClick={handlePromptSubmit}>
                 确认
               </Button>
             </div>
