@@ -1,6 +1,10 @@
 use directories::ProjectDirs;
 use rusqlite::Connection;
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+/// Tracks whether migrations have been run for the current process.
+static MIGRATIONS_DONE: OnceLock<bool> = OnceLock::new();
 
 /// 获取应用数据目录的路径（不同操作系统位置各异）
 /// 如果目录不存在则会自动创建。
@@ -18,10 +22,10 @@ pub fn app_db_path() -> Result<PathBuf, String> {
 }
 
 /// 打开 SQLite 数据库并执行必要的初始化。
-/// 包含表、索引、触发器以及视图的创建。
+/// Schema creation runs every time (IF NOT EXISTS is idempotent).
+/// Migrations only run once per process lifetime (tracked by OnceLock).
 pub fn open_db() -> Result<Connection, String> {
     let db_path = app_db_path()?;
-    tracing::info!("Database opened at {}", db_path.display());
     let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
     conn.execute_batch(
         r#"
@@ -125,14 +129,24 @@ pub fn open_db() -> Result<Connection, String> {
     )
     .map_err(|e| e.to_string())?;
 
-    // === 新增：plan_task.minutes 字段可空迁移 ===
-    migrate_plan_minutes_nullable(&conn)?;
-    // === 新增：plan_task 层级字段迁移 ===
-    migrate_plan_task_hierarchy(&conn)?;
-    // === 新增：notes.is_favorite 字段迁移 ===
-    migrate_notes_favorite(&conn)?;
-    // === 新增：activity_log 学习打卡表 ===
-    migrate_activity_log(&conn)?;
+    // Run migrations only once per process lifetime
+    MIGRATIONS_DONE.get_or_init(|| {
+        tracing::info!("Running database migrations (first connection)...");
+        if let Err(e) = migrate_plan_minutes_nullable(&conn) {
+            tracing::error!("migrate_plan_minutes_nullable failed: {e}");
+        }
+        if let Err(e) = migrate_plan_task_hierarchy(&conn) {
+            tracing::error!("migrate_plan_task_hierarchy failed: {e}");
+        }
+        if let Err(e) = migrate_notes_favorite(&conn) {
+            tracing::error!("migrate_notes_favorite failed: {e}");
+        }
+        if let Err(e) = migrate_activity_log(&conn) {
+            tracing::error!("migrate_activity_log failed: {e}");
+        }
+        true
+    });
+
     Ok(conn)
 }
 
@@ -285,22 +299,27 @@ pub fn read_ai_config(conn: &rusqlite::Connection) -> Result<std::collections::H
     Ok(out)
 }
 
-/// Collect all descendant node IDs (including the root) using iterative DFS
+/// Collect all descendant node IDs (including the root) using a recursive CTE.
+/// This replaces the previous iterative DFS approach that issued N separate queries.
 pub fn collect_subtree_ids(conn: &rusqlite::Connection, root_id: i64) -> Result<Vec<i64>, String> {
-    let mut stack = vec![root_id];
-    let mut all_ids: Vec<i64> = Vec::new();
-    while let Some(id) = stack.pop() {
-        all_ids.push(id);
-        let mut stmt = conn
-            .prepare("SELECT id FROM industry_skill WHERE parent_id=?1")
-            .map_err(|e| e.to_string())?;
-        let mut rows = stmt
-            .query(rusqlite::params![id])
-            .map_err(|e| e.to_string())?;
-        while let Some(r) = rows.next().map_err(|e| e.to_string())? {
-            let cid: i64 = r.get(0).map_err(|e| e.to_string())?;
-            stack.push(cid);
-        }
+    let mut stmt = conn
+        .prepare(
+            "WITH RECURSIVE sub AS (
+                SELECT id FROM industry_skill WHERE id = ?1
+                UNION ALL
+                SELECT s.id FROM industry_skill s JOIN sub ON s.parent_id = sub.id
+            )
+            SELECT id FROM sub",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![root_id], |r| r.get::<_, i64>(0))
+        .map_err(|e| e.to_string())?;
+
+    let mut all_ids = Vec::new();
+    for r in rows {
+        all_ids.push(r.map_err(|e| e.to_string())?);
     }
     Ok(all_ids)
 }

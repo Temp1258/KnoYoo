@@ -1,6 +1,7 @@
 use chrono::Local;
 use rusqlite::OptionalExtension;
 
+use crate::ai_client;
 use crate::db::open_db;
 
 // ============================================================
@@ -215,15 +216,7 @@ pub fn get_daily_tip() -> Result<String, String> {
 
     // Try AI tip
     let cfg = crate::db::read_ai_config(&conn)?;
-    let api_base = cfg.get("api_base").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-
-    let tip = if !api_base.trim().is_empty() && !api_key.trim().is_empty() {
-        let url = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
+    let tip = if let Some(ai_cfg) = ai_client::try_config(&cfg) {
         let sys = "你是一个温暖的职业成长教练。用一句话给用户今日鼓励或建议。简短有力，不超过50字。用中文。";
         let user_msg = format!(
             "职业目标: {}\n连续学习: {}天\n待办任务: {}项\n逾期任务: {}项",
@@ -233,34 +226,13 @@ pub fn get_daily_tip() -> Result<String, String> {
             overdue_count,
         );
 
-        let payload = serde_json::json!({
-            "model": model,
-            "temperature": 0.7,
-            "max_tokens": 100,
-            "messages": [
-                {"role": "system", "content": sys},
-                {"role": "user", "content": user_msg}
-            ]
-        });
+        let messages = vec![
+            serde_json::json!({"role": "system", "content": sys}),
+            serde_json::json!({"role": "user", "content": user_msg}),
+        ];
 
-        let resp = ureq::post(&url)
-            .set("Authorization", &format!("Bearer {}", api_key))
-            .set("Content-Type", "application/json")
-            .send_json(payload);
-
-        match resp {
-            Ok(r) if r.status() < 300 => {
-                let body: crate::models::ChatCompletionResponse =
-                    r.into_json().unwrap_or_else(|_| crate::models::ChatCompletionResponse {
-                        choices: vec![],
-                    });
-                body.choices
-                    .first()
-                    .and_then(|c| c.message.content.clone())
-                    .unwrap_or_else(|| fallback_tip(&streak_info, pending_count, overdue_count))
-            }
-            _ => fallback_tip(&streak_info, pending_count, overdue_count),
-        }
+        ai_client::chat_with_max_tokens(&ai_cfg, messages, 0.7, 100)
+            .unwrap_or_else(|_| fallback_tip(&streak_info, pending_count, overdue_count))
     } else {
         fallback_tip(&streak_info, pending_count, overdue_count)
     };
@@ -373,20 +345,14 @@ pub fn get_learning_stats() -> Result<LearningStats, String> {
         let total: i64 = row.get(3).map_err(|e| e.to_string())?;
         let notes: i64 = row.get(4).map_err(|e| e.to_string())?;
 
-        let task_progress = if total > 0 {
-            done as f64 / total as f64
-        } else {
-            0.0
-        };
-        let note_signal = (notes as f64 / 5.0).min(1.0);
-        let progress = (task_progress * 0.7 + note_signal * 0.3).min(1.0);
+        let progress = crate::models::calc_skill_progress(done, total, notes);
 
         total_skills += 1;
         sum_progress += progress;
         if progress > 0.0 {
             active_skills += 1;
         }
-        if progress >= 0.8 {
+        if progress >= crate::models::PROGRESS_MASTERED_THRESHOLD {
             mastered_skills += 1;
         }
 
@@ -399,8 +365,8 @@ pub fn get_learning_stats() -> Result<LearningStats, String> {
     drop(rows);
     drop(stmt);
 
-    // Limit radar to top 8 skills by importance
-    radar.truncate(8);
+    // Limit radar to top items by importance
+    radar.truncate(crate::models::RADAR_MAX_ITEMS);
 
     let avg_progress = if total_skills > 0 {
         sum_progress / total_skills as f64
@@ -877,24 +843,21 @@ pub fn ai_skill_gap_analysis() -> Result<String, String> {
     }
 
     let cfg = crate::db::read_ai_config(&conn)?;
-    let api_base = cfg.get("api_base").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg.get("model").cloned().unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-
-    if api_base.trim().is_empty() || api_key.trim().is_empty() {
-        // Non-AI fallback: find highest-importance skill with lowest progress
-        let mut fallback = String::from("## 技能差距分析\n\n");
-        fallback.push_str("**配置 AI 后可获得更详细的个性化建议。**\n\n");
-        fallback.push_str("### 当前技能状态\n\n");
-        for line in &skill_lines {
-            fallback.push_str(line);
-            fallback.push('\n');
+    let ai_cfg = match ai_client::try_config(&cfg) {
+        Some(c) => c,
+        None => {
+            // Non-AI fallback: find highest-importance skill with lowest progress
+            let mut fallback = String::from("## 技能差距分析\n\n");
+            fallback.push_str("**配置 AI 后可获得更详细的个性化建议。**\n\n");
+            fallback.push_str("### 当前技能状态\n\n");
+            for line in &skill_lines {
+                fallback.push_str(line);
+                fallback.push('\n');
+            }
+            fallback.push_str("\n> 建议优先关注重要性高但进度低的技能。\n");
+            return Ok(fallback);
         }
-        fallback.push_str("\n> 建议优先关注重要性高但进度低的技能。\n");
-        return Ok(fallback);
-    }
-
-    let url = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
+    };
 
     let sys = "你是一个资深的职业成长教练，擅长分析技能差距并给出具体、可执行的学习建议。\
 请分析用户的技能数据，用 Markdown 格式输出：\n\
@@ -910,30 +873,13 @@ pub fn ai_skill_gap_analysis() -> Result<String, String> {
         skill_lines.join("\n")
     );
 
-    let payload = serde_json::json!({
-        "model": model,
-        "temperature": 0.4,
-        "messages": [
-            {"role": "system", "content": sys},
-            {"role": "user", "content": user_msg}
-        ]
-    });
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": sys}),
+        serde_json::json!({"role": "user", "content": user_msg}),
+    ];
 
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(payload)
+    let content = ai_client::chat(&ai_cfg, messages, 0.4)
         .map_err(|e| format!("AI 调用失败: {e}"))?;
-
-    if resp.status() >= 300 {
-        return Err(format!("AI HTTP {}", resp.status()));
-    }
-
-    let body: crate::models::ChatCompletionResponse = resp.into_json().map_err(|e| format!("解析失败: {e}"))?;
-    let content = body.choices.first()
-        .and_then(|c| c.message.content.as_deref())
-        .unwrap_or("无法生成分析")
-        .to_string();
 
     Ok(content)
 }

@@ -1,23 +1,70 @@
+import { lazy, Suspense } from "react";
 import { createBrowserRouter } from "react-router";
 import AppShell from "./components/Layout/AppShell";
-import HomePage from "./pages/HomePage";
-import MindMapPage from "./MindMapPage";
-import GrowthPage from "./pages/GrowthPage";
-import OnboardingPage from "./pages/OnboardingPage";
-import TemplateGalleryPage from "./pages/TemplateGalleryPage";
+
+// Route-level code splitting: each page is lazy-loaded
+const HomePage = lazy(() => import("./pages/HomePage"));
+const MindMapPage = lazy(() => import("./MindMapPage"));
+const GrowthPage = lazy(() => import("./pages/GrowthPage"));
+const OnboardingPage = lazy(() => import("./pages/OnboardingPage"));
+const TemplateGalleryPage = lazy(() => import("./pages/TemplateGalleryPage"));
+
+function SuspenseWrapper({ children }: { children: React.ReactNode }) {
+  return (
+    <Suspense
+      fallback={
+        <div className="flex h-full items-center justify-center text-neutral-400">加载中...</div>
+      }
+    >
+      {children}
+    </Suspense>
+  );
+}
 
 const router = createBrowserRouter([
   {
     path: "/onboarding",
-    element: <OnboardingPage />,
+    element: (
+      <SuspenseWrapper>
+        <OnboardingPage />
+      </SuspenseWrapper>
+    ),
   },
   {
     element: <AppShell />,
     children: [
-      { index: true, element: <HomePage /> },
-      { path: "mindmap", element: <MindMapPage /> },
-      { path: "growth", element: <GrowthPage /> },
-      { path: "templates", element: <TemplateGalleryPage /> },
+      {
+        index: true,
+        element: (
+          <SuspenseWrapper>
+            <HomePage />
+          </SuspenseWrapper>
+        ),
+      },
+      {
+        path: "mindmap",
+        element: (
+          <SuspenseWrapper>
+            <MindMapPage />
+          </SuspenseWrapper>
+        ),
+      },
+      {
+        path: "growth",
+        element: (
+          <SuspenseWrapper>
+            <GrowthPage />
+          </SuspenseWrapper>
+        ),
+      },
+      {
+        path: "templates",
+        element: (
+          <SuspenseWrapper>
+            <TemplateGalleryPage />
+          </SuspenseWrapper>
+        ),
+      },
     ],
   },
 ]);

@@ -404,18 +404,7 @@ pub fn apply_career_template(template_id: String) -> Result<Vec<IndustryNode>, S
 pub fn ai_generate_career_tree(career: String) -> Result<Vec<IndustryNode>, String> {
     let conn = open_db()?;
     let cfg = crate::db::read_ai_config(&conn)?;
-    let api_base = cfg.get("api_base").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-
-    if api_base.trim().is_empty() || api_key.trim().is_empty() {
-        return Err("AI 配置缺失，请先配置 api_base 和 api_key".into());
-    }
-
-    let url = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
+    let config = crate::ai_client::AiClientConfig::from_map(&cfg).map_err(String::from)?;
 
     let sys = format!(
         "你是一个职业成长教练。用户告诉你他的职业目标，你需要为他生成一棵完整的技能树。\
@@ -430,37 +419,15 @@ pub fn ai_generate_career_tree(career: String) -> Result<Vec<IndustryNode>, Stri
 
     let usr = format!("我的职业目标是：{}", career);
 
-    let payload = serde_json::json!({
-        "model": model,
-        "temperature": 0.3,
-        "response_format": { "type": "json_object" },
-        "messages": [
-            {"role": "system", "content": sys},
-            {"role": "user", "content": usr}
-        ]
-    });
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": sys}),
+        serde_json::json!({"role": "user", "content": usr}),
+    ];
 
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(payload)
-        .map_err(|e| format!("AI 调用失败: {e}"))?;
-
-    if resp.status() >= 300 {
-        return Err(format!("AI HTTP {}", resp.status()));
-    }
-
-    let resp_body: crate::models::ChatCompletionResponse = resp
-        .into_json()
-        .map_err(|e| format!("解析 AI 响应失败: {e}"))?;
-    let content = resp_body
-        .choices
-        .first()
-        .and_then(|c| c.message.content.as_deref())
-        .ok_or("AI 未返回有效内容")?;
+    let content = crate::ai_client::chat_json(&config, messages, 0.3).map_err(String::from)?;
 
     let parsed: serde_json::Value =
-        serde_json::from_str(content).map_err(|e| format!("AI JSON 解析失败: {e}"))?;
+        serde_json::from_str(&content).map_err(|e| format!("AI JSON 解析失败: {e}"))?;
 
     let career_name = parsed["career"]
         .as_str()
@@ -626,14 +593,7 @@ pub fn list_skill_progress() -> Result<Vec<SkillProgress>, String> {
         let done: i64 = row.get(3).map_err(|e| e.to_string())?;
         let notes: i64 = row.get(4).map_err(|e| e.to_string())?;
 
-        // Progress = weighted combo of task completion + note activity
-        let task_progress = if total > 0 {
-            done as f64 / total as f64
-        } else {
-            0.0
-        };
-        let note_signal = (notes as f64 / 5.0).min(1.0); // 5 notes = max signal
-        let progress = (task_progress * 0.7 + note_signal * 0.3).min(1.0);
+        let progress = crate::models::calc_skill_progress(done, total, notes);
 
         out.push(SkillProgress {
             skill_id: row.get(0).map_err(|e| e.to_string())?,
@@ -709,32 +669,26 @@ pub fn ai_coach_weekly_report() -> Result<String, String> {
 
     // Build AI prompt
     let cfg = crate::db::read_ai_config(&conn)?;
-    let api_base = cfg.get("api_base").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
-    let model = cfg
-        .get("model")
-        .cloned()
-        .unwrap_or_else(|| crate::models::DEFAULT_MODEL.to_string());
-
-    if api_base.trim().is_empty() || api_key.trim().is_empty() {
-        // Fall back to a non-AI report
-        let mut report = format!(
-            "## 本周学习报告 ({} ~ {})\n\n",
-            start_s, end_s
-        );
-        report.push_str(&format!("**完成任务**: {} 项\n", tasks_done));
-        report.push_str(&format!("**学习时间**: {} 分钟\n", minutes_done));
-        report.push_str(&format!("**新增笔记**: {} 篇\n", new_notes));
-        report.push_str(&format!("**待办积压**: {} 项\n\n", tasks_pending));
-        if !overdue_buf.is_empty() {
-            report.push_str("**逾期任务**:\n");
-            report.push_str(&overdue_buf);
+    let config = match crate::ai_client::try_config(&cfg) {
+        Some(c) => c,
+        None => {
+            // Fall back to a non-AI report
+            let mut report = format!(
+                "## 本周学习报告 ({} ~ {})\n\n",
+                start_s, end_s
+            );
+            report.push_str(&format!("**完成任务**: {} 项\n", tasks_done));
+            report.push_str(&format!("**学习时间**: {} 分钟\n", minutes_done));
+            report.push_str(&format!("**新增笔记**: {} 篇\n", new_notes));
+            report.push_str(&format!("**待办积压**: {} 项\n\n", tasks_pending));
+            if !overdue_buf.is_empty() {
+                report.push_str("**逾期任务**:\n");
+                report.push_str(&overdue_buf);
+            }
+            report.push_str("\n> 配置 AI 后可获得个性化教练建议。");
+            return Ok(report);
         }
-        report.push_str("\n> 配置 AI 后可获得个性化教练建议。");
-        return Ok(report);
-    }
-
-    let url = format!("{}/v1/chat/completions", api_base.trim_end_matches('/'));
+    };
 
     let sys = "你是一个温暖但直率的职业成长教练。根据用户本周的学习数据，用教练的口吻给出：\n\
 1. 一句话总评（鼓励或提醒）\n\
@@ -753,34 +707,12 @@ pub fn ai_coach_weekly_report() -> Result<String, String> {
         if overdue_buf.is_empty() { "无逾期任务".to_string() } else { format!("逾期任务:\n{}", overdue_buf) }
     );
 
-    let payload = serde_json::json!({
-        "model": model,
-        "temperature": 0.5,
-        "messages": [
-            {"role": "system", "content": sys},
-            {"role": "user", "content": user_msg}
-        ]
-    });
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": sys}),
+        serde_json::json!({"role": "user", "content": user_msg}),
+    ];
 
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", api_key))
-        .set("Content-Type", "application/json")
-        .send_json(payload)
-        .map_err(|e| format!("AI 调用失败: {e}"))?;
-
-    if resp.status() >= 300 {
-        return Err(format!("AI HTTP {}", resp.status()));
-    }
-
-    let resp_body: crate::models::ChatCompletionResponse = resp
-        .into_json()
-        .map_err(|e| format!("解析 AI 响应失败: {e}"))?;
-    let content = resp_body
-        .choices
-        .first()
-        .and_then(|c| c.message.content.as_deref())
-        .unwrap_or("无法生成报告")
-        .to_string();
+    let content = crate::ai_client::chat(&config, messages, 0.5).map_err(String::from)?;
 
     Ok(content)
 }

@@ -1,8 +1,10 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod ai;
+mod ai_client;
 mod coach;
 mod db;
+mod error;
 mod growth;
 mod models;
 mod notes;
