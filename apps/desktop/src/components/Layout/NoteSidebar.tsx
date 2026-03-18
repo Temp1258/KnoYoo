@@ -165,7 +165,7 @@ export default function NoteSidebar({
           <div className="flex items-center gap-1">
             <button
               onClick={handleExport}
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-text-secondary hover:bg-bg-tertiary hover:text-text transition-colors duration-200 cursor-pointer"
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] whitespace-nowrap text-text-secondary hover:bg-bg-tertiary hover:text-text transition-colors duration-200 cursor-pointer"
               title="导出笔记"
             >
               <Download size={12} />
@@ -173,7 +173,7 @@ export default function NoteSidebar({
             </button>
             <button
               onClick={handleImport}
-              className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-text-secondary hover:bg-bg-tertiary hover:text-text transition-colors duration-200 cursor-pointer"
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] whitespace-nowrap text-text-secondary hover:bg-bg-tertiary hover:text-text transition-colors duration-200 cursor-pointer"
               title="导入笔记"
             >
               <Upload size={12} />
