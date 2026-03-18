@@ -11,9 +11,17 @@ pub fn get_ai_config() -> Result<HashMap<String, String>, String> {
     crate::db::read_ai_config(&conn)
 }
 
+/// Allowed keys for AI configuration — prevents overwriting arbitrary app_kv entries.
+const ALLOWED_AI_KEYS: &[&str] = &["provider", "api_base", "api_key", "model"];
+
 /// 写入 AI 配置：传 {provider?, api_base?, api_key?, model?}，仅更新提供的键
 #[tauri::command]
 pub fn set_ai_config(cfg: HashMap<String, String>) -> Result<(), String> {
+    for k in cfg.keys() {
+        if !ALLOWED_AI_KEYS.contains(&k.as_str()) {
+            return Err(format!("不允许的配置键: {k}"));
+        }
+    }
     let mut conn = open_db()?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     for (k, v) in cfg {
@@ -60,6 +68,9 @@ pub fn extract_json(s: &str) -> Option<String> {
     None
 }
 
+/// Maximum characters for AI input text to prevent abuse.
+const AI_INPUT_CHAR_LIMIT: usize = 4000;
+
 /// 向 OpenAI 兼容接口发起归类请求，返回 (skill_name, delta) 列表
 pub fn ai_pick_skills(text: &str, cfg: &HashMap<String, String>) -> Result<Vec<(String, i64)>, String> {
     let config = AiClientConfig::from_map(cfg).map_err(String::from)?;
@@ -69,7 +80,9 @@ pub fn ai_pick_skills(text: &str, cfg: &HashMap<String, String>) -> Result<Vec<(
 [{"name":"技能名称","delta":整数(1~20)}]
 只输出 JSON，不要有其他文字。"#;
 
-    let user = format!("用户文本：\n{}", text);
+    // Truncate and wrap user input with delimiters to prevent prompt injection
+    let sanitized: String = text.chars().take(AI_INPUT_CHAR_LIMIT).collect();
+    let user = format!("---BEGIN USER TEXT---\n{}\n---END USER TEXT---", sanitized);
 
     let messages = vec![
         serde_json::json!({"role": "system", "content": system}),

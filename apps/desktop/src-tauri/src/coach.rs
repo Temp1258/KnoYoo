@@ -73,24 +73,25 @@ fn compute_streak(conn: &rusqlite::Connection) -> Result<StreakInfo, String> {
         .query_row("SELECT COUNT(*) FROM activity_log", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
 
-    // Compute current streak: count consecutive days backwards from today/yesterday
-    let mut streak = 0i64;
-    let start = if active_today { today } else { today - chrono::Duration::days(1) };
+    // Compute current streak using a single query: fetch all dates DESC, then count consecutive
+    let start_date = if active_today { today } else { today - chrono::Duration::days(1) };
+    let start_s = start_date.format("%Y-%m-%d").to_string();
 
-    let mut check_date = start;
-    loop {
-        let ds = check_date.format("%Y-%m-%d").to_string();
-        let exists: bool = conn
-            .query_row(
-                "SELECT COUNT(*) FROM activity_log WHERE date=?1",
-                [&ds],
-                |r| r.get::<_, i64>(0),
-            )
-            .map_err(|e| e.to_string())?
-            > 0;
-        if exists {
+    let mut stmt = conn
+        .prepare(
+            "SELECT date FROM activity_log WHERE date <= ?1 ORDER BY date DESC",
+        )
+        .map_err(|e| e.to_string())?;
+    let mut rows = stmt.query([&start_s]).map_err(|e| e.to_string())?;
+
+    let mut streak = 0i64;
+    let mut expected = start_date;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let ds: String = row.get(0).map_err(|e| e.to_string())?;
+        let exp_s = expected.format("%Y-%m-%d").to_string();
+        if ds == exp_s {
             streak += 1;
-            check_date -= chrono::Duration::days(1);
+            expected -= chrono::Duration::days(1);
         } else {
             break;
         }

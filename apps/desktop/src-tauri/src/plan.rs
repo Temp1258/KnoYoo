@@ -242,6 +242,9 @@ pub fn add_plan_task(
     Ok(id)
 }
 
+/// Remove duplicate TODO tasks. Only considers tasks as duplicates when they share
+/// the same title, horizon, and due date — preserving intentionally created same-name tasks
+/// with different due dates. DONE tasks are never touched.
 #[tauri::command]
 pub fn cleanup_plan_duplicates(horizon: Option<String>) -> Result<u32, String> {
     let conn = open_db()?;
@@ -249,12 +252,12 @@ pub fn cleanup_plan_duplicates(horizon: Option<String>) -> Result<u32, String> {
     let (sql, params): (String, Vec<String>) = if let Some(h) = horizon {
         (
             "DELETE FROM plan_task
-              WHERE status <> 'DONE'
+              WHERE status = 'TODO'
                 AND horizon = ?1
                 AND id NOT IN (
                   SELECT MAX(id) FROM plan_task
-                   WHERE status <> 'DONE' AND horizon = ?1
-                   GROUP BY horizon, skill_id
+                   WHERE status = 'TODO' AND horizon = ?1
+                   GROUP BY title, horizon, due
                 )"
             .to_string(),
             vec![h],
@@ -262,11 +265,11 @@ pub fn cleanup_plan_duplicates(horizon: Option<String>) -> Result<u32, String> {
     } else {
         (
             "DELETE FROM plan_task
-              WHERE status <> 'DONE'
+              WHERE status = 'TODO'
                 AND id NOT IN (
                   SELECT MAX(id) FROM plan_task
-                   WHERE status <> 'DONE'
-                   GROUP BY horizon, skill_id
+                   WHERE status = 'TODO'
+                   GROUP BY title, horizon, due
                 )"
             .to_string(),
             vec![],

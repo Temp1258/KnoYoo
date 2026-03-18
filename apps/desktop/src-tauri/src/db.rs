@@ -57,12 +57,6 @@ pub fn open_db() -> Result<Connection, String> {
         VALUES (new.id, new.title, new.content);
     END;
 
-    -- 先删历史重复，再加唯一索引（避免导入造成重复）
-    DELETE FROM notes
-    WHERE id NOT IN (
-      SELECT MIN(id) FROM notes
-      GROUP BY title, content, created_at
-    );
     CREATE UNIQUE INDEX IF NOT EXISTS idx_notes_dedupe
       ON notes(title, content, created_at);
 
@@ -132,6 +126,9 @@ pub fn open_db() -> Result<Connection, String> {
     // Run migrations only once per process lifetime
     MIGRATIONS_DONE.get_or_init(|| {
         tracing::info!("Running database migrations (first connection)...");
+        if let Err(e) = migrate_dedupe_notes(&conn) {
+            tracing::error!("migrate_dedupe_notes failed: {e}");
+        }
         if let Err(e) = migrate_plan_minutes_nullable(&conn) {
             tracing::error!("migrate_plan_minutes_nullable failed: {e}");
         }
@@ -148,6 +145,29 @@ pub fn open_db() -> Result<Connection, String> {
     });
 
     Ok(conn)
+}
+
+/// One-time migration: remove historical duplicate notes (before unique index was added).
+fn migrate_dedupe_notes(conn: &rusqlite::Connection) -> Result<(), String> {
+    let dupes: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE id NOT IN (
+                SELECT MIN(id) FROM notes GROUP BY title, content, created_at
+            )",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if dupes > 0 {
+        conn.execute_batch(
+            "DELETE FROM notes WHERE id NOT IN (
+                SELECT MIN(id) FROM notes GROUP BY title, content, created_at
+            );",
+        )
+        .map_err(|e| e.to_string())?;
+        tracing::info!("Deduplicated {} duplicate notes", dupes);
+    }
+    Ok(())
 }
 
 /// 数据库迁移：将 plan_task.minutes 字段改为可为空。

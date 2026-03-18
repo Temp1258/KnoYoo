@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::io::Read as _;
 use std::time::Duration;
 
 use crate::error::AppError;
@@ -45,19 +46,37 @@ impl AiClientConfig {
 /// Default timeout for AI HTTP requests.
 const AI_TIMEOUT: Duration = Duration::from_secs(60);
 
-/// Send a chat completion request and return the raw text content.
-pub fn chat(
+/// Maximum response body size (2 MB) to prevent OOM from malicious/misconfigured servers.
+const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Optional overrides for the chat request body.
+#[derive(Default)]
+struct ChatOptions {
+    response_format_json: bool,
+    max_tokens: Option<u32>,
+}
+
+/// Internal: send a chat completion request with configurable options.
+fn send_chat(
     config: &AiClientConfig,
     messages: Vec<serde_json::Value>,
     temperature: f64,
+    opts: ChatOptions,
 ) -> Result<String, AppError> {
     let url = format!("{}/v1/chat/completions", config.api_base.trim_end_matches('/'));
 
-    let body = serde_json::json!({
+    let mut body = serde_json::json!({
         "model": config.model,
         "temperature": temperature,
         "messages": messages,
     });
+
+    if opts.response_format_json {
+        body["response_format"] = serde_json::json!({ "type": "json_object" });
+    }
+    if let Some(mt) = opts.max_tokens {
+        body["max_tokens"] = serde_json::json!(mt);
+    }
 
     let resp = ureq::post(&url)
         .set("Authorization", &format!("Bearer {}", config.api_key))
@@ -69,8 +88,9 @@ pub fn chat(
         return Err(AppError::ai(format!("AI API 返回 HTTP {}", resp.status())));
     }
 
-    let resp_body: ChatCompletionResponse = resp
-        .into_json()
+    // Read response with size limit to prevent OOM
+    let reader = resp.into_reader().take(MAX_RESPONSE_BYTES);
+    let resp_body: ChatCompletionResponse = serde_json::from_reader(reader)
         .map_err(|e| AppError::ai(format!("解析 AI 响应失败: {e}")))?;
 
     resp_body
@@ -80,40 +100,25 @@ pub fn chat(
         .ok_or_else(|| AppError::ai("AI 未返回有效内容"))
 }
 
+/// Send a chat completion request and return the raw text content.
+pub fn chat(
+    config: &AiClientConfig,
+    messages: Vec<serde_json::Value>,
+    temperature: f64,
+) -> Result<String, AppError> {
+    send_chat(config, messages, temperature, ChatOptions::default())
+}
+
 /// Send a chat completion request with `response_format: json_object` and return raw text.
 pub fn chat_json(
     config: &AiClientConfig,
     messages: Vec<serde_json::Value>,
     temperature: f64,
 ) -> Result<String, AppError> {
-    let url = format!("{}/v1/chat/completions", config.api_base.trim_end_matches('/'));
-
-    let body = serde_json::json!({
-        "model": config.model,
-        "temperature": temperature,
-        "response_format": { "type": "json_object" },
-        "messages": messages,
-    });
-
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", config.api_key))
-        .set("Content-Type", "application/json")
-        .timeout(AI_TIMEOUT)
-        .send_json(body)?;
-
-    if resp.status() >= 300 {
-        return Err(AppError::ai(format!("AI API 返回 HTTP {}", resp.status())));
-    }
-
-    let resp_body: ChatCompletionResponse = resp
-        .into_json()
-        .map_err(|e| AppError::ai(format!("解析 AI 响应失败: {e}")))?;
-
-    resp_body
-        .choices
-        .first()
-        .and_then(|c| c.message.content.clone())
-        .ok_or_else(|| AppError::ai("AI 未返回有效内容"))
+    send_chat(config, messages, temperature, ChatOptions {
+        response_format_json: true,
+        ..Default::default()
+    })
 }
 
 /// Send a chat request with optional max_tokens.
@@ -123,34 +128,10 @@ pub fn chat_with_max_tokens(
     temperature: f64,
     max_tokens: u32,
 ) -> Result<String, AppError> {
-    let url = format!("{}/v1/chat/completions", config.api_base.trim_end_matches('/'));
-
-    let body = serde_json::json!({
-        "model": config.model,
-        "temperature": temperature,
-        "max_tokens": max_tokens,
-        "messages": messages,
-    });
-
-    let resp = ureq::post(&url)
-        .set("Authorization", &format!("Bearer {}", config.api_key))
-        .set("Content-Type", "application/json")
-        .timeout(AI_TIMEOUT)
-        .send_json(body)?;
-
-    if resp.status() >= 300 {
-        return Err(AppError::ai(format!("AI API 返回 HTTP {}", resp.status())));
-    }
-
-    let resp_body: ChatCompletionResponse = resp
-        .into_json()
-        .map_err(|e| AppError::ai(format!("解析 AI 响应失败: {e}")))?;
-
-    resp_body
-        .choices
-        .first()
-        .and_then(|c| c.message.content.clone())
-        .ok_or_else(|| AppError::ai("AI 未返回有效内容"))
+    send_chat(config, messages, temperature, ChatOptions {
+        max_tokens: Some(max_tokens),
+        ..Default::default()
+    })
 }
 
 /// Try to get AI config; returns Ok(None) if not configured.
@@ -190,5 +171,12 @@ mod tests {
         .into();
         let config = AiClientConfig::from_map(&cfg).unwrap();
         assert_eq!(config.model, "gpt-4o");
+    }
+
+    #[test]
+    fn chat_options_default_is_plain() {
+        let opts = ChatOptions::default();
+        assert!(!opts.response_format_json);
+        assert!(opts.max_tokens.is_none());
     }
 }
