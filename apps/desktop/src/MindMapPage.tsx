@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useRef } from "react";
+import React, { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import { tauriInvoke } from "./hooks/useTauriInvoke";
 import { useToast } from "./components/common/Toast";
 import {
@@ -16,8 +16,12 @@ import NodePreviewTooltip from "./components/MindMap/NodePreviewTooltip";
 import SavedTreesPanel from "./components/MindMap/SavedTreesPanel";
 import type { SavedTree } from "./components/MindMap/SavedTreesPanel";
 import MindMapToolbar from "./components/MindMap/MindMapToolbar";
+import ZoomControls from "./components/MindMap/ZoomControls";
 import Card from "./components/ui/Card";
 import Button from "./components/ui/Button";
+
+const MIN_SCALE = 0.15;
+const MAX_SCALE = 3;
 
 export default function MindMapPage() {
   const { showToast, showConfirm, showPrompt } = useToast();
@@ -42,9 +46,26 @@ export default function MindMapPage() {
     y: number;
   } | null>(null);
   const [progressMap, setProgressMap] = useState<Map<number, number>>(new Map());
+  const [canvasSize, setCanvasSize] = useState({ width: 1200, height: 800 });
 
-  const width = 1200;
-  const height = 800;
+  const width = canvasSize.width;
+  const height = canvasSize.height;
+
+  // Responsive canvas sizing
+  useEffect(() => {
+    const el = canvasRef.current;
+    if (!el) return;
+    const observer = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const { width: w, height: h } = entry.contentRect;
+        if (w > 0 && h > 0) {
+          setCanvasSize({ width: Math.round(w), height: Math.round(h) });
+        }
+      }
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, []);
 
   // Load skill progress for node coloring
   useEffect(() => {
@@ -97,12 +118,26 @@ export default function MindMapPage() {
     });
   };
   const onMouseUp = () => setDrag(null);
-  const onCanvasWheel = (e: React.WheelEvent<HTMLDivElement>) => {
+
+  // Zoom toward cursor position
+  const onCanvasWheel = useCallback((e: React.WheelEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
-    const k = e.deltaY > 0 ? 0.9 : 1.1;
-    setScale((s) => Math.min(3, Math.max(0.3, s * k)));
-  };
+    const rect = e.currentTarget.getBoundingClientRect();
+    const mx = e.clientX - rect.left;
+    const my = e.clientY - rect.top;
+    const factor = e.deltaY > 0 ? 0.9 : 1.1;
+
+    setScale((prevScale) => {
+      const newScale = Math.min(MAX_SCALE, Math.max(MIN_SCALE, prevScale * factor));
+      const ratio = newScale / prevScale;
+      setPan((prevPan) => ({
+        x: mx - (mx - prevPan.x) * ratio,
+        y: my - (my - prevPan.y) * ratio,
+      }));
+      return newScale;
+    });
+  }, []);
 
   const layers = useMemo(() => flattenByDepth(tree), [tree]);
 
@@ -141,7 +176,30 @@ export default function MindMapPage() {
       });
     });
     return pos;
-  }, [layers, widthMap]);
+  }, [layers, widthMap, height]);
+
+  // Get bounding box of all nodes
+  const getTreeBounds = useCallback(() => {
+    const ids: number[] = [];
+    const gather = (n: IndustryNode) => {
+      ids.push(n.id);
+      (n.children || []).forEach(gather);
+    };
+    tree.forEach(gather);
+    if (ids.length === 0) return null;
+
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const id of ids) {
+      const p = layout.get(id);
+      if (!p) continue;
+      const w = widthMap.get(id) ?? BASE_NODE_W;
+      minX = Math.min(minX, p.x);
+      minY = Math.min(minY, p.y);
+      maxX = Math.max(maxX, p.x + w);
+      maxY = Math.max(maxY, p.y + NODE_H);
+    }
+    return { minX, minY, maxX, maxY };
+  }, [tree, layout, widthMap]);
 
   function centerOnNodeIds(ids: number[]) {
     const pts = ids.map((id) => layout.get(id)).filter(Boolean) as Point[];
@@ -163,6 +221,61 @@ export default function MindMapPage() {
       y: height / 2 - cyWorld * scale,
     });
   }
+
+  // Fit entire tree into view with padding
+  const fitView = useCallback(() => {
+    const bounds = getTreeBounds();
+    if (!bounds) return;
+    const padding = 60;
+    const treeW = bounds.maxX - bounds.minX + padding * 2;
+    const treeH = bounds.maxY - bounds.minY + padding * 2;
+    const scaleX = width / treeW;
+    const scaleY = height / treeH;
+    const newScale = Math.min(Math.max(Math.min(scaleX, scaleY), MIN_SCALE), MAX_SCALE);
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    setScale(newScale);
+    setPan({
+      x: width / 2 - cx * newScale,
+      y: height / 2 - cy * newScale,
+    });
+  }, [getTreeBounds, width, height]);
+
+  const resetZoom = useCallback(() => {
+    setScale(1);
+    // Re-center at scale 1
+    const bounds = getTreeBounds();
+    if (!bounds) return;
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cy = (bounds.minY + bounds.maxY) / 2;
+    setPan({
+      x: width / 2 - cx,
+      y: height / 2 - cy,
+    });
+  }, [getTreeBounds, width, height]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      if (e.key === "=" || e.key === "+") {
+        e.preventDefault();
+        setScale((s) => Math.min(MAX_SCALE, s * 1.2));
+      } else if (e.key === "-") {
+        e.preventDefault();
+        setScale((s) => Math.max(MIN_SCALE, s / 1.2));
+      } else if (e.key === "0") {
+        e.preventDefault();
+        resetZoom();
+      } else if (e.key === "1") {
+        e.preventDefault();
+        fitView();
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [fitView, resetZoom]);
 
   const scrollToCanvas = () =>
     canvasRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
@@ -428,7 +541,7 @@ export default function MindMapPage() {
   };
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3 h-full">
       <MindMapToolbar
         roots={roots}
         tree={tree}
@@ -441,8 +554,8 @@ export default function MindMapPage() {
         onAddCustomRoot={addCustomRoot}
         onAiExpand={aiExpand}
         onToggleSavedPanel={handleToggleSavedPanel}
-        onZoomIn={() => setScale((s) => Math.min(3, s * 1.2))}
-        onZoomOut={() => setScale((s) => Math.max(0.3, s / 1.2))}
+        onZoomIn={() => setScale((s) => Math.min(MAX_SCALE, s * 1.2))}
+        onZoomOut={() => setScale((s) => Math.max(MIN_SCALE, s / 1.2))}
         onExportTemplate={handleExportTemplate}
         onImportTemplate={handleImportTemplate}
         onExportPng={() => {
@@ -471,7 +584,7 @@ export default function MindMapPage() {
         />
       )}
 
-      <div className="relative">
+      <div className="relative flex-1 min-h-[400px]">
         <MindMapCanvas
           canvasRef={canvasRef}
           width={width}
@@ -509,6 +622,13 @@ export default function MindMapPage() {
             y={hoverNode.y}
           />
         )}
+        <ZoomControls
+          scale={scale}
+          onZoomIn={() => setScale((s) => Math.min(MAX_SCALE, s * 1.2))}
+          onZoomOut={() => setScale((s) => Math.max(MIN_SCALE, s / 1.2))}
+          onFitView={fitView}
+          onResetZoom={resetZoom}
+        />
       </div>
 
       {/* Detail panel */}

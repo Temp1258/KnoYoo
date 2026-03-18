@@ -69,7 +69,7 @@ export default React.memo(function MindMapCanvas({
       ref={canvasRef}
       onWheel={onCanvasWheel}
       onWheelCapture={onCanvasWheel}
-      className="mindmap-canvas rounded-lg border border-border overflow-hidden"
+      className="mindmap-canvas rounded-lg border border-border overflow-hidden w-full h-full"
     >
       <svg
         width="100%"

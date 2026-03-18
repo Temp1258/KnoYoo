@@ -39,7 +39,7 @@ export default function FileUploadButton({ onGenerated }: Props) {
     <button
       onClick={handleUpload}
       disabled={loading}
-      className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] text-text-secondary hover:bg-bg-tertiary hover:text-text disabled:opacity-50 transition-colors duration-200 cursor-pointer"
+      className="flex items-center gap-1 px-2 py-1 rounded-md text-[12px] whitespace-nowrap text-text-secondary hover:bg-bg-tertiary hover:text-text disabled:opacity-50 transition-colors duration-200 cursor-pointer"
       title="上传文件生成笔记"
     >
       {loading ? <Loader2 size={12} className="animate-spin" /> : <FileUp size={12} />}

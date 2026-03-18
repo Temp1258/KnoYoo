@@ -9,7 +9,7 @@ interface Props extends ButtonHTMLAttributes<HTMLButtonElement> {
 }
 
 const base =
-  "inline-flex items-center justify-center gap-1.5 font-medium rounded-md transition-colors duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none";
+  "inline-flex items-center justify-center gap-1.5 font-medium rounded-md transition-colors duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed select-none whitespace-nowrap";
 
 const variants: Record<Variant, string> = {
   default: "bg-bg-secondary text-text border border-border hover:bg-bg-tertiary active:bg-border",
