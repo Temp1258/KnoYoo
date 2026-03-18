@@ -1,5 +1,4 @@
 use chrono::Local;
-use rusqlite::OptionalExtension;
 
 use crate::ai_client;
 use crate::db::open_db;
@@ -154,7 +153,7 @@ pub fn detect_ollama() -> Result<OllamaStatus, String> {
 /// Auto-configure Ollama as the AI provider if running
 #[tauri::command]
 pub fn auto_configure_ollama(model: String) -> Result<(), String> {
-    let conn = open_db()?;
+    let mut conn = open_db()?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     let pairs = [
         ("provider", "ollama"),
@@ -907,7 +906,7 @@ pub fn list_gallery_templates() -> Result<Vec<GalleryTemplate>, String> {
         .into_iter()
         .map(|t| {
             let sub_count: usize = t.skills.iter().map(|s| s.children.len()).sum();
-            let category = categorize_template(&t.id);
+            let category = categorize_template(&t.id.clone());
             GalleryTemplate {
                 id: t.id,
                 name: t.name,
