@@ -161,6 +161,23 @@ export type MarkdownExport = {
   filename: string;
 };
 
+// === Web Clips types ===
+
+export type WebClip = {
+  id: number;
+  url: string;
+  title: string;
+  content: string;
+  summary: string;
+  tags: string[];
+  source_type: string;
+  favicon: string;
+  is_read: boolean;
+  is_starred: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
 export type GalleryTemplate = {
   id: string;
   name: string;

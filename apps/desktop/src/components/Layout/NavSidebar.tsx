@@ -1,11 +1,12 @@
 import { NavLink } from "react-router";
-import { CalendarCheck, Network, Sparkles, BookOpen, Sun, Moon } from "lucide-react";
+import { CalendarCheck, Network, Sparkles, BookOpen, Bookmark, Sun, Moon } from "lucide-react";
 import { useState, useEffect } from "react";
 
 const navItems = [
   { to: "/", icon: CalendarCheck, label: "计划" },
   { to: "/mindmap", icon: Network, label: "技能树" },
   { to: "/growth", icon: Sparkles, label: "教练" },
+  { to: "/clips", icon: Bookmark, label: "收藏库" },
   { to: "/templates", icon: BookOpen, label: "模板库" },
 ];
 
