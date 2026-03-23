@@ -8,6 +8,7 @@ const MindMapPage = lazy(() => import("./MindMapPage"));
 const GrowthPage = lazy(() => import("./pages/GrowthPage"));
 const OnboardingPage = lazy(() => import("./pages/OnboardingPage"));
 const TemplateGalleryPage = lazy(() => import("./pages/TemplateGalleryPage"));
+const ClipsPage = lazy(() => import("./pages/ClipsPage"));
 
 function SuspenseWrapper({ children }: { children: React.ReactNode }) {
   return (
@@ -62,6 +63,14 @@ const router = createBrowserRouter([
         element: (
           <SuspenseWrapper>
             <TemplateGalleryPage />
+          </SuspenseWrapper>
+        ),
+      },
+      {
+        path: "clips",
+        element: (
+          <SuspenseWrapper>
+            <ClipsPage />
           </SuspenseWrapper>
         ),
       },

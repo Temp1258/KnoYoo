@@ -119,6 +119,42 @@ pub fn open_db() -> Result<Connection, String> {
       key TEXT PRIMARY KEY,
       val TEXT NOT NULL
     );
+
+    -- 网页收藏库
+    CREATE TABLE IF NOT EXISTS web_clips (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      url         TEXT NOT NULL,
+      title       TEXT NOT NULL DEFAULT '',
+      content     TEXT NOT NULL DEFAULT '',
+      summary     TEXT NOT NULL DEFAULT '',
+      tags        TEXT NOT NULL DEFAULT '[]',
+      source_type TEXT NOT NULL DEFAULT 'article',
+      favicon     TEXT NOT NULL DEFAULT '',
+      is_read     INTEGER NOT NULL DEFAULT 0,
+      is_starred  INTEGER NOT NULL DEFAULT 0,
+      created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_web_clips_url ON web_clips(url);
+
+    CREATE VIRTUAL TABLE IF NOT EXISTS web_clips_fts
+      USING fts5(title, content, summary, tags, content='web_clips', content_rowid='id');
+
+    CREATE TRIGGER IF NOT EXISTS web_clips_ai AFTER INSERT ON web_clips BEGIN
+      INSERT INTO web_clips_fts(rowid, title, content, summary, tags)
+        VALUES (new.id, new.title, new.content, new.summary, new.tags);
+    END;
+    CREATE TRIGGER IF NOT EXISTS web_clips_ad AFTER DELETE ON web_clips BEGIN
+      INSERT INTO web_clips_fts(web_clips_fts, rowid, title, content, summary, tags)
+        VALUES('delete', old.id, old.title, old.content, old.summary, old.tags);
+    END;
+    CREATE TRIGGER IF NOT EXISTS web_clips_au AFTER UPDATE ON web_clips BEGIN
+      INSERT INTO web_clips_fts(web_clips_fts, rowid, title, content, summary, tags)
+        VALUES('delete', old.id, old.title, old.content, old.summary, old.tags);
+      INSERT INTO web_clips_fts(rowid, title, content, summary, tags)
+        VALUES (new.id, new.title, new.content, new.summary, new.tags);
+    END;
     "#,
     )
     .map_err(|e| e.to_string())?;

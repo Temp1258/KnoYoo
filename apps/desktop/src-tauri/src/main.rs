@@ -2,6 +2,8 @@
 
 mod ai;
 mod ai_client;
+mod clip_server;
+mod clips;
 mod coach;
 mod db;
 mod error;
@@ -26,6 +28,9 @@ fn init_logging() {
 
 fn main() {
     init_logging();
+
+    // Start local HTTP server for browser extension communication
+    clip_server::start_server();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -104,6 +109,17 @@ fn main() {
             coach::get_share_card_data,
             coach::ai_skill_gap_analysis,
             coach::list_gallery_templates,
+            // Web Clips
+            clips::add_web_clip,
+            clips::list_web_clips,
+            clips::search_web_clips,
+            clips::delete_web_clip,
+            clips::toggle_star_clip,
+            clips::count_web_clips,
+            clips::list_clip_tags,
+            clips::ai_auto_tag_clip,
+            clip_server::get_clip_server_token,
+            clip_server::get_clip_server_port,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
