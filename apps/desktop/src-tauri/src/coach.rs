@@ -73,13 +73,15 @@ fn compute_streak(conn: &rusqlite::Connection) -> Result<StreakInfo, String> {
         .map_err(|e| e.to_string())?;
 
     // Compute current streak using a single query: fetch all dates DESC, then count consecutive
-    let start_date = if active_today { today } else { today - chrono::Duration::days(1) };
+    let start_date = if active_today {
+        today
+    } else {
+        today - chrono::Duration::days(1)
+    };
     let start_s = start_date.format("%Y-%m-%d").to_string();
 
     let mut stmt = conn
-        .prepare(
-            "SELECT date FROM activity_log WHERE date <= ?1 ORDER BY date DESC",
-        )
+        .prepare("SELECT date FROM activity_log WHERE date <= ?1 ORDER BY date DESC")
         .map_err(|e| e.to_string())?;
     let mut rows = stmt.query([&start_s]).map_err(|e| e.to_string())?;
 
@@ -220,7 +222,11 @@ pub fn get_daily_tip() -> Result<String, String> {
         let sys = "你是一个温暖的职业成长教练。用一句话给用户今日鼓励或建议。简短有力，不超过50字。用中文。";
         let user_msg = format!(
             "职业目标: {}\n连续学习: {}天\n待办任务: {}项\n逾期任务: {}项",
-            if career_goal.is_empty() { "未设置" } else { &career_goal },
+            if career_goal.is_empty() {
+                "未设置"
+            } else {
+                &career_goal
+            },
             streak_info.current_streak,
             pending_count,
             overdue_count,
@@ -262,7 +268,10 @@ fn fallback_tip(streak: &StreakInfo, pending: i64, overdue: i64) -> String {
             streak.current_streak + 1
         )
     } else if pending > 0 {
-        format!("你有 {} 项待办任务等你完成，选一个最感兴趣的开始吧!", pending)
+        format!(
+            "你有 {} 项待办任务等你完成，选一个最感兴趣的开始吧!",
+            pending
+        )
     } else {
         "新的一天，新的开始! 记录一条学习笔记吧。".to_string()
     }
@@ -375,10 +384,7 @@ pub fn get_learning_stats() -> Result<LearningStats, String> {
     };
 
     // Monthly minutes
-    let month_start = Local::now()
-        .date_naive()
-        .format("%Y-%m-01")
-        .to_string();
+    let month_start = Local::now().date_naive().format("%Y-%m-01").to_string();
     let monthly_minutes: i64 = conn
         .query_row(
             "SELECT COALESCE(SUM(minutes), 0) FROM plan_task WHERE status='DONE' AND due >= ?1",
@@ -456,7 +462,9 @@ pub fn export_skill_template() -> Result<String, String> {
     let mut cat_stmt = conn
         .prepare("SELECT id, name, importance FROM industry_skill WHERE parent_id=?1 ORDER BY importance DESC")
         .map_err(|e| e.to_string())?;
-    let mut cat_rows = cat_stmt.query(rusqlite::params![rid]).map_err(|e| e.to_string())?;
+    let mut cat_rows = cat_stmt
+        .query(rusqlite::params![rid])
+        .map_err(|e| e.to_string())?;
 
     let mut skills = Vec::new();
     let mut cat_ids = Vec::new();
@@ -596,7 +604,10 @@ pub fn export_learning_markdown() -> Result<MarkdownExport, String> {
     md.push_str("## 学习统计\n\n");
     md.push_str(&format!("- 连续学习：**{}** 天\n", streak.current_streak));
     md.push_str(&format!("- 最长连续：**{}** 天\n", streak.best_streak));
-    md.push_str(&format!("- 总活跃天数：**{}** 天\n\n", streak.total_active_days));
+    md.push_str(&format!(
+        "- 总活跃天数：**{}** 天\n\n",
+        streak.total_active_days
+    ));
 
     // Skill tree
     md.push_str("## 技能树\n\n");
@@ -621,7 +632,9 @@ pub fn export_learning_markdown() -> Result<MarkdownExport, String> {
         let mut cat_stmt = conn
             .prepare("SELECT id, name, importance FROM industry_skill WHERE parent_id=?1 ORDER BY importance DESC")
             .map_err(|e| e.to_string())?;
-        let mut cat_rows = cat_stmt.query(rusqlite::params![root_id]).map_err(|e| e.to_string())?;
+        let mut cat_rows = cat_stmt
+            .query(rusqlite::params![root_id])
+            .map_err(|e| e.to_string())?;
         let mut cats: Vec<(i64, String, i64)> = Vec::new();
         while let Some(row) = cat_rows.next().map_err(|e| e.to_string())? {
             cats.push((
@@ -640,7 +653,9 @@ pub fn export_learning_markdown() -> Result<MarkdownExport, String> {
             let mut child_stmt = conn
                 .prepare("SELECT name FROM industry_skill WHERE parent_id=?1 ORDER BY id")
                 .map_err(|e| e.to_string())?;
-            let mut child_rows = child_stmt.query(rusqlite::params![cat_id]).map_err(|e| e.to_string())?;
+            let mut child_rows = child_stmt
+                .query(rusqlite::params![cat_id])
+                .map_err(|e| e.to_string())?;
             while let Some(row) = child_rows.next().map_err(|e| e.to_string())? {
                 let cn: String = row.get(0).map_err(|e| e.to_string())?;
                 md.push_str(&format!("  - {}\n", cn));
@@ -652,18 +667,34 @@ pub fn export_learning_markdown() -> Result<MarkdownExport, String> {
     // Tasks summary
     md.push_str("## 学习计划\n\n");
     let done_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM plan_task WHERE status='DONE'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM plan_task WHERE status='DONE'",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     let todo_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM plan_task WHERE status='TODO'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM plan_task WHERE status='TODO'",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
     let total_minutes: i64 = conn
-        .query_row("SELECT COALESCE(SUM(minutes), 0) FROM plan_task WHERE status='DONE'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COALESCE(SUM(minutes), 0) FROM plan_task WHERE status='DONE'",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
 
     md.push_str(&format!("- 已完成任务：**{}** 项\n", done_count));
     md.push_str(&format!("- 待办任务：**{}** 项\n", todo_count));
-    md.push_str(&format!("- 累计学习时间：**{}** 分钟（约 {:.1} 小时）\n\n", total_minutes, total_minutes as f64 / 60.0));
+    md.push_str(&format!(
+        "- 累计学习时间：**{}** 分钟（约 {:.1} 小时）\n\n",
+        total_minutes,
+        total_minutes as f64 / 60.0
+    ));
 
     // Pending tasks
     let mut todo_stmt = conn
@@ -700,13 +731,21 @@ pub fn export_learning_markdown() -> Result<MarkdownExport, String> {
         let title: String = row.get(0).map_err(|e| e.to_string())?;
         let preview: String = row.get(1).map_err(|e| e.to_string())?;
         let date: String = row.get(2).map_err(|e| e.to_string())?;
-        md.push_str(&format!("#### {} ({})\n\n{}...\n\n", title, &date[..10.min(date.len())], preview));
+        md.push_str(&format!(
+            "#### {} ({})\n\n{}...\n\n",
+            title,
+            &date[..10.min(date.len())],
+            preview
+        ));
     }
 
     md.push_str("---\n\n*由 KnoYoo AI 成长教练生成*\n");
 
     let filename = format!("KnoYoo-Report-{}.md", today);
-    Ok(MarkdownExport { content: md, filename })
+    Ok(MarkdownExport {
+        content: md,
+        filename,
+    })
 }
 
 // ============================================================
@@ -749,11 +788,19 @@ pub fn get_share_card_data() -> Result<ShareCardData, String> {
         .map_err(|e| e.to_string())?;
 
     let total_tasks_done: i64 = conn
-        .query_row("SELECT COUNT(*) FROM plan_task WHERE status='DONE'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM plan_task WHERE status='DONE'",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
 
     let total_minutes: i64 = conn
-        .query_row("SELECT COALESCE(SUM(minutes),0) FROM plan_task WHERE status='DONE'", [], |r| r.get(0))
+        .query_row(
+            "SELECT COALESCE(SUM(minutes),0) FROM plan_task WHERE status='DONE'",
+            [],
+            |r| r.get(0),
+        )
         .map_err(|e| e.to_string())?;
 
     // Top skills by importance
@@ -869,7 +916,11 @@ pub fn ai_skill_gap_analysis() -> Result<String, String> {
 
     let user_msg = format!(
         "职业目标: {}\n\n当前技能进度:\n{}",
-        if career_goal.is_empty() { "未设置" } else { &career_goal },
+        if career_goal.is_empty() {
+            "未设置"
+        } else {
+            &career_goal
+        },
         skill_lines.join("\n")
     );
 
@@ -878,8 +929,8 @@ pub fn ai_skill_gap_analysis() -> Result<String, String> {
         serde_json::json!({"role": "user", "content": user_msg}),
     ];
 
-    let content = ai_client::chat(&ai_cfg, messages, 0.4)
-        .map_err(|e| format!("AI 调用失败: {e}"))?;
+    let content =
+        ai_client::chat(&ai_cfg, messages, 0.4).map_err(|e| format!("AI 调用失败: {e}"))?;
 
     Ok(content)
 }
@@ -923,8 +974,10 @@ pub fn list_gallery_templates() -> Result<Vec<GalleryTemplate>, String> {
 
 fn categorize_template(id: &str) -> &str {
     match id {
-        "frontend" | "backend" | "fullstack" | "mobile" | "devops" | "cloud_architect" | "embedded" | "test_engineer" => "工程技术",
-        "data_analyst" | "data_engineer" | "ai_engineer" | "blockchain" | "game_dev" | "security" => "数据与专业技术",
+        "frontend" | "backend" | "fullstack" | "mobile" | "devops" | "cloud_architect"
+        | "embedded" | "test_engineer" => "工程技术",
+        "data_analyst" | "data_engineer" | "ai_engineer" | "blockchain" | "game_dev"
+        | "security" => "数据与专业技术",
         "product_manager" | "project_manager" | "ui_designer" => "产品与设计",
         "marketing" | "content_creator" | "hr" => "运营与管理",
         _ => "其他",

@@ -768,3 +768,141 @@ pub fn ai_weekly_clip_summary() -> Result<String, String> {
 
     ai_client::chat(&config, messages, 0.4).map_err(String::from)
 }
+
+// ── Clip → Note Conversion (Phase 5) ──────────────────────────────────────
+
+/// Convert a web clip to a note. Optionally add personal annotation.
+/// Returns the new note ID.
+#[tauri::command]
+pub fn clip_to_note(id: i64, annotation: Option<String>) -> Result<i64, String> {
+    let conn = open_db()?;
+
+    let (title, content, summary, tags, url): (String, String, String, String, String) = conn
+        .query_row(
+            "SELECT title, content, summary, tags, url FROM web_clips WHERE id = ?1",
+            [id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // Build note content: annotation + summary + source link + original content (truncated)
+    let mut note_content = String::new();
+
+    if let Some(ref ann) = annotation {
+        if !ann.trim().is_empty() {
+            note_content.push_str(&format!("## 我的笔记\n\n{}\n\n", ann.trim()));
+        }
+    }
+
+    if !summary.is_empty() {
+        note_content.push_str(&format!("## AI 摘要\n\n{}\n\n", summary));
+    }
+
+    note_content.push_str(&format!("## 原文来源\n\n{}\n\n", url));
+
+    // Include original content, truncated to reasonable length
+    let truncated: String = content.chars().take(3000).collect();
+    if !truncated.is_empty() {
+        note_content.push_str(&format!("## 原文内容\n\n{}", truncated));
+        if content.chars().count() > 3000 {
+            note_content.push_str("\n\n...（内容已截断，完整内容请查看原文）");
+        }
+    }
+
+    // Insert as note
+    let note_title = format!("[收藏] {}", title);
+    conn.execute(
+        "INSERT INTO notes (title, content) VALUES (?1, ?2)",
+        rusqlite::params![note_title, note_content],
+    )
+    .map_err(|e| e.to_string())?;
+    let note_id = conn.last_insert_rowid();
+
+    // Link note to same skills as the clip (via negative clip_id convention)
+    let skill_ids: Vec<i64> = {
+        let mut stmt = conn
+            .prepare("SELECT skill_id FROM note_skill_map WHERE note_id = ?1")
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([-id], |r| r.get(0))
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect()
+    };
+    for skill_id in &skill_ids {
+        let _ = conn.execute(
+            "INSERT OR IGNORE INTO note_skill_map (note_id, skill_id, weight) VALUES (?1, ?2, 1)",
+            rusqlite::params![note_id, skill_id],
+        );
+    }
+
+    // Also try AI skill classification on the note content
+    let tags_vec: Vec<String> = serde_json::from_str(&tags).unwrap_or_default();
+    if !tags_vec.is_empty() {
+        let cfg = crate::db::read_ai_config(&conn).ok();
+        if cfg.is_some() {
+            // Use existing tags to find matching skills
+            let mut stmt = conn
+                .prepare("SELECT id FROM industry_skill WHERE name = ?1")
+                .map_err(|e| e.to_string())?;
+            for tag in &tags_vec {
+                if let Ok(sid) = stmt.query_row([tag], |r| r.get::<_, i64>(0)) {
+                    let _ = conn.execute(
+                        "INSERT OR IGNORE INTO note_skill_map (note_id, skill_id, weight) VALUES (?1, ?2, 1)",
+                        rusqlite::params![note_id, sid],
+                    );
+                }
+            }
+        }
+    }
+
+    tracing::info!("Converted clip {} to note {}", id, note_id);
+    Ok(note_id)
+}
+
+/// Get skill tree suggestions based on clip tag frequency.
+/// Returns tags that appear 5+ times but don't have a matching skill node.
+#[tauri::command]
+pub fn suggest_skill_from_clips() -> Result<Vec<(String, i64)>, String> {
+    let conn = open_db()?;
+
+    // Count tag frequency across all clips
+    let mut stmt = conn
+        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .map_err(|e| e.to_string())?;
+
+    let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for r in rows {
+        let json_str = r.map_err(|e| e.to_string())?;
+        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&json_str) {
+            for t in tags {
+                *tag_counts.entry(t).or_insert(0) += 1;
+            }
+        }
+    }
+
+    // Get existing skill names
+    let existing_skills: std::collections::HashSet<String> = {
+        let mut stmt = conn
+            .prepare("SELECT name FROM industry_skill")
+            .map_err(|e| e.to_string())?;
+        stmt.query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect()
+    };
+
+    // Filter: tags with 5+ clips that don't match any existing skill
+    let threshold = 5;
+    let mut suggestions: Vec<(String, i64)> = tag_counts
+        .into_iter()
+        .filter(|(tag, count)| *count >= threshold && !existing_skills.contains(tag))
+        .collect();
+
+    suggestions.sort_by(|a, b| b.1.cmp(&a.1));
+    suggestions.truncate(10);
+
+    Ok(suggestions)
+}
