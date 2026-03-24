@@ -6,6 +6,11 @@ dist/
 # Logs
 *.log
 
+# Build cache
+*.tsbuildinfo
+vite.config.js
+vite.config.d.ts
+
 # Keep sources tracked (VERY IMPORTANT)
 !src/
 !src/**
