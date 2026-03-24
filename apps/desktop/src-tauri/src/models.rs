@@ -16,10 +16,6 @@ pub const PROGRESS_NOTE_MAX: f64 = 5.0;
 pub const PROGRESS_MASTERED_THRESHOLD: f64 = 0.8;
 
 // AI context limits
-/// Maximum characters to send from a file to AI for note extraction
-pub const AI_FILE_CHAR_LIMIT: usize = 8000;
-/// Maximum skills AI can return for classification
-pub const AI_SKILL_PICK_LIMIT: usize = 8;
 /// Max items for radar chart display
 pub const RADAR_MAX_ITEMS: usize = 8;
 

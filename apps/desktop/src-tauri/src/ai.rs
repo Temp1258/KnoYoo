@@ -68,54 +68,6 @@ pub fn extract_json(s: &str) -> Option<String> {
     None
 }
 
-/// Maximum characters for AI input text to prevent abuse.
-const AI_INPUT_CHAR_LIMIT: usize = 4000;
-
-/// 向 OpenAI 兼容接口发起归类请求，返回 (skill_name, delta) 列表
-pub fn ai_pick_skills(
-    text: &str,
-    cfg: &HashMap<String, String>,
-) -> Result<Vec<(String, i64)>, String> {
-    let config = AiClientConfig::from_map(cfg).map_err(String::from)?;
-
-    let system = r#"你是一个技能归类助手。请从用户文本中提取最相关的"行业技能"，
-将输出限制在 8 项内，并严格返回 JSON 数组：
-[{"name":"技能名称","delta":整数(1~20)}]
-只输出 JSON，不要有其他文字。"#;
-
-    // Truncate and wrap user input with delimiters to prevent prompt injection
-    let sanitized: String = text.chars().take(AI_INPUT_CHAR_LIMIT).collect();
-    let user = format!("---BEGIN USER TEXT---\n{}\n---END USER TEXT---", sanitized);
-
-    let messages = vec![
-        serde_json::json!({"role": "system", "content": system}),
-        serde_json::json!({"role": "user", "content": user}),
-    ];
-
-    let content = ai_client::chat(&config, messages, 0.2).map_err(String::from)?;
-
-    let json_s = extract_json(&content).ok_or("model did not return JSON")?;
-    let arr: serde_json::Value =
-        serde_json::from_str(&json_s).map_err(|e| format!("bad json: {}", e))?;
-
-    let mut out = Vec::new();
-    if let Some(items) = arr.as_array() {
-        for it in items {
-            let name = it.get("name").and_then(|x| x.as_str()).unwrap_or("").trim();
-            if name.is_empty() {
-                continue;
-            }
-            let delta = it
-                .get("delta")
-                .and_then(|x| x.as_i64())
-                .unwrap_or(10)
-                .clamp(1, 20);
-            out.push((name.to_string(), delta));
-        }
-    }
-    Ok(out)
-}
-
 #[tauri::command]
 pub fn ai_chat(messages: Vec<ChatMessage>) -> Result<String, String> {
     tracing::info!("AI chat: {} messages", messages.len());
