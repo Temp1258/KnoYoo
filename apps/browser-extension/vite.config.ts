@@ -1,21 +1,43 @@
 import { defineConfig } from "vite";
 import { resolve } from "path";
+import { cpSync, existsSync, mkdirSync } from "fs";
+
+// Plugin to copy static files (manifest.json, icons) to dist
+function copyStaticPlugin() {
+  return {
+    name: "copy-static",
+    closeBundle() {
+      const dist = resolve(__dirname, "dist");
+      // Copy manifest.json
+      cpSync(resolve(__dirname, "manifest.json"), resolve(dist, "manifest.json"));
+      // Copy icons if they exist
+      const iconsDir = resolve(__dirname, "public/icons");
+      const distIcons = resolve(dist, "icons");
+      if (existsSync(iconsDir)) {
+        if (!existsSync(distIcons)) mkdirSync(distIcons, { recursive: true });
+        cpSync(iconsDir, distIcons, { recursive: true });
+      }
+    },
+  };
+}
 
 export default defineConfig({
+  base: "./",
   build: {
     outDir: "dist",
     emptyOutDir: true,
     rollupOptions: {
       input: {
-        popup: resolve(__dirname, "src/popup/index.html"),
+        popup: resolve(__dirname, "popup.html"),
         background: resolve(__dirname, "src/background/index.ts"),
         content: resolve(__dirname, "src/content/index.ts"),
       },
       output: {
         entryFileNames: "[name].js",
         chunkFileNames: "chunks/[name].js",
-        assetFileNames: "assets/[name].[ext]",
+        assetFileNames: "[name].[ext]",
       },
     },
   },
+  plugins: [copyStaticPlugin()],
 });
