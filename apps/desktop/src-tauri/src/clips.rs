@@ -405,10 +405,9 @@ pub fn ai_batch_retag_clips() -> Result<i64, String> {
         let mut stmt = conn
             .prepare("SELECT id FROM web_clips WHERE summary = '' ORDER BY id")
             .map_err(|e| e.to_string())?;
-        stmt.query_map([], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .collect()
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        rows.flatten().collect()
     };
     let total = ids.len() as i64;
     for id in ids {
@@ -443,9 +442,9 @@ pub fn check_clip_exists(url: String) -> Result<Option<WebClip>, String> {
 pub fn find_similar_clips(title: String, exclude_id: Option<i64>) -> Result<Vec<WebClip>, String> {
     let conn = open_db()?;
 
-    // Extract keywords (3+ chars, skip common words)
+    // Extract keywords (2+ chars, including CJK characters)
     let keywords: Vec<&str> = title
-        .split(|c: char| !c.is_alphanumeric() && c != '\u{4e00}'..='\u{9fff}')
+        .split(|c: char| !c.is_alphanumeric() && !('\u{4e00}'..='\u{9fff}').contains(&c))
         .filter(|w| w.chars().count() >= 2)
         .take(5)
         .collect();
@@ -823,10 +822,9 @@ pub fn clip_to_note(id: i64, annotation: Option<String>) -> Result<i64, String> 
         let mut stmt = conn
             .prepare("SELECT skill_id FROM note_skill_map WHERE note_id = ?1")
             .map_err(|e| e.to_string())?;
-        stmt.query_map([-id], |r| r.get(0))
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .collect()
+        let rows = stmt.query_map([-id], |r| r.get::<_, i64>(0))
+            .map_err(|e| e.to_string())?;
+        rows.flatten().collect()
     };
     for skill_id in &skill_ids {
         let _ = conn.execute(
@@ -888,10 +886,9 @@ pub fn suggest_skill_from_clips() -> Result<Vec<(String, i64)>, String> {
         let mut stmt = conn
             .prepare("SELECT name FROM industry_skill")
             .map_err(|e| e.to_string())?;
-        stmt.query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .collect()
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?;
+        rows.flatten().collect()
     };
 
     // Filter: tags with 5+ clips that don't match any existing skill
