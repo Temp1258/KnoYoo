@@ -215,12 +215,7 @@ fn migrate_plan_minutes_nullable(conn: &rusqlite::Connection) -> Result<(), Stri
             .prepare("PRAGMA table_info(plan_task)")
             .map_err(|e| e.to_string())?;
         let rows = stmt
-            .query_map([], |r| {
-                Ok((
-                    r.get::<_, String>(1)?,
-                    r.get::<_, i64>(3)?,
-                ))
-            })
+            .query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(3)?)))
             .map_err(|e| e.to_string())?;
         for row in rows {
             let (name, nn) = row.map_err(|e| e.to_string())?;
@@ -344,7 +339,9 @@ pub fn kv_get(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, 
 }
 
 /// Read AI configuration from app_kv table
-pub fn read_ai_config(conn: &rusqlite::Connection) -> Result<std::collections::HashMap<String, String>, String> {
+pub fn read_ai_config(
+    conn: &rusqlite::Connection,
+) -> Result<std::collections::HashMap<String, String>, String> {
     let mut out = std::collections::HashMap::new();
     let keys = ["provider", "api_base", "api_key", "model"];
     for k in keys {
@@ -381,18 +378,27 @@ pub fn collect_subtree_ids(conn: &rusqlite::Connection, root_id: i64) -> Result<
 }
 
 /// Delete subtree: remove note_skill_map and industry_skill for all given IDs
-pub fn delete_subtree_by_ids(tx: &rusqlite::Transaction, all_ids: &mut Vec<i64>) -> Result<(), String> {
+pub fn delete_subtree_by_ids(
+    tx: &rusqlite::Transaction,
+    all_ids: &mut Vec<i64>,
+) -> Result<(), String> {
     // Delete mappings first
     for sid in all_ids.iter() {
-        tx.execute("DELETE FROM note_skill_map WHERE skill_id=?1", rusqlite::params![sid])
-            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM note_skill_map WHERE skill_id=?1",
+            rusqlite::params![sid],
+        )
+        .map_err(|e| e.to_string())?;
     }
     // Delete skills from child to parent
     all_ids.sort_unstable();
     all_ids.reverse();
     for sid in all_ids.iter() {
-        tx.execute("DELETE FROM industry_skill WHERE id=?1", rusqlite::params![sid])
-            .map_err(|e| e.to_string())?;
+        tx.execute(
+            "DELETE FROM industry_skill WHERE id=?1",
+            rusqlite::params![sid],
+        )
+        .map_err(|e| e.to_string())?;
     }
     Ok(())
 }

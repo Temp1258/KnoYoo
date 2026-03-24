@@ -7,7 +7,6 @@ mod clips;
 mod coach;
 mod db;
 mod error;
-mod growth;
 mod models;
 mod notes;
 mod onboarding;
@@ -17,13 +16,10 @@ mod tree;
 fn init_logging() {
     use tracing_subscriber::{fmt, EnvFilter};
 
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("desktop=info,warn"));
+    let filter =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("desktop=info,warn"));
 
-    fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .init();
+    fmt().with_env_filter(filter).with_target(true).init();
 }
 
 fn main() {
@@ -59,9 +55,6 @@ fn main() {
             tree::list_saved_industry_trees_v1,
             tree::get_saved_industry_tree_v1,
             tree::delete_saved_industry_tree_v1,
-            growth::fix_skill_name_unique,
-            growth::fix_notes_delete_cascade,
-            growth::debug_counts,
             plan::generate_plan,
             plan::list_plan_tasks,
             plan::update_plan_status,
@@ -126,6 +119,8 @@ fn main() {
             clips::list_clip_domains,
             clips::forgotten_clips,
             clips::ai_weekly_clip_summary,
+            clips::clip_to_note,
+            clips::suggest_skill_from_clips,
             clip_server::get_clip_server_token,
             clip_server::get_clip_server_port,
         ])

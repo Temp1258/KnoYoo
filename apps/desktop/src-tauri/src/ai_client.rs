@@ -39,7 +39,11 @@ impl AiClientConfig {
             return Err(AppError::validation("AI 配置缺失: api_key 为空"));
         }
 
-        Ok(Self { api_base, api_key, model })
+        Ok(Self {
+            api_base,
+            api_key,
+            model,
+        })
     }
 }
 
@@ -63,7 +67,10 @@ fn send_chat(
     temperature: f64,
     opts: ChatOptions,
 ) -> Result<String, AppError> {
-    let url = format!("{}/v1/chat/completions", config.api_base.trim_end_matches('/'));
+    let url = format!(
+        "{}/v1/chat/completions",
+        config.api_base.trim_end_matches('/')
+    );
 
     let mut body = serde_json::json!({
         "model": config.model,
@@ -115,10 +122,15 @@ pub fn chat_json(
     messages: Vec<serde_json::Value>,
     temperature: f64,
 ) -> Result<String, AppError> {
-    send_chat(config, messages, temperature, ChatOptions {
-        response_format_json: true,
-        ..Default::default()
-    })
+    send_chat(
+        config,
+        messages,
+        temperature,
+        ChatOptions {
+            response_format_json: true,
+            ..Default::default()
+        },
+    )
 }
 
 /// Send a chat request with optional max_tokens.
@@ -128,10 +140,15 @@ pub fn chat_with_max_tokens(
     temperature: f64,
     max_tokens: u32,
 ) -> Result<String, AppError> {
-    send_chat(config, messages, temperature, ChatOptions {
-        max_tokens: Some(max_tokens),
-        ..Default::default()
-    })
+    send_chat(
+        config,
+        messages,
+        temperature,
+        ChatOptions {
+            max_tokens: Some(max_tokens),
+            ..Default::default()
+        },
+    )
 }
 
 /// Try to get AI config; returns Ok(None) if not configured.

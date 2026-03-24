@@ -19,12 +19,14 @@ pub fn generate_plan(horizon: String) -> Result<Vec<PlanTaskOut>, String> {
     let mut assigned = 0usize;
 
     {
-        let mut stmt = tx.prepare(
-            "SELECT s.id, s.name, s.importance, s.required_level
+        let mut stmt = tx
+            .prepare(
+                "SELECT s.id, s.name, s.importance, s.required_level
                FROM industry_skill s
               ORDER BY s.importance DESC, s.required_level DESC
-              LIMIT 5"
-        ).map_err(|e| e.to_string())?;
+              LIMIT 5",
+            )
+            .map_err(|e| e.to_string())?;
 
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
 
@@ -485,10 +487,8 @@ pub fn ai_generate_plan_by_range(
 ) -> Result<Vec<PlanTaskOut>, String> {
     use chrono::NaiveDate;
 
-    let start_d = NaiveDate::parse_from_str(&start, "%Y-%m-%d")
-        .map_err(|e| e.to_string())?;
-    let end_d = NaiveDate::parse_from_str(&end, "%Y-%m-%d")
-        .map_err(|e| e.to_string())?;
+    let start_d = NaiveDate::parse_from_str(&start, "%Y-%m-%d").map_err(|e| e.to_string())?;
+    let end_d = NaiveDate::parse_from_str(&end, "%Y-%m-%d").map_err(|e| e.to_string())?;
     if end_d < start_d {
         return Err("结束日期必须不小于开始日期".into());
     }
@@ -499,12 +499,14 @@ pub fn ai_generate_plan_by_range(
     let tx = conn.transaction().map_err(|e| e.to_string())?;
 
     let picked: Vec<(i64, String, i64, i64)> = {
-        let mut stmt = tx.prepare(
-            "SELECT s.id, s.name, s.importance, s.required_level
+        let mut stmt = tx
+            .prepare(
+                "SELECT s.id, s.name, s.importance, s.required_level
                FROM industry_skill s
               ORDER BY s.importance DESC, s.required_level DESC
               LIMIT 5",
-        ).map_err(|e| e.to_string())?;
+            )
+            .map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         let mut tmp = Vec::new();
         while let Some(r) = rows.next().map_err(|e| e.to_string())? {
@@ -539,9 +541,15 @@ pub fn ai_generate_plan_by_range(
 生成的任务应该聚焦于弥补用户的能力差距，每项能力可以有 1~5 个任务，总体任务数量不宜过多。\
 输出严格 JSON：{\"tasks\":[{\"title\":\"...\",\"minutes\":45,\"due\":\"2025-10-10\"},...]}，不要任何解释。";
     let user_msg = if goal_str.is_empty() {
-        format!("能力差距列表：{}。时间范围：{} 到 {}。请生成对应的任务。", desc_str, start, end)
+        format!(
+            "能力差距列表：{}。时间范围：{} 到 {}。请生成对应的任务。",
+            desc_str, start, end
+        )
     } else {
-        format!("能力差距列表：{}。时间范围：{} 到 {}。总目标：{}。请生成对应的任务。", desc_str, start, end, goal_str)
+        format!(
+            "能力差距列表：{}。时间范围：{} 到 {}。总目标：{}。请生成对应的任务。",
+            desc_str, start, end, goal_str
+        )
     };
 
     let messages = vec![
@@ -550,9 +558,10 @@ pub fn ai_generate_plan_by_range(
     ];
 
     let content = crate::ai_client::chat_json(&config, messages, 0.3).map_err(|e| e.to_string())?;
-    let parsed: serde_json::Value = serde_json::from_str(&content)
-        .map_err(|e| format!("AI JSON 解析失败: {}", e))?;
-    let tasks = parsed["tasks"].as_array()
+    let parsed: serde_json::Value =
+        serde_json::from_str(&content).map_err(|e| format!("AI JSON 解析失败: {}", e))?;
+    let tasks = parsed["tasks"]
+        .as_array()
         .ok_or("AI 未返回 tasks 数组".to_string())?;
 
     let mut result: Vec<PlanTaskOut> = Vec::new();
@@ -574,7 +583,8 @@ pub fn ai_generate_plan_by_range(
             "INSERT INTO plan_task (horizon, skill_id, title, minutes, due, status)
              VALUES (?1, ?2, ?3, ?4, ?5, 'TODO')",
             rusqlite::params![&horizon, &skill_id, &title, &minutes, &due],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let id = tx.last_insert_rowid();
         result.push(PlanTaskOut {
             id,
@@ -592,7 +602,8 @@ pub fn ai_generate_plan_by_range(
             "INSERT INTO plan_task (horizon, skill_id, title, minutes, due, status)
              VALUES (?1, NULL, ?2, ?3, ?4, 'TODO')",
             rusqlite::params![&horizon, &title, 0_i64, &due_s],
-        ).map_err(|e| e.to_string())?;
+        )
+        .map_err(|e| e.to_string())?;
         let id = tx.last_insert_rowid();
         result.push(PlanTaskOut {
             id,
@@ -619,7 +630,9 @@ pub fn create_plan_group(name: String, color: Option<String>) -> Result<PlanGrou
     .map_err(|e| e.to_string())?;
     let id = conn.last_insert_rowid();
     let created_at: String = conn
-        .query_row("SELECT created_at FROM plan_group WHERE id=?1", [id], |r| r.get(0))
+        .query_row("SELECT created_at FROM plan_group WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
         .map_err(|e| e.to_string())?;
     Ok(PlanGroup {
         id,

@@ -24,7 +24,6 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@knoyoo/shared": "workspace:*",
     "@tailwindcss/postcss": "^4.2.1",
     "@tailwindcss/vite": "^4.2.1",
     "@tauri-apps/api": "^2.8.0",

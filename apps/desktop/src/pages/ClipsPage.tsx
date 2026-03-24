@@ -51,6 +51,9 @@ export default function ClipsPage() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
+  // Skill suggestions
+  const [skillSuggestions, setSkillSuggestions] = useState<[string, number][]>([]);
+
   // Batch retag
   const [retagging, setRetagging] = useState(false);
 
@@ -100,11 +103,21 @@ export default function ClipsPage() {
     }
   }, []);
 
+  const loadSuggestions = useCallback(async () => {
+    try {
+      const suggestions = await tauriInvoke<[string, number][]>("suggest_skill_from_clips");
+      setSkillSuggestions(suggestions);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+
   useEffect(() => {
     loadClips();
     loadMeta();
     loadForgotten();
-  }, [loadClips, loadMeta, loadForgotten]);
+    loadSuggestions();
+  }, [loadClips, loadMeta, loadForgotten, loadSuggestions]);
 
   useEffect(() => {
     tauriInvoke<string>("get_clip_server_token").then(setServerToken).catch(console.error);
@@ -227,6 +240,22 @@ export default function ClipsPage() {
           <Sparkles size={14} className={summaryLoading ? "animate-pulse" : ""} />
           {summaryLoading ? "生成本周摘要中..." : "生成本周收藏摘要"}
         </button>
+      )}
+
+      {/* Skill suggestions */}
+      {skillSuggestions.length > 0 && (
+        <div className="p-3 rounded-xl bg-green-500/5 border border-green-500/10 mb-4">
+          <div className="text-[11px] font-medium text-green-600 mb-2">
+            这些话题你收藏了很多，要加入技能树吗？
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {skillSuggestions.map(([tag, count]) => (
+              <span key={tag} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-green-500/10 text-green-700 text-[12px]">
+                {tag} <span className="text-green-500/60">({count}篇)</span>
+              </span>
+            ))}
+          </div>
+        </div>
       )}
 
       {/* "You may have forgotten" section */}

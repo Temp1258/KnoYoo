@@ -19,23 +19,38 @@ pub enum ErrorKind {
 
 impl AppError {
     pub fn database(msg: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::Database, message: msg.into() }
+        Self {
+            kind: ErrorKind::Database,
+            message: msg.into(),
+        }
     }
 
     pub fn ai(msg: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::Ai, message: msg.into() }
+        Self {
+            kind: ErrorKind::Ai,
+            message: msg.into(),
+        }
     }
 
     pub fn io(msg: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::Io, message: msg.into() }
+        Self {
+            kind: ErrorKind::Io,
+            message: msg.into(),
+        }
     }
 
     pub fn validation(msg: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::Validation, message: msg.into() }
+        Self {
+            kind: ErrorKind::Validation,
+            message: msg.into(),
+        }
     }
 
     pub fn not_found(msg: impl Into<String>) -> Self {
-        Self { kind: ErrorKind::NotFound, message: msg.into() }
+        Self {
+            kind: ErrorKind::NotFound,
+            message: msg.into(),
+        }
     }
 }
 

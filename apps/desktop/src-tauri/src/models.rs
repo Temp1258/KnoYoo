@@ -65,7 +65,6 @@ pub struct DateCount {
     pub count: i64,
 }
 
-
 #[derive(Serialize)]
 pub struct PlanTaskOut {
     pub id: i64,
@@ -122,12 +121,6 @@ pub struct WeekReport {
     pub new_notes: i64,
 }
 
-#[derive(Serialize)]
-pub struct Counts {
-    pub industry: i64,
-    pub plans: i64,
-}
-
 /// 行业树快照概要
 #[derive(Serialize, Deserialize)]
 pub struct SavedTreeRow {
@@ -135,7 +128,6 @@ pub struct SavedTreeRow {
     pub name: String,
     pub created_at: String,
 }
-
 
 #[derive(Deserialize)]
 pub struct ChatMessage {

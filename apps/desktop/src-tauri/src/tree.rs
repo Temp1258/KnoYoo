@@ -74,10 +74,7 @@ pub fn list_industry_tree_v1() -> Result<Vec<IndustryNode>, String> {
 
 /// 获取与某个技能关联的笔记列表。
 #[tauri::command]
-pub fn list_skill_notes_v1(
-    skill_id: i64,
-    limit: Option<i64>,
-) -> Result<Vec<SkillNote>, String> {
+pub fn list_skill_notes_v1(skill_id: i64, limit: Option<i64>) -> Result<Vec<SkillNote>, String> {
     let conn = open_db().map_err(|e| e.to_string())?;
     let lim = limit.unwrap_or(50);
 
@@ -251,11 +248,7 @@ pub fn ai_expand_node_v2(
             )
         }
     } else {
-        let top_k = if max_n > 0 {
-            max_n.clamp(1, 10)
-        } else {
-            0
-        };
+        let top_k = if max_n > 0 { max_n.clamp(1, 10) } else { 0 };
         if top_k > 0 {
             format!(
                 "请根据\"{}\"这个职业/技能，返回它最重要的最多{}个技能点名称。\
@@ -276,11 +269,11 @@ pub fn ai_expand_node_v2(
         serde_json::json!({ "role": "user",   "content": prompt }),
     ];
 
-    let content_str = crate::ai_client::chat_json(&config, messages, 0.2)
-        .map_err(|e| e.to_string())?;
+    let content_str =
+        crate::ai_client::chat_json(&config, messages, 0.2).map_err(|e| e.to_string())?;
 
-    let payload: serde_json::Value = serde_json::from_str(&content_str)
-        .unwrap_or_else(|_| serde_json::json!({}));
+    let payload: serde_json::Value =
+        serde_json::from_str(&content_str).unwrap_or_else(|_| serde_json::json!({}));
 
     let mut skills: Vec<String> = Vec::new();
     if let Some(arr) = payload.get("skills").and_then(|x| x.as_array()) {
@@ -294,9 +287,7 @@ pub fn ai_expand_node_v2(
         }
     }
     if skills.is_empty() {
-        return Err(
-            "AI 未返回有效的 skills，请检查接口响应格式（应为 {\"skills\":[...]})".into(),
-        );
+        return Err("AI 未返回有效的 skills，请检查接口响应格式（应为 {\"skills\":[...]})".into());
     }
 
     if let Some(ref path) = pathNames {

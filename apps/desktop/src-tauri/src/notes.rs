@@ -21,17 +21,15 @@ pub fn add_note(title: String, content: String) -> Result<i64, String> {
 }
 
 fn has_cjk(s: &str) -> bool {
-    s.chars().any(
-        |c| {
-            ('\u{4E00}'..='\u{9FFF}').contains(&c)
-        || ('\u{3400}'..='\u{4DBF}').contains(&c)
-        || ('\u{20000}'..='\u{2A6DF}').contains(&c)
-        || ('\u{2A700}'..='\u{2B73F}').contains(&c)
-        || ('\u{2B740}'..='\u{2B81F}').contains(&c)
-        || ('\u{2B820}'..='\u{2CEAF}').contains(&c)
-        || ('\u{F900}'..='\u{FAFF}').contains(&c)
-        },
-    )
+    s.chars().any(|c| {
+        ('\u{4E00}'..='\u{9FFF}').contains(&c)
+            || ('\u{3400}'..='\u{4DBF}').contains(&c)
+            || ('\u{20000}'..='\u{2A6DF}').contains(&c)
+            || ('\u{2A700}'..='\u{2B73F}').contains(&c)
+            || ('\u{2B740}'..='\u{2B81F}').contains(&c)
+            || ('\u{2B820}'..='\u{2CEAF}').contains(&c)
+            || ('\u{F900}'..='\u{FAFF}').contains(&c)
+    })
 }
 
 fn has_digit_or_symbol(s: &str) -> bool {
@@ -148,7 +146,9 @@ pub fn search_notes(query: String) -> Result<Vec<Hit>, String> {
 #[tauri::command]
 pub fn list_notes(page: Option<u32>, page_size: Option<u32>) -> Result<Vec<Note>, String> {
     let page = page.unwrap_or(1).max(1);
-    let size = page_size.unwrap_or(crate::models::DEFAULT_PAGE_SIZE).clamp(1, crate::models::MAX_PAGE_SIZE);
+    let size = page_size
+        .unwrap_or(crate::models::DEFAULT_PAGE_SIZE)
+        .clamp(1, crate::models::MAX_PAGE_SIZE);
     let offset = (page - 1) as i64 * size as i64;
 
     let conn = open_db()?;

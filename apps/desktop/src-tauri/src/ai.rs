@@ -72,7 +72,10 @@ pub fn extract_json(s: &str) -> Option<String> {
 const AI_INPUT_CHAR_LIMIT: usize = 4000;
 
 /// 向 OpenAI 兼容接口发起归类请求，返回 (skill_name, delta) 列表
-pub fn ai_pick_skills(text: &str, cfg: &HashMap<String, String>) -> Result<Vec<(String, i64)>, String> {
+pub fn ai_pick_skills(
+    text: &str,
+    cfg: &HashMap<String, String>,
+) -> Result<Vec<(String, i64)>, String> {
     let config = AiClientConfig::from_map(cfg).map_err(String::from)?;
 
     let system = r#"你是一个技能归类助手。请从用户文本中提取最相关的"行业技能"，
@@ -102,7 +105,11 @@ pub fn ai_pick_skills(text: &str, cfg: &HashMap<String, String>) -> Result<Vec<(
             if name.is_empty() {
                 continue;
             }
-            let delta = it.get("delta").and_then(|x| x.as_i64()).unwrap_or(10).clamp(1, 20);
+            let delta = it
+                .get("delta")
+                .and_then(|x| x.as_i64())
+                .unwrap_or(10)
+                .clamp(1, 20);
             out.push((name.to_string(), delta));
         }
     }
@@ -192,17 +199,43 @@ pub fn ai_chat_with_context(
         buf
     };
 
-    // 4. If selected note, get full content
+    // 4. Gather recent web clips (title + summary + tags)
+    let clips_ctx: String = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT title, summary, tags, url FROM web_clips
+                 ORDER BY datetime(created_at) DESC LIMIT 15",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut buf = String::new();
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let title: String = row.get(0).map_err(|e| e.to_string())?;
+            let summary: String = row.get(1).map_err(|e| e.to_string())?;
+            let tags: String = row.get(2).map_err(|e| e.to_string())?;
+            let url: String = row.get(3).map_err(|e| e.to_string())?;
+            let domain = url
+                .split("//")
+                .nth(1)
+                .and_then(|s| s.split('/').next())
+                .unwrap_or("");
+            let desc = if summary.is_empty() {
+                title.clone()
+            } else {
+                format!("{}: {}", title, summary)
+            };
+            buf.push_str(&format!("- [{}] {} (标签:{})\n", domain, desc, tags));
+        }
+        buf
+    };
+
+    // 5. If selected note, get full content
     let selected_ctx: String = if let Some(nid) = selectedNoteId {
-        conn.query_row(
-            "SELECT title, content FROM notes WHERE id=?1",
-            [nid],
-            |r| {
-                let t: String = r.get(0)?;
-                let c: String = r.get(1)?;
-                Ok(format!("【当前笔记】标题：{}\n内容：{}\n", t, c))
-            },
-        )
+        conn.query_row("SELECT title, content FROM notes WHERE id=?1", [nid], |r| {
+            let t: String = r.get(0)?;
+            let c: String = r.get(1)?;
+            Ok(format!("【当前笔记】标题：{}\n内容：{}\n", t, c))
+        })
         .unwrap_or_default()
     } else {
         String::new()
@@ -223,18 +256,35 @@ pub fn ai_chat_with_context(
         ## 最近笔记\n{}\n\
         ## 待办计划\n{}\n\
         ## 技能树\n{}\n\
+        ## 最近收藏\n{}\n\
         {}",
         goal_ctx,
-        if notes_ctx.is_empty() { "暂无笔记\n" } else { &notes_ctx },
-        if plans_ctx.is_empty() { "暂无计划\n" } else { &plans_ctx },
-        if tree_ctx.is_empty() { "暂无技能\n" } else { &tree_ctx },
+        if notes_ctx.is_empty() {
+            "暂无笔记\n"
+        } else {
+            &notes_ctx
+        },
+        if plans_ctx.is_empty() {
+            "暂无计划\n"
+        } else {
+            &plans_ctx
+        },
+        if tree_ctx.is_empty() {
+            "暂无技能\n"
+        } else {
+            &tree_ctx
+        },
+        if clips_ctx.is_empty() {
+            "暂无收藏\n"
+        } else {
+            &clips_ctx
+        },
         selected_ctx,
     );
 
     // 6. Build message list
-    let mut full_messages: Vec<serde_json::Value> = vec![
-        serde_json::json!({"role": "system", "content": system_prompt}),
-    ];
+    let mut full_messages: Vec<serde_json::Value> =
+        vec![serde_json::json!({"role": "system", "content": system_prompt})];
     for m in &messages {
         full_messages.push(serde_json::json!({"role": m.role, "content": m.content}));
     }
@@ -254,7 +304,9 @@ pub fn ai_generate_notes_from_file(filePath: String) -> Result<Vec<crate::models
     let path = std::path::Path::new(&filePath);
 
     // Security: canonicalize path and validate it exists
-    let canonical = path.canonicalize().map_err(|_| "文件不存在或路径无效".to_string())?;
+    let canonical = path
+        .canonicalize()
+        .map_err(|_| "文件不存在或路径无效".to_string())?;
 
     // Reject paths containing suspicious traversal patterns
     let path_str = canonical.to_string_lossy();
@@ -262,7 +314,11 @@ pub fn ai_generate_notes_from_file(filePath: String) -> Result<Vec<crate::models
         return Err("不允许的文件路径".into());
     }
 
-    let ext = canonical.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let ext = canonical
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_lowercase();
     let text = match ext.as_str() {
         "txt" | "md" | "markdown" | "text" => {
             fs::read_to_string(&canonical).map_err(|e| format!("读取文件失败: {e}"))?
@@ -295,9 +351,7 @@ pub fn ai_generate_notes_from_file(filePath: String) -> Result<Vec<crate::models
 
     let parsed: serde_json::Value =
         serde_json::from_str(&content).map_err(|e| format!("AI JSON 解析失败: {e}"))?;
-    let notes_arr = parsed["notes"]
-        .as_array()
-        .ok_or("AI 未返回 notes 数组")?;
+    let notes_arr = parsed["notes"].as_array().ok_or("AI 未返回 notes 数组")?;
 
     let mut conn = open_db()?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -316,11 +370,9 @@ pub fn ai_generate_notes_from_file(filePath: String) -> Result<Vec<crate::models
         .map_err(|e| e.to_string())?;
         let id = tx.last_insert_rowid();
         let created_at: String = tx
-            .query_row(
-                "SELECT created_at FROM notes WHERE id=?1",
-                [id],
-                |r| r.get(0),
-            )
+            .query_row("SELECT created_at FROM notes WHERE id=?1", [id], |r| {
+                r.get(0)
+            })
             .map_err(|e| e.to_string())?;
         result.push(crate::models::Note {
             id,

@@ -1,4 +1,6 @@
-import { ArrowLeft, ExternalLink, Star, Tag } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeft, ExternalLink, Star, Tag, FileText, Check } from "lucide-react";
+import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import type { WebClip } from "../../types";
 import Button from "../ui/Button";
 
@@ -9,6 +11,11 @@ type Props = {
 };
 
 export default function ClipDetail({ clip, onBack, onStar }: Props) {
+  const [showNoteForm, setShowNoteForm] = useState(false);
+  const [annotation, setAnnotation] = useState("");
+  const [converting, setConverting] = useState(false);
+  const [converted, setConverted] = useState(false);
+
   const domain = (() => {
     try {
       return new URL(clip.url).hostname.replace("www.", "");
@@ -16,6 +23,21 @@ export default function ClipDetail({ clip, onBack, onStar }: Props) {
       return clip.url;
     }
   })();
+
+  const handleConvertToNote = async () => {
+    setConverting(true);
+    try {
+      await tauriInvoke("clip_to_note", {
+        id: clip.id,
+        annotation: annotation.trim() || null,
+      });
+      setConverted(true);
+      setShowNoteForm(false);
+    } catch (e) {
+      console.error("Convert failed:", e);
+    }
+    setConverting(false);
+  };
 
   return (
     <div>
@@ -26,6 +48,17 @@ export default function ClipDetail({ clip, onBack, onStar }: Props) {
           返回列表
         </Button>
         <div className="flex items-center gap-2">
+          {converted ? (
+            <span className="inline-flex items-center gap-1 text-[12px] text-green-500 px-2 py-1">
+              <Check size={14} />
+              已转为笔记
+            </span>
+          ) : (
+            <Button variant="ghost" size="sm" onClick={() => setShowNoteForm(!showNoteForm)}>
+              <FileText size={14} />
+              转为笔记
+            </Button>
+          )}
           <Button variant="ghost" size="sm" onClick={() => onStar(clip.id)}>
             <Star size={14} fill={clip.is_starred ? "currentColor" : "none"} className={clip.is_starred ? "text-yellow-500" : ""} />
             {clip.is_starred ? "已星标" : "星标"}
@@ -38,6 +71,28 @@ export default function ClipDetail({ clip, onBack, onStar }: Props) {
           </a>
         </div>
       </div>
+
+      {/* Convert to note form */}
+      {showNoteForm && (
+        <div className="p-4 rounded-xl bg-bg-secondary border border-border mb-4">
+          <div className="text-[12px] font-medium text-text mb-2">添加你的理解和批注（可选）</div>
+          <textarea
+            value={annotation}
+            onChange={(e) => setAnnotation(e.target.value)}
+            placeholder="写下你对这篇内容的理解、要点、或个人笔记..."
+            className="w-full h-24 p-3 rounded-lg bg-bg border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors resize-none"
+          />
+          <div className="flex items-center justify-between mt-2">
+            <span className="text-[11px] text-text-tertiary">笔记将包含：你的批注 + AI摘要 + 原文链接 + 内容节选</span>
+            <div className="flex gap-2">
+              <Button variant="ghost" size="sm" onClick={() => setShowNoteForm(false)}>取消</Button>
+              <Button size="sm" onClick={handleConvertToNote} disabled={converting}>
+                {converting ? "转换中..." : "确认转为笔记"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Title */}
       <h1 className="text-[22px] font-bold text-text mb-2">{clip.title || "无标题"}</h1>
