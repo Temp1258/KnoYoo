@@ -4,6 +4,7 @@ import AppShell from "./components/Layout/AppShell";
 import { SkeletonCard } from "./components/ui/Skeleton";
 
 const ClipsPage = lazy(() => import("./pages/ClipsPage"));
+const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
 const fallback = (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -30,6 +31,14 @@ export default createBrowserRouter([
         element: (
           <Suspense fallback={fallback}>
             <ClipsPage key="starred" starredMode />
+          </Suspense>
+        ),
+      },
+      {
+        path: "settings",
+        element: (
+          <Suspense fallback={fallback}>
+            <SettingsPage />
           </Suspense>
         ),
       },

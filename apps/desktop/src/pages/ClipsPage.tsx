@@ -24,6 +24,7 @@ import ClipDetail from "../components/Clips/ClipDetail";
 import Button from "../components/ui/Button";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { useToast } from "../components/common/Toast";
+import { useMediaQuery } from "../hooks/useMediaQuery";
 
 type TimeRange = "all" | "week" | "month" | "quarter";
 
@@ -297,8 +298,10 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
     setSummaryLoading(false);
   };
 
-  // Detail view
-  if (selectedClip) {
+  const isWide = useMediaQuery("(min-width: 1024px)");
+
+  // Narrow screen: full-page detail view
+  if (selectedClip && !isWide) {
     return (
       <ClipDetail clip={selectedClip} onBack={() => setSelectedClip(null)} onStar={handleStar} />
     );
@@ -307,381 +310,409 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   const displayClips = fuzzyResults ?? clips;
   const showBanner =
     !starredMode && !bannerDismissed && (pendingCount > 0 || (!aiConfigured && total > 0));
+  const splitView = isWide && selectedClip;
 
   return (
-    <div>
-      {/* Header */}
-      <div className="flex items-center justify-between mb-4">
-        <div className="flex items-center gap-3">
-          <h1 className="text-[28px] font-bold tracking-tight m-0">
-            {starredMode ? "标记" : "知识库"}
-          </h1>
-          <span className="text-[13px] text-text-tertiary">
-            {starredMode ? `${clips.length} 条标记` : `${total} 条收藏`}
-          </span>
-        </div>
-        <div className="flex items-center gap-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={async () => {
-              setRefreshing(true);
-              await Promise.all([loadClips(), loadMeta(), loadForgotten()]);
-              setRefreshing(false);
-            }}
-            title="刷新"
-            disabled={refreshing}
-          >
-            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
-            刷新
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleBatchRetag} disabled={retagging}>
-            <RefreshCw size={14} className={retagging ? "animate-spin" : ""} />
-            {retagging ? "标签中..." : "批量标签"}
-          </Button>
-          <Button variant="ghost" size="sm" onClick={handleCopyToken} title="复制插件连接 Token">
-            {tokenCopied ? <Check size={14} /> : <Copy size={14} />}
-            {tokenCopied ? "已复制" : "插件 Token"}
-          </Button>
-        </div>
-      </div>
-
-      {/* Merged banner (pending AI / AI not configured) */}
-      {showBanner && (
-        <div
-          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl mb-3 ${
-            pendingCount > 0
-              ? "bg-blue-500/5 border border-blue-500/15"
-              : "bg-yellow-500/5 border border-yellow-500/15"
-          }`}
-        >
-          {pendingCount > 0 ? (
-            retagging ? (
-              <>
-                <Loader2 size={14} className="text-blue-500 animate-spin shrink-0" />
-                <span className="text-[12px] text-blue-600">
-                  {pendingCount} 条内容正在 AI 解析中...
-                </span>
-              </>
-            ) : (
-              <>
-                <Sparkles size={14} className="text-blue-500 shrink-0" />
-                <span className="text-[12px] text-blue-600">{pendingCount} 条内容待 AI 解析</span>
-                <button
-                  onClick={handleBatchRetag}
-                  className="text-[11px] text-blue-500 hover:text-blue-600 cursor-pointer font-medium ml-2"
-                >
-                  开始解析
-                </button>
-              </>
-            )
-          ) : (
-            <>
-              <Settings size={14} className="text-yellow-600 shrink-0" />
-              <span className="text-[12px] text-yellow-700">
-                AI 未配置 — 点击左侧 ⚙ 设置 API Key 后，收藏内容将自动生成摘要和标签
-              </span>
-            </>
-          )}
-          <div className="flex-1" />
-          <button
-            onClick={() => setBannerDismissed(true)}
-            className="p-0.5 rounded text-text-tertiary hover:text-text transition-colors cursor-pointer shrink-0"
-          >
-            <X size={12} />
-          </button>
+    <div className={splitView ? "flex gap-0 -mx-6 -my-6 h-[calc(100vh)]" : ""}>
+      {/* Detail panel (split view right side) */}
+      {splitView && (
+        <div className="w-3/5 order-2 overflow-y-auto px-6 py-6 border-l border-border">
+          <ClipDetail
+            clip={selectedClip}
+            onBack={() => setSelectedClip(null)}
+            onStar={handleStar}
+            compact
+          />
         </div>
       )}
-
-      {/* Sticky search bar */}
-      <div className="sticky top-0 z-10 bg-bg/80 backdrop-blur-sm -mx-6 px-6 py-2">
-        <div className="relative">
-          <Search
-            size={16}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
-          />
-          <input
-            type="text"
-            placeholder="搜索知识库..."
-            value={query}
-            onChange={(e) => {
-              const val = e.target.value;
-              setQuery(val);
-              setFuzzyResults(null);
-              setPage(1);
-              if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-              if (val.trim()) {
-                searchTimeoutRef.current = setTimeout(() => loadClips(), 300);
-              } else {
-                loadClips();
-              }
-            }}
-            className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors"
-          />
-        </div>
-      </div>
-
-      {/* Weekly summary (collapsible, home only) */}
-      {!starredMode && (
-        <div className="mt-3 mb-3">
-          {weeklySummary ? (
-            <div className="rounded-xl bg-accent/5 border border-accent/10">
-              <button
-                onClick={() => setSummaryExpanded(!summaryExpanded)}
-                className="w-full flex items-center gap-2 px-4 py-2.5 text-[11px] font-medium text-accent cursor-pointer"
+      <div className={splitView ? "w-2/5 order-1 overflow-y-auto px-4 py-4" : ""}>
+        <div>
+          {/* Header */}
+          <div className="flex items-center justify-between mb-4">
+            <div className="flex items-center gap-3">
+              <h1 className="text-[28px] font-bold tracking-tight m-0">
+                {starredMode ? "标记" : "知识库"}
+              </h1>
+              <span className="text-[13px] text-text-tertiary">
+                {starredMode ? `${clips.length} 条标记` : `${total} 条收藏`}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={async () => {
+                  setRefreshing(true);
+                  await Promise.all([loadClips(), loadMeta(), loadForgotten()]);
+                  setRefreshing(false);
+                }}
+                title="刷新"
+                disabled={refreshing}
               >
-                <Sparkles size={12} />
-                本周收藏摘要
-                {summaryExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+                刷新
+              </Button>
+              <Button variant="ghost" size="sm" onClick={handleBatchRetag} disabled={retagging}>
+                <RefreshCw size={14} className={retagging ? "animate-spin" : ""} />
+                {retagging ? "标签中..." : "批量标签"}
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleCopyToken}
+                title="复制插件连接 Token"
+              >
+                {tokenCopied ? <Check size={14} /> : <Copy size={14} />}
+                {tokenCopied ? "已复制" : "插件 Token"}
+              </Button>
+            </div>
+          </div>
+
+          {/* Merged banner (pending AI / AI not configured) */}
+          {showBanner && (
+            <div
+              className={`flex items-center gap-2 px-4 py-2.5 rounded-xl mb-3 ${
+                pendingCount > 0
+                  ? "bg-blue-500/5 border border-blue-500/15"
+                  : "bg-yellow-500/5 border border-yellow-500/15"
+              }`}
+            >
+              {pendingCount > 0 ? (
+                retagging ? (
+                  <>
+                    <Loader2 size={14} className="text-blue-500 animate-spin shrink-0" />
+                    <span className="text-[12px] text-blue-600">
+                      {pendingCount} 条内容正在 AI 解析中...
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles size={14} className="text-blue-500 shrink-0" />
+                    <span className="text-[12px] text-blue-600">
+                      {pendingCount} 条内容待 AI 解析
+                    </span>
+                    <button
+                      onClick={handleBatchRetag}
+                      className="text-[11px] text-blue-500 hover:text-blue-600 cursor-pointer font-medium ml-2"
+                    >
+                      开始解析
+                    </button>
+                  </>
+                )
+              ) : (
+                <>
+                  <Settings size={14} className="text-yellow-600 shrink-0" />
+                  <span className="text-[12px] text-yellow-700">
+                    AI 未配置 — 点击左侧 ⚙ 设置 API Key 后，收藏内容将自动生成摘要和标签
+                  </span>
+                </>
+              )}
+              <div className="flex-1" />
+              <button
+                onClick={() => setBannerDismissed(true)}
+                className="p-0.5 rounded text-text-tertiary hover:text-text transition-colors cursor-pointer shrink-0"
+              >
+                <X size={12} />
               </button>
-              {summaryExpanded && (
-                <p className="px-4 pb-3 text-[13px] text-text leading-relaxed m-0">
-                  {weeklySummary}
-                </p>
+            </div>
+          )}
+
+          {/* Sticky search bar */}
+          <div className="sticky top-0 z-10 bg-bg/80 backdrop-blur-sm -mx-6 px-6 py-2">
+            <div className="relative">
+              <Search
+                size={16}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
+              />
+              <input
+                type="text"
+                placeholder="搜索知识库..."
+                value={query}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setQuery(val);
+                  setFuzzyResults(null);
+                  setPage(1);
+                  if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+                  if (val.trim()) {
+                    searchTimeoutRef.current = setTimeout(() => loadClips(), 300);
+                  } else {
+                    loadClips();
+                  }
+                }}
+                className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors"
+              />
+            </div>
+          </div>
+
+          {/* Weekly summary (collapsible, home only) */}
+          {!starredMode && (
+            <div className="mt-3 mb-3">
+              {weeklySummary ? (
+                <div className="rounded-xl bg-accent/5 border border-accent/10">
+                  <button
+                    onClick={() => setSummaryExpanded(!summaryExpanded)}
+                    className="w-full flex items-center gap-2 px-4 py-2.5 text-[11px] font-medium text-accent cursor-pointer"
+                  >
+                    <Sparkles size={12} />
+                    本周收藏摘要
+                    {summaryExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                  </button>
+                  {summaryExpanded && (
+                    <p className="px-4 pb-3 text-[13px] text-text leading-relaxed m-0">
+                      {weeklySummary}
+                    </p>
+                  )}
+                </div>
+              ) : (
+                <button
+                  onClick={handleLoadSummary}
+                  disabled={summaryLoading}
+                  className="w-full p-2.5 rounded-xl bg-bg-secondary border border-border hover:border-accent/20 text-[12px] text-text-secondary flex items-center justify-center gap-2 cursor-pointer transition-colors"
+                >
+                  <Sparkles size={13} className={summaryLoading ? "animate-pulse" : ""} />
+                  {summaryLoading ? "生成本周摘要中..." : "生成本周收藏摘要"}
+                </button>
               )}
             </div>
-          ) : (
-            <button
-              onClick={handleLoadSummary}
-              disabled={summaryLoading}
-              className="w-full p-2.5 rounded-xl bg-bg-secondary border border-border hover:border-accent/20 text-[12px] text-text-secondary flex items-center justify-center gap-2 cursor-pointer transition-colors"
-            >
-              <Sparkles size={13} className={summaryLoading ? "animate-pulse" : ""} />
-              {summaryLoading ? "生成本周摘要中..." : "生成本周收藏摘要"}
-            </button>
           )}
-        </div>
-      )}
 
-      {/* "You may have forgotten" — horizontal scroll */}
-      {!starredMode && forgottenClips.length > 0 && (
-        <div className="mb-3">
-          <div className="flex items-center gap-2 mb-1.5">
-            <Lightbulb size={13} className="text-yellow-500" />
-            <span className="text-[11px] font-medium text-text-secondary">你可能忘了这些收藏</span>
-          </div>
-          <div className="flex gap-2 overflow-x-auto pb-1">
-            {forgottenClips.map((clip) => (
-              <button
-                key={clip.id}
-                onClick={() => setSelectedClip(clip)}
-                className="shrink-0 w-[200px] text-left p-2.5 rounded-lg bg-yellow-500/5 border border-yellow-500/10 hover:border-yellow-500/20 transition-colors cursor-pointer"
-              >
-                <div className="text-[12px] font-medium text-text line-clamp-1">{clip.title}</div>
-                <div className="text-[11px] text-text-tertiary line-clamp-1 mt-0.5">
-                  {clip.summary}
-                </div>
-              </button>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Expandable filters */}
-      <button
-        onClick={() => setShowFilters(!showFilters)}
-        className="flex items-center gap-1 text-[12px] text-text-tertiary mb-2 cursor-pointer hover:text-text-secondary transition-colors"
-      >
-        <Filter size={12} />
-        筛选条件
-        {showFilters ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        {(selectedTag || selectedDomain || timeRange !== "all" || isStarred) && (
-          <span className="w-1.5 h-1.5 rounded-full bg-accent" />
-        )}
-      </button>
-
-      {showFilters && (
-        <div className="flex flex-col gap-3 mb-3 p-3 rounded-xl bg-bg-secondary border border-border">
-          {/* Star + Time range */}
-          <div className="flex items-center gap-2 flex-wrap">
-            {!starredMode && (
-              <>
-                <button
-                  onClick={() => {
-                    setStarredOnly(!starredOnly);
-                    setPage(1);
-                    setFuzzyResults(null);
-                  }}
-                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[12px] transition-colors cursor-pointer border ${
-                    starredOnly
-                      ? "bg-yellow-500/10 text-yellow-600 border-yellow-500/20"
-                      : "bg-bg text-text-secondary border-border hover:border-accent/20"
-                  }`}
-                >
-                  <Star size={12} fill={starredOnly ? "currentColor" : "none"} />
-                  星标
-                </button>
-                <div className="w-px h-4 bg-border mx-1" />
-              </>
-            )}
-            <Calendar size={12} className="text-text-tertiary" />
-            {TIME_RANGES.map((tr) => (
-              <button
-                key={tr.value}
-                onClick={() => {
-                  setTimeRange(tr.value);
-                  setPage(1);
-                  setFuzzyResults(null);
-                }}
-                className={`px-2 py-1 rounded-lg text-[11px] transition-colors cursor-pointer border ${
-                  timeRange === tr.value
-                    ? "bg-accent/10 text-accent border-accent/20"
-                    : "bg-bg text-text-secondary border-border hover:border-accent/20"
-                }`}
-              >
-                {tr.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Tags */}
-          {allTags.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <span className="text-[11px] text-text-tertiary shrink-0">标签:</span>
-              {allTags.slice(0, 15).map((tag) => (
-                <button
-                  key={tag}
-                  onClick={() => {
-                    setSelectedTag(selectedTag === tag ? null : tag);
-                    setPage(1);
-                    setFuzzyResults(null);
-                  }}
-                  className={`px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer border ${
-                    selectedTag === tag
-                      ? "bg-accent/10 text-accent border-accent/20"
-                      : "bg-bg text-text-secondary border-border hover:border-accent/20"
-                  }`}
-                >
-                  {tag}
-                </button>
-              ))}
+          {/* "You may have forgotten" — horizontal scroll */}
+          {!starredMode && forgottenClips.length > 0 && (
+            <div className="mb-3">
+              <div className="flex items-center gap-2 mb-1.5">
+                <Lightbulb size={13} className="text-yellow-500" />
+                <span className="text-[11px] font-medium text-text-secondary">
+                  你可能忘了这些收藏
+                </span>
+              </div>
+              <div className="flex gap-2 overflow-x-auto pb-1">
+                {forgottenClips.map((clip) => (
+                  <button
+                    key={clip.id}
+                    onClick={() => setSelectedClip(clip)}
+                    className="shrink-0 w-[200px] text-left p-2.5 rounded-lg bg-yellow-500/5 border border-yellow-500/10 hover:border-yellow-500/20 transition-colors cursor-pointer"
+                  >
+                    <div className="text-[12px] font-medium text-text line-clamp-1">
+                      {clip.title}
+                    </div>
+                    <div className="text-[11px] text-text-tertiary line-clamp-1 mt-0.5">
+                      {clip.summary}
+                    </div>
+                  </button>
+                ))}
+              </div>
             </div>
           )}
 
-          {/* Domains */}
-          {allDomains.length > 0 && (
-            <div className="flex items-center gap-2 flex-wrap">
-              <Globe size={12} className="text-text-tertiary shrink-0" />
-              {allDomains.slice(0, 10).map((d) => (
-                <button
-                  key={d}
-                  onClick={() => {
-                    setSelectedDomain(selectedDomain === d ? null : d);
-                    setPage(1);
-                    setFuzzyResults(null);
-                  }}
-                  className={`px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer border ${
-                    selectedDomain === d
-                      ? "bg-accent/10 text-accent border-accent/20"
-                      : "bg-bg text-text-secondary border-border hover:border-accent/20"
-                  }`}
-                >
-                  {d}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Fuzzy search results label */}
-      {fuzzyResults && (
-        <div className="flex items-center gap-2 mb-3">
-          <Sparkles size={13} className="text-accent" />
-          <span className="text-[12px] text-accent">
-            AI 搜索结果 ({fuzzyResults.length} 条匹配)
-          </span>
+          {/* Expandable filters */}
           <button
-            onClick={() => setFuzzyResults(null)}
-            className="text-[11px] text-text-tertiary hover:text-text cursor-pointer ml-auto"
+            onClick={() => setShowFilters(!showFilters)}
+            className="flex items-center gap-1 text-[12px] text-text-tertiary mb-2 cursor-pointer hover:text-text-secondary transition-colors"
           >
-            清除
+            <Filter size={12} />
+            筛选条件
+            {showFilters ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+            {(selectedTag || selectedDomain || timeRange !== "all" || isStarred) && (
+              <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+            )}
           </button>
-        </div>
-      )}
 
-      {/* Skeleton loading */}
-      {loading && clips.length === 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {Array.from({ length: 6 }, (_, i) => (
-            <SkeletonCard key={i} />
-          ))}
-        </div>
-      )}
+          {showFilters && (
+            <div className="flex flex-col gap-3 mb-3 p-3 rounded-xl bg-bg-secondary border border-border">
+              {/* Star + Time range */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {!starredMode && (
+                  <>
+                    <button
+                      onClick={() => {
+                        setStarredOnly(!starredOnly);
+                        setPage(1);
+                        setFuzzyResults(null);
+                      }}
+                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[12px] transition-colors cursor-pointer border ${
+                        starredOnly
+                          ? "bg-yellow-500/10 text-yellow-600 border-yellow-500/20"
+                          : "bg-bg text-text-secondary border-border hover:border-accent/20"
+                      }`}
+                    >
+                      <Star size={12} fill={starredOnly ? "currentColor" : "none"} />
+                      星标
+                    </button>
+                    <div className="w-px h-4 bg-border mx-1" />
+                  </>
+                )}
+                <Calendar size={12} className="text-text-tertiary" />
+                {TIME_RANGES.map((tr) => (
+                  <button
+                    key={tr.value}
+                    onClick={() => {
+                      setTimeRange(tr.value);
+                      setPage(1);
+                      setFuzzyResults(null);
+                    }}
+                    className={`px-2 py-1 rounded-lg text-[11px] transition-colors cursor-pointer border ${
+                      timeRange === tr.value
+                        ? "bg-accent/10 text-accent border-accent/20"
+                        : "bg-bg text-text-secondary border-border hover:border-accent/20"
+                    }`}
+                  >
+                    {tr.label}
+                  </button>
+                ))}
+              </div>
 
-      {/* Empty state / AI search prompt */}
-      {!loading && displayClips.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
-          <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
-          {fuzzyResults !== null ? (
-            <>
-              <p className="text-[14px] mb-1">AI 搜索未找到匹配内容</p>
-              <p className="text-[12px]">试试换个描述方式</p>
-            </>
-          ) : query.trim() ? (
-            <>
-              <p className="text-[14px] mb-1">没有找到精确匹配的结果</p>
+              {/* Tags */}
+              {allTags.length > 0 && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-[11px] text-text-tertiary shrink-0">标签:</span>
+                  {allTags.slice(0, 15).map((tag) => (
+                    <button
+                      key={tag}
+                      onClick={() => {
+                        setSelectedTag(selectedTag === tag ? null : tag);
+                        setPage(1);
+                        setFuzzyResults(null);
+                      }}
+                      className={`px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer border ${
+                        selectedTag === tag
+                          ? "bg-accent/10 text-accent border-accent/20"
+                          : "bg-bg text-text-secondary border-border hover:border-accent/20"
+                      }`}
+                    >
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              )}
+
+              {/* Domains */}
+              {allDomains.length > 0 && (
+                <div className="flex items-center gap-2 flex-wrap">
+                  <Globe size={12} className="text-text-tertiary shrink-0" />
+                  {allDomains.slice(0, 10).map((d) => (
+                    <button
+                      key={d}
+                      onClick={() => {
+                        setSelectedDomain(selectedDomain === d ? null : d);
+                        setPage(1);
+                        setFuzzyResults(null);
+                      }}
+                      className={`px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer border ${
+                        selectedDomain === d
+                          ? "bg-accent/10 text-accent border-accent/20"
+                          : "bg-bg text-text-secondary border-border hover:border-accent/20"
+                      }`}
+                    >
+                      {d}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Fuzzy search results label */}
+          {fuzzyResults && (
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles size={13} className="text-accent" />
+              <span className="text-[12px] text-accent">
+                AI 搜索结果 ({fuzzyResults.length} 条匹配)
+              </span>
               <button
-                onClick={() => handleAISearch(query)}
-                disabled={fuzzyLoading}
-                className="text-[13px] text-accent hover:underline cursor-pointer mt-2 flex items-center gap-1.5"
+                onClick={() => setFuzzyResults(null)}
+                className="text-[11px] text-text-tertiary hover:text-text cursor-pointer ml-auto"
               >
-                <Sparkles size={13} />
-                {fuzzyLoading ? "AI 搜索中..." : "试试 AI 搜索？"}
+                清除
               </button>
-            </>
-          ) : starredMode ? (
-            <>
-              <p className="text-[14px] mb-1">还没有标记的内容</p>
-              <p className="text-[12px]">在知识库中点击星标按钮来标记重要内容</p>
-            </>
-          ) : (
-            <>
-              <p className="text-[14px] mb-1">知识库是空的</p>
-              <p className="text-[12px]">安装浏览器插件，一键收藏有价值的网页内容</p>
-            </>
+            </div>
+          )}
+
+          {/* Skeleton loading */}
+          {loading && clips.length === 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {Array.from({ length: 6 }, (_, i) => (
+                <SkeletonCard key={i} />
+              ))}
+            </div>
+          )}
+
+          {/* Empty state / AI search prompt */}
+          {!loading && displayClips.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
+              <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
+              {fuzzyResults !== null ? (
+                <>
+                  <p className="text-[14px] mb-1">AI 搜索未找到匹配内容</p>
+                  <p className="text-[12px]">试试换个描述方式</p>
+                </>
+              ) : query.trim() ? (
+                <>
+                  <p className="text-[14px] mb-1">没有找到精确匹配的结果</p>
+                  <button
+                    onClick={() => handleAISearch(query)}
+                    disabled={fuzzyLoading}
+                    className="text-[13px] text-accent hover:underline cursor-pointer mt-2 flex items-center gap-1.5"
+                  >
+                    <Sparkles size={13} />
+                    {fuzzyLoading ? "AI 搜索中..." : "试试 AI 搜索？"}
+                  </button>
+                </>
+              ) : starredMode ? (
+                <>
+                  <p className="text-[14px] mb-1">还没有标记的内容</p>
+                  <p className="text-[12px]">在知识库中点击星标按钮来标记重要内容</p>
+                </>
+              ) : (
+                <>
+                  <p className="text-[14px] mb-1">知识库是空的</p>
+                  <p className="text-[12px]">安装浏览器插件，一键收藏有价值的网页内容</p>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Clip grid */}
+          {displayClips.length > 0 && (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              {displayClips.map((clip) => (
+                <ClipCard
+                  key={clip.id}
+                  clip={clip}
+                  onStar={handleStar}
+                  onDelete={handleDelete}
+                  onSelect={setSelectedClip}
+                  onRetag={handleRetag}
+                  isSelected={selectedClip?.id === clip.id}
+                />
+              ))}
+            </div>
+          )}
+
+          {/* Pagination */}
+          {!fuzzyResults && total > 20 && (
+            <div className="flex items-center justify-center gap-2 mt-6">
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={page <= 1}
+                onClick={() => setPage((p) => p - 1)}
+              >
+                上一页
+              </Button>
+              <span className="text-[12px] text-text-tertiary">第 {page} 页</span>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={displayClips.length < 20}
+                onClick={() => setPage((p) => p + 1)}
+              >
+                下一页
+              </Button>
+            </div>
           )}
         </div>
-      )}
-
-      {/* Clip grid */}
-      {displayClips.length > 0 && (
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          {displayClips.map((clip) => (
-            <ClipCard
-              key={clip.id}
-              clip={clip}
-              onStar={handleStar}
-              onDelete={handleDelete}
-              onSelect={setSelectedClip}
-              onRetag={handleRetag}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Pagination */}
-      {!fuzzyResults && total > 20 && (
-        <div className="flex items-center justify-center gap-2 mt-6">
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={page <= 1}
-            onClick={() => setPage((p) => p - 1)}
-          >
-            上一页
-          </Button>
-          <span className="text-[12px] text-text-tertiary">第 {page} 页</span>
-          <Button
-            variant="ghost"
-            size="sm"
-            disabled={displayClips.length < 20}
-            onClick={() => setPage((p) => p + 1)}
-          >
-            下一页
-          </Button>
-        </div>
-      )}
+      </div>
     </div>
   );
 }

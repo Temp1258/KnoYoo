@@ -1,4 +1,4 @@
-import { ArrowLeft, ExternalLink, Star, Tag } from "lucide-react";
+import { ArrowLeft, ExternalLink, Star, Tag, X } from "lucide-react";
 import type { WebClip } from "../../types";
 import Button from "../ui/Button";
 
@@ -6,9 +6,10 @@ type Props = {
   clip: WebClip;
   onBack: () => void;
   onStar: (id: number) => void;
+  compact?: boolean;
 };
 
-export default function ClipDetail({ clip, onBack, onStar }: Props) {
+export default function ClipDetail({ clip, onBack, onStar, compact }: Props) {
   const domain = (() => {
     try {
       return new URL(clip.url).hostname.replace("www.", "");
@@ -23,8 +24,8 @@ export default function ClipDetail({ clip, onBack, onStar }: Props) {
       <div className="sticky top-0 z-10 bg-bg/80 backdrop-blur-sm -mx-6 px-6 py-3 mb-2 border-b border-transparent [&:not(:first-child)]:border-border">
         <div className="flex items-center justify-between">
           <Button variant="ghost" size="sm" onClick={onBack}>
-            <ArrowLeft size={14} />
-            返回列表
+            {compact ? <X size={14} /> : <ArrowLeft size={14} />}
+            {compact ? "关闭" : "返回列表"}
           </Button>
           <div className="flex items-center gap-2">
             <Button variant="ghost" size="sm" onClick={() => onStar(clip.id)}>

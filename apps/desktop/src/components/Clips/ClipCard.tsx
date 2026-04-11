@@ -42,9 +42,10 @@ type Props = {
   onDelete: (id: number) => void;
   onSelect: (clip: WebClip) => void;
   onRetag: (id: number) => void;
+  isSelected?: boolean;
 };
 
-export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag }: Props) {
+export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag, isSelected }: Props) {
   const [starBounce, setStarBounce] = useState(false);
 
   const domain = (() => {
@@ -61,7 +62,9 @@ export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag }: 
 
   return (
     <div
-      className={`group rounded-xl border border-border border-l-[3px] ${st.border} bg-bg-secondary p-4 hover:border-accent/30 transition-all cursor-pointer`}
+      className={`group rounded-xl border border-l-[3px] ${st.border} bg-bg-secondary p-4 hover:border-accent/30 transition-all cursor-pointer ${
+        isSelected ? "border-accent/30 ring-2 ring-accent/20" : "border-border"
+      }`}
       onClick={() => onSelect(clip)}
     >
       {/* YouTube thumbnail */}
