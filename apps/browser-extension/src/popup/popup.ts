@@ -2,7 +2,7 @@
  * Popup UI — vanilla TypeScript (no framework, keep it lightweight).
  */
 
-import { getToken, setToken } from "../utils/api";
+import { getToken, setToken, ping } from "../utils/api";
 
 interface PageInfo {
   url: string;
@@ -20,6 +20,8 @@ interface Status {
 
 let pageInfo: PageInfo | null = null;
 let status: Status = { online: false, queueSize: 0 };
+let showTokenInput = false;
+let authError = false;
 
 const app = document.getElementById("app")!;
 
@@ -40,9 +42,24 @@ function render() {
       ? `<div class="queue-info">有 ${status.queueSize} 条待同步，桌面端上线后自动发送</div>`
       : "";
 
+  const tokenSection = showTokenInput
+    ? `<div class="settings">
+        <div class="settings-header" id="toggleSettings">
+          <span>连接设置</span>
+          <span class="settings-arrow">&#x25B4;</span>
+        </div>
+        ${authError ? '<div class="auth-error">Token 验证失败，请输入正确的 Token</div>' : ""}
+        <div class="settings-row">
+          <input type="text" id="tokenInput" placeholder="从桌面端复制 Token" />
+          <button class="verify-btn" id="verifyBtn">验证</button>
+        </div>
+        <div class="verify-result" id="verifyResult"></div>
+      </div>`
+    : `<div class="settings-toggle" id="toggleSettings">连接设置 <span class="settings-arrow">&#x25BE;</span></div>`;
+
   app.innerHTML = `
     <div class="header">
-      <div class="logo">K</div>
+      <img class="logo" src="icons/icon48.png" alt="K" />
       <div class="header-text">
         <h1>KnoYoo</h1>
         <div class="subtitle">网页收藏助手</div>
@@ -61,17 +78,17 @@ function render() {
     </button>
 
     ${queueInfo}
-
-    <div class="settings">
-      <div class="settings-row">
-        <label>Token:</label>
-        <input type="text" id="tokenInput" placeholder="从桌面端复制 Token" />
-      </div>
-    </div>
+    ${tokenSection}
   `;
 
   // Bind events
   document.getElementById("saveBtn")?.addEventListener("click", handleSave);
+  document.getElementById("toggleSettings")?.addEventListener("click", () => {
+    showTokenInput = !showTokenInput;
+    authError = false;
+    render();
+  });
+  document.getElementById("verifyBtn")?.addEventListener("click", handleVerifyToken);
   const tokenInput = document.getElementById("tokenInput") as HTMLInputElement;
   if (tokenInput) {
     getToken().then((t) => {
@@ -79,7 +96,46 @@ function render() {
     });
     tokenInput.addEventListener("change", () => {
       setToken(tokenInput.value.trim());
+      authError = false;
     });
+  }
+}
+
+async function handleVerifyToken() {
+  const tokenInput = document.getElementById("tokenInput") as HTMLInputElement;
+  const resultEl = document.getElementById("verifyResult")!;
+  const btn = document.getElementById("verifyBtn") as HTMLButtonElement;
+
+  if (!tokenInput?.value.trim()) {
+    resultEl.className = "verify-result error";
+    resultEl.textContent = "请输入 Token";
+    return;
+  }
+
+  // Save the token first
+  await setToken(tokenInput.value.trim());
+  btn.disabled = true;
+  btn.textContent = "...";
+  resultEl.textContent = "";
+
+  // Test connection by trying to save (ping doesn't check token)
+  // We'll just verify ping + token is saved, actual auth test happens on save
+  const isOnline = await ping();
+  btn.disabled = false;
+  btn.textContent = "验证";
+
+  if (isOnline) {
+    resultEl.className = "verify-result success";
+    resultEl.textContent = "Token 已保存，桌面端已连接";
+    authError = false;
+    // Auto-collapse after 1.5s
+    setTimeout(() => {
+      showTokenInput = false;
+      render();
+    }, 1500);
+  } else {
+    resultEl.className = "verify-result error";
+    resultEl.textContent = "桌面端未运行，请先启动 KnoYoo";
   }
 }
 
@@ -110,9 +166,16 @@ async function handleSave() {
       btn.innerHTML = "✓ 已收藏";
     }
   } else {
+    // Check if it's an auth error (401)
+    const isAuthErr = response?.error?.includes("401") || response?.error?.includes("unauthorized");
+    if (isAuthErr) {
+      authError = true;
+      showTokenInput = true;
+    }
     btn.className = "save-btn primary";
-    btn.textContent = "收藏失败，点击重试";
+    btn.textContent = isAuthErr ? "Token 错误，请配置后重试" : "收藏失败，点击重试";
     btn.disabled = false;
+    if (isAuthErr) render();
   }
 }
 

@@ -29,14 +29,8 @@ body {
   width: 28px;
   height: 28px;
   border-radius: 8px;
-  background: #6c5ce7;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: white;
-  font-weight: 700;
-  font-size: 14px;
   flex-shrink: 0;
+  object-fit: cover;
 }
 
 .header-text {
@@ -154,13 +148,6 @@ body {
   display: flex;
   align-items: center;
   gap: 6px;
-  margin-bottom: 8px;
-}
-
-.settings-row label {
-  font-size: 11px;
-  color: #8888a0;
-  white-space: nowrap;
 }
 
 .settings-row input {
@@ -184,3 +171,60 @@ body {
   color: #ffa502;
   margin-top: 8px;
 }
+
+/* Settings toggle (collapsed & expanded header) */
+.settings-toggle,
+.settings-header {
+  margin-top: 12px;
+  font-size: 11px;
+  color: #5a5a70;
+  cursor: pointer;
+  text-align: center;
+  transition: color 0.15s;
+  user-select: none;
+}
+.settings-toggle:hover,
+.settings-header:hover {
+  color: #8888a0;
+}
+.settings-header {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.settings-arrow {
+  font-size: 9px;
+}
+
+/* Auth error hint */
+.auth-error {
+  font-size: 11px;
+  color: #ff4757;
+  margin-bottom: 8px;
+}
+
+/* Verify button */
+.verify-btn {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid rgba(255,255,255,0.1);
+  background: #6c5ce7;
+  color: white;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.verify-btn:hover { background: #5f4dd0; }
+.verify-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Verify result message */
+.verify-result {
+  font-size: 11px;
+  margin-top: 6px;
+  min-height: 14px;
+}
+.verify-result.success { color: #2ed573; }
+.verify-result.error { color: #ff4757; }

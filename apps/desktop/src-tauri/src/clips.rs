@@ -218,6 +218,26 @@ pub fn count_web_clips() -> Result<i64, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Count clips still pending AI processing (empty summary).
+/// Returns 0 if AI is not configured (nothing can be processed).
+#[tauri::command]
+pub fn count_pending_clips() -> Result<i64, String> {
+    let conn = open_db()?;
+
+    // If AI is not configured, nothing is "pending" — it just can't run
+    let cfg = crate::db::read_ai_config(&conn)?;
+    if AiClientConfig::from_map(&cfg).is_err() {
+        return Ok(0);
+    }
+
+    conn.query_row(
+        "SELECT COUNT(*) FROM web_clips WHERE summary = ''",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Get all unique tags across all clips.
 #[tauri::command]
 pub fn list_clip_tags() -> Result<Vec<String>, String> {
@@ -243,39 +263,23 @@ pub fn list_clip_tags() -> Result<Vec<String>, String> {
 
 // ── AI Auto-tag ───────────────────────────────────────────────────────────
 
-/// Collect existing tags and skill names for AI context (tag reuse + skill linking).
-fn gather_existing_context(conn: &rusqlite::Connection) -> (Vec<String>, Vec<(i64, String)>) {
-    // Existing tags from all clips
-    let existing_tags: Vec<String> = {
-        let mut stmt = conn
-            .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
-            .unwrap_or_else(|_| conn.prepare("SELECT '[]'").unwrap());
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0)).ok();
-        let mut all = std::collections::BTreeSet::new();
-        if let Some(rows) = rows {
-            for r in rows.flatten() {
-                if let Ok(tags) = serde_json::from_str::<Vec<String>>(&r) {
-                    for t in tags {
-                        all.insert(t);
-                    }
+/// Collect existing tags for AI context (tag reuse).
+fn gather_existing_tags(conn: &rusqlite::Connection) -> Vec<String> {
+    let mut stmt = conn
+        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
+        .unwrap_or_else(|_| conn.prepare("SELECT '[]'").unwrap());
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).ok();
+    let mut all = std::collections::BTreeSet::new();
+    if let Some(rows) = rows {
+        for r in rows.flatten() {
+            if let Ok(tags) = serde_json::from_str::<Vec<String>>(&r) {
+                for t in tags {
+                    all.insert(t);
                 }
             }
         }
-        all.into_iter().collect()
-    };
-
-    // Skill tree node names
-    let skills: Vec<(i64, String)> = {
-        let mut stmt = conn
-            .prepare("SELECT id, name FROM industry_skill ORDER BY id LIMIT 100")
-            .unwrap_or_else(|_| conn.prepare("SELECT 0, ''").unwrap());
-        stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
-            .ok()
-            .map(|rows| rows.flatten().collect())
-            .unwrap_or_default()
-    };
-
-    (existing_tags, skills)
+    }
+    all.into_iter().collect()
 }
 
 fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
@@ -295,8 +299,7 @@ fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
         Err(_) => return Ok(()), // No AI configured, skip
     };
 
-    let (existing_tags, skills) = gather_existing_context(&conn);
-    let skill_names: Vec<&str> = skills.iter().map(|(_, n)| n.as_str()).collect();
+    let existing_tags = gather_existing_tags(&conn);
 
     // Truncate content for AI
     let truncated: String = content.chars().take(4000).collect();
@@ -306,11 +309,6 @@ fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
     } else {
         existing_tags.join("、")
     };
-    let skill_names_str = if skill_names.is_empty() {
-        "（暂无）".to_string()
-    } else {
-        skill_names.join("、")
-    };
 
     let system = format!(
         r#"你是一个知识整理助手。用户收藏了一篇网页内容，请你：
@@ -318,19 +316,14 @@ fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
 1. 用中文生成 2-3 句话的摘要，提炼核心要点
 2. 提取 3-5 个关键词标签
 3. 判断内容类型：article / video / doc / tweet / code
-4. 如果内容与用户技能树中的某个技能相关，返回该技能名称
 
 用户已有的标签：{existing_tags}
 如果内容与已有标签相关，优先复用已有标签保持一致性。
 
-用户技能树中的技能：{skills}
-如果内容与某个技能相关，在 related_skills 中返回匹配的技能名称。
-
 严格返回 JSON：
-{{"summary":"摘要","tags":["标签1","标签2"],"source_type":"article","related_skills":["技能名"]}}
+{{"summary":"摘要","tags":["标签1","标签2"],"source_type":"article"}}
 只输出 JSON，不要其他文字。"#,
         existing_tags = existing_tags_str,
-        skills = skill_names_str,
     );
 
     let user = format!("网页标题：{}\n网页正文：\n{}", title, truncated);
@@ -367,23 +360,6 @@ fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
             rusqlite::params![summary, tags_json, source_type, clip_id],
         )
         .map_err(|e| e.to_string())?;
-
-        // Link to skill tree nodes if AI found related skills
-        if let Some(related) = parsed["related_skills"].as_array() {
-            for skill_val in related {
-                if let Some(skill_name) = skill_val.as_str() {
-                    // Find matching skill by name
-                    if let Some((skill_id, _)) = skills.iter().find(|(_, n)| n == skill_name) {
-                        // Insert into note_skill_map (reuse existing mapping table)
-                        // Use negative clip_id to distinguish from note mappings
-                        let _ = conn.execute(
-                            "INSERT OR IGNORE INTO note_skill_map (note_id, skill_id, weight) VALUES (?1, ?2, 1)",
-                            rusqlite::params![-clip_id, skill_id],
-                        );
-                    }
-                }
-            }
-        }
 
         tracing::info!("Auto-tagged clip {}: [{}]", clip_id, tags_json);
     }
@@ -768,138 +744,3 @@ pub fn ai_weekly_clip_summary() -> Result<String, String> {
     ai_client::chat(&config, messages, 0.4).map_err(String::from)
 }
 
-// ── Clip → Note Conversion (Phase 5) ──────────────────────────────────────
-
-/// Convert a web clip to a note. Optionally add personal annotation.
-/// Returns the new note ID.
-#[tauri::command]
-pub fn clip_to_note(id: i64, annotation: Option<String>) -> Result<i64, String> {
-    let conn = open_db()?;
-
-    let (title, content, summary, tags, url): (String, String, String, String, String) = conn
-        .query_row(
-            "SELECT title, content, summary, tags, url FROM web_clips WHERE id = ?1",
-            [id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-        )
-        .map_err(|e| e.to_string())?;
-
-    // Build note content: annotation + summary + source link + original content (truncated)
-    let mut note_content = String::new();
-
-    if let Some(ref ann) = annotation {
-        if !ann.trim().is_empty() {
-            note_content.push_str(&format!("## 我的笔记\n\n{}\n\n", ann.trim()));
-        }
-    }
-
-    if !summary.is_empty() {
-        note_content.push_str(&format!("## AI 摘要\n\n{}\n\n", summary));
-    }
-
-    note_content.push_str(&format!("## 原文来源\n\n{}\n\n", url));
-
-    // Include original content, truncated to reasonable length
-    let truncated: String = content.chars().take(3000).collect();
-    if !truncated.is_empty() {
-        note_content.push_str(&format!("## 原文内容\n\n{}", truncated));
-        if content.chars().count() > 3000 {
-            note_content.push_str("\n\n...（内容已截断，完整内容请查看原文）");
-        }
-    }
-
-    // Insert as note
-    let note_title = format!("[收藏] {}", title);
-    conn.execute(
-        "INSERT INTO notes (title, content) VALUES (?1, ?2)",
-        rusqlite::params![note_title, note_content],
-    )
-    .map_err(|e| e.to_string())?;
-    let note_id = conn.last_insert_rowid();
-
-    // Link note to same skills as the clip (via negative clip_id convention)
-    let skill_ids: Vec<i64> = {
-        let mut stmt = conn
-            .prepare("SELECT skill_id FROM note_skill_map WHERE note_id = ?1")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([-id], |r| r.get::<_, i64>(0))
-            .map_err(|e| e.to_string())?;
-        rows.flatten().collect()
-    };
-    for skill_id in &skill_ids {
-        let _ = conn.execute(
-            "INSERT OR IGNORE INTO note_skill_map (note_id, skill_id, weight) VALUES (?1, ?2, 1)",
-            rusqlite::params![note_id, skill_id],
-        );
-    }
-
-    // Also try AI skill classification on the note content
-    let tags_vec: Vec<String> = serde_json::from_str(&tags).unwrap_or_default();
-    if !tags_vec.is_empty() {
-        let cfg = crate::db::read_ai_config(&conn).ok();
-        if cfg.is_some() {
-            // Use existing tags to find matching skills
-            let mut stmt = conn
-                .prepare("SELECT id FROM industry_skill WHERE name = ?1")
-                .map_err(|e| e.to_string())?;
-            for tag in &tags_vec {
-                if let Ok(sid) = stmt.query_row([tag], |r| r.get::<_, i64>(0)) {
-                    let _ = conn.execute(
-                        "INSERT OR IGNORE INTO note_skill_map (note_id, skill_id, weight) VALUES (?1, ?2, 1)",
-                        rusqlite::params![note_id, sid],
-                    );
-                }
-            }
-        }
-    }
-
-    tracing::info!("Converted clip {} to note {}", id, note_id);
-    Ok(note_id)
-}
-
-/// Get skill tree suggestions based on clip tag frequency.
-/// Returns tags that appear 5+ times but don't have a matching skill node.
-#[tauri::command]
-pub fn suggest_skill_from_clips() -> Result<Vec<(String, i64)>, String> {
-    let conn = open_db()?;
-
-    // Count tag frequency across all clips
-    let mut stmt = conn
-        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([], |r| r.get::<_, String>(0))
-        .map_err(|e| e.to_string())?;
-
-    let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for r in rows {
-        let json_str = r.map_err(|e| e.to_string())?;
-        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&json_str) {
-            for t in tags {
-                *tag_counts.entry(t).or_insert(0) += 1;
-            }
-        }
-    }
-
-    // Get existing skill names
-    let existing_skills: std::collections::HashSet<String> = {
-        let mut stmt = conn
-            .prepare("SELECT name FROM industry_skill")
-            .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?;
-        rows.flatten().collect()
-    };
-
-    // Filter: tags with 5+ clips that don't match any existing skill
-    let threshold = 5;
-    let mut suggestions: Vec<(String, i64)> = tag_counts
-        .into_iter()
-        .filter(|(tag, count)| *count >= threshold && !existing_skills.contains(tag))
-        .collect();
-
-    suggestions.sort_by(|a, b| b.1.cmp(&a.1));
-    suggestions.truncate(10);
-
-    Ok(suggestions)
-}

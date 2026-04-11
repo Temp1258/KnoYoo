@@ -116,46 +116,6 @@ pub fn chat(
     send_chat(config, messages, temperature, ChatOptions::default())
 }
 
-/// Send a chat completion request with `response_format: json_object` and return raw text.
-pub fn chat_json(
-    config: &AiClientConfig,
-    messages: Vec<serde_json::Value>,
-    temperature: f64,
-) -> Result<String, AppError> {
-    send_chat(
-        config,
-        messages,
-        temperature,
-        ChatOptions {
-            response_format_json: true,
-            ..Default::default()
-        },
-    )
-}
-
-/// Send a chat request with optional max_tokens.
-pub fn chat_with_max_tokens(
-    config: &AiClientConfig,
-    messages: Vec<serde_json::Value>,
-    temperature: f64,
-    max_tokens: u32,
-) -> Result<String, AppError> {
-    send_chat(
-        config,
-        messages,
-        temperature,
-        ChatOptions {
-            max_tokens: Some(max_tokens),
-            ..Default::default()
-        },
-    )
-}
-
-/// Try to get AI config; returns Ok(None) if not configured.
-pub fn try_config(cfg: &HashMap<String, String>) -> Option<AiClientConfig> {
-    AiClientConfig::from_map(cfg).ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

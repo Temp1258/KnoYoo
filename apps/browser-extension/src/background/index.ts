@@ -4,7 +4,7 @@
  * Manages offline queue for clips when desktop is not running.
  */
 
-import { ping, sendClip, type ClipPayload } from "../utils/api";
+import { ping, sendClip, sendClipUrl, type ClipPayload } from "../utils/api";
 
 // ── Offline queue ────────────────────────────────────────────────────────
 
@@ -101,6 +101,106 @@ async function handleCheckStatus(): Promise<{ online: boolean; queueSize: number
   }
 
   return { online: isOnline, queueSize: queue.length };
+}
+
+// ── Context menu (right-click) ───────────────────────────────────────────
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.contextMenus.create({
+    id: "import-to-knoyoo",
+    title: "Import to KnoYoo",
+    contexts: ["link", "selection"],
+  });
+  chrome.contextMenus.create({
+    id: "import-video-to-knoyoo",
+    title: "Import Video to KnoYoo",
+    contexts: ["link", "selection"],
+  });
+});
+
+/** Extract a usable URL from context menu info. */
+function extractUrl(info: chrome.contextMenus.OnClickData): string | null {
+  // Prefer linkUrl (right-click on <a> element)
+  if (info.linkUrl) return info.linkUrl;
+  // Fall back to selected text if it looks like a URL
+  const text = info.selectionText?.trim();
+  if (text && /^https?:\/\//i.test(text)) return text;
+  return null;
+}
+
+chrome.contextMenus.onClicked.addListener(async (info, _tab) => {
+  const url = extractUrl(info);
+  if (!url) return;
+
+  const isVideo = info.menuItemId === "import-video-to-knoyoo";
+
+  if (isVideo) {
+    // Video: open in background tab → content script extracts subtitles → send rich clip
+    await importVideoViaTab(url);
+  } else {
+    // Article: server-side fetch & extract
+    try {
+      await sendClipUrl(url, "article");
+      console.log(`[KnoYoo] Imported article: ${url}`);
+    } catch (err) {
+      console.warn(`[KnoYoo] Failed to import ${url}:`, err);
+      await enqueue({ url, title: url, content: "", source_type: "article" });
+    }
+  }
+});
+
+/** Open URL in a hidden tab, extract content via content script, then save. */
+async function importVideoViaTab(url: string): Promise<void> {
+  let tabId: number | undefined;
+  try {
+    const tab = await chrome.tabs.create({ url, active: false });
+    tabId = tab.id;
+    if (!tabId) throw new Error("Failed to create tab");
+
+    // Wait for page to fully load
+    await waitForTabLoad(tabId);
+
+    // Ask content script to extract (includes subtitle extraction)
+    const response = await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_CONTENT" });
+    await chrome.tabs.remove(tabId);
+
+    if (response?.success && response.data) {
+      await sendClip({
+        url: response.data.url,
+        title: response.data.title,
+        content: response.data.content,
+        source_type: "video",
+        favicon: response.data.favicon,
+      });
+      console.log(`[KnoYoo] Imported video: ${url}`);
+    } else {
+      throw new Error(response?.error || "Content extraction failed");
+    }
+  } catch (err) {
+    // Clean up tab if still open
+    if (tabId) chrome.tabs.remove(tabId).catch(() => {});
+    console.warn(`[KnoYoo] Failed to import video ${url}:`, err);
+    await enqueue({ url, title: url, content: "", source_type: "video" });
+  }
+}
+
+function waitForTabLoad(tabId: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      chrome.tabs.onUpdated.removeListener(listener);
+      reject(new Error("Tab load timeout"));
+    }, 30000);
+
+    function listener(id: number, changeInfo: chrome.tabs.TabChangeInfo) {
+      if (id === tabId && changeInfo.status === "complete") {
+        chrome.tabs.onUpdated.removeListener(listener);
+        clearTimeout(timeout);
+        // Give content script + SPA (YouTube) time to fully render
+        setTimeout(resolve, 4000);
+      }
+    }
+    chrome.tabs.onUpdated.addListener(listener);
+  });
 }
 
 // ── Periodic queue flush ─────────────────────────────────────────────────

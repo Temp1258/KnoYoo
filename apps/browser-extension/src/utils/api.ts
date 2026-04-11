@@ -40,6 +40,29 @@ export async function ping(): Promise<boolean> {
   }
 }
 
+/** Send a URL for server-side fetching and extraction. */
+export async function sendClipUrl(
+  url: string,
+  sourceHint: string = "article"
+): Promise<ClipResponse> {
+  const token = await getToken();
+  const resp = await fetch(`${BASE_URL}/api/clip-url`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ url, source_hint: sourceHint }),
+  });
+
+  if (!resp.ok) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.error || `HTTP ${resp.status}`);
+  }
+
+  return resp.json();
+}
+
 /** Send a clip to the desktop app. */
 export async function sendClip(clip: ClipPayload): Promise<ClipResponse> {
   const token = await getToken();

@@ -1,14 +1,9 @@
 import { useState } from "react";
 import { MessageCircle, X, Send } from "lucide-react";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
-import Badge from "../ui/Badge";
 import type { ChatMessage } from "../../types";
 
-interface Props {
-  selectedNoteId?: number | null;
-}
-
-export default function ChatDrawer({ selectedNoteId }: Props) {
+export default function ChatDrawer() {
   const [chatOpen, setChatOpen] = useState(false);
   const [chatMsgs, setChatMsgs] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
@@ -27,7 +22,6 @@ export default function ChatDrawer({ selectedNoteId }: Props) {
     try {
       const reply = await tauriInvoke<string>("ai_chat_with_context", {
         messages: allMessages,
-        selectedNoteId: selectedNoteId ?? null,
       });
       setChatMsgs((m) => [...m, { role: "assistant", content: reply || "（空）" }]);
     } catch (_e) {
@@ -49,6 +43,11 @@ export default function ChatDrawer({ selectedNoteId }: Props) {
         </button>
       )}
 
+      {/* Backdrop — click anywhere outside drawer to close */}
+      {chatOpen && (
+        <div className="fixed inset-0 z-40 bg-black/20" onClick={() => setChatOpen(false)} />
+      )}
+
       {/* Drawer */}
       <div
         className={`fixed top-0 right-0 h-full w-[380px] bg-bg-secondary border-l border-border shadow-lg z-50 flex flex-col transition-transform duration-300 ${
@@ -57,7 +56,7 @@ export default function ChatDrawer({ selectedNoteId }: Props) {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-          <span className="text-[14px] font-semibold text-text">AI 成长教练</span>
+          <span className="text-[14px] font-semibold text-text">AI 知识助手</span>
           <button
             className="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-bg-tertiary transition-colors cursor-pointer"
             onClick={() => setChatOpen(false)}
@@ -68,10 +67,9 @@ export default function ChatDrawer({ selectedNoteId }: Props) {
 
         {/* Messages */}
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
-          {/* Context indicator */}
           {chatMsgs.length === 0 && (
-            <div className="flex justify-center">
-              <Badge variant="accent">{selectedNoteId ? "已关联笔记上下文" : "全局上下文"}</Badge>
+            <div className="text-[13px] text-text-tertiary text-center py-8">
+              向 AI 助手提问，它会优先基于你的知识库内容回答
             </div>
           )}
 
@@ -88,10 +86,6 @@ export default function ChatDrawer({ selectedNoteId }: Props) {
               </div>
             </div>
           ))}
-
-          {chatMsgs.length === 0 && (
-            <div className="text-[13px] text-text-tertiary text-center py-8">向 AI 教练提问，获取个性化学习建议</div>
-          )}
 
           {sending && (
             <div className="flex justify-start">

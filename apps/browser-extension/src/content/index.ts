@@ -102,17 +102,55 @@ function cleanText(el: Element): string {
     .slice(0, 50000);
 }
 
-function extractVideoInfo(): string {
+async function extractVideoInfo(): Promise<string> {
   const hostname = window.location.hostname;
 
-  if (hostname.includes("youtube.com")) {
-    const desc = document.querySelector("#description-inline-expander, #description")?.textContent?.trim();
-    return desc || document.title;
+  if (hostname.includes("youtube.com") || hostname.includes("youtu.be")) {
+    const { extractYouTubeSubtitles } = await import("./subtitles");
+    const subtitles = await extractYouTubeSubtitles();
+    if (subtitles) return subtitles;
+    // Fallback: try multiple description selectors
+    const descSelectors = [
+      "#description-inline-expander",
+      "#description",
+      "ytd-text-inline-expander",
+      "#info-container #description",
+      'meta[name="description"]',
+    ];
+    for (const sel of descSelectors) {
+      const el = document.querySelector(sel);
+      const text = sel.startsWith("meta")
+        ? (el as HTMLMetaElement)?.content?.trim()
+        : el?.textContent?.trim();
+      if (text && text.length > 20) return text;
+    }
+    // Last resort: gather all meta info
+    const metaDesc = document.querySelector('meta[name="description"]') as HTMLMetaElement | null;
+    const metaKeywords = document.querySelector('meta[name="keywords"]') as HTMLMetaElement | null;
+    const parts = [document.title, metaDesc?.content, metaKeywords?.content].filter(Boolean);
+    return parts.join("\n\n") || document.title;
   }
 
   if (hostname.includes("bilibili.com")) {
-    const desc = document.querySelector(".basic-desc-info, .desc-info-text")?.textContent?.trim();
-    return desc || document.title;
+    const { extractBilibiliSubtitles } = await import("./subtitles");
+    const subtitles = await extractBilibiliSubtitles();
+    if (subtitles) return subtitles;
+    // Fallback: multiple selectors
+    const descSelectors = [
+      ".basic-desc-info",
+      ".desc-info-text",
+      "#v_desc .info",
+      'meta[name="description"]',
+    ];
+    for (const sel of descSelectors) {
+      const el = document.querySelector(sel);
+      const text = sel.startsWith("meta")
+        ? (el as HTMLMetaElement)?.content?.trim()
+        : el?.textContent?.trim();
+      if (text && text.length > 20) return text;
+    }
+    const metaDesc = document.querySelector('meta[name="description"]') as HTMLMetaElement | null;
+    return metaDesc?.content || document.title;
   }
 
   return document.title;
@@ -123,7 +161,7 @@ function extractTweet(): string {
   return tweetEl?.textContent?.trim() || document.title;
 }
 
-function extractPageContent(): ExtractedContent {
+async function extractPageContent(): Promise<ExtractedContent> {
   const url = window.location.href;
   const title = document.title;
   const sourceType = detectSourceType(url);
@@ -132,7 +170,7 @@ function extractPageContent(): ExtractedContent {
   let content: string;
   switch (sourceType) {
     case "video":
-      content = extractVideoInfo();
+      content = await extractVideoInfo();
       break;
     case "tweet":
       content = extractTweet();
@@ -148,12 +186,10 @@ function extractPageContent(): ExtractedContent {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message.type === "EXTRACT_CONTENT") {
-    try {
-      const data = extractPageContent();
-      sendResponse({ success: true, data });
-    } catch (err) {
-      sendResponse({ success: false, error: String(err) });
-    }
+    extractPageContent()
+      .then((data) => sendResponse({ success: true, data }))
+      .catch((err) => sendResponse({ success: false, error: String(err) }));
+    return true; // keep sendResponse alive for async
   }
   return true;
 });
@@ -228,14 +264,8 @@ function showClipToast() {
         width: 20px;
         height: 20px;
         border-radius: 5px;
-        background: #6c5ce7;
-        color: white;
-        font-weight: 700;
-        font-size: 11px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
         flex-shrink: 0;
+        object-fit: cover;
       }
       .label {
         font-size: 12px;
@@ -291,7 +321,7 @@ function showClipToast() {
     </style>
     <div class="toast" id="toast">
       <div class="header">
-        <div class="logo">K</div>
+        <img class="logo" src="${chrome.runtime.getURL("icons/icon48.png")}" alt="K" />
         <span class="label">收藏到 KnoYoo？</span>
       </div>
       <div class="title" id="pageTitle">${escapeHtml(truncatedTitle)}</div>
@@ -316,7 +346,7 @@ function showClipToast() {
     btns.innerHTML = '<div class="saving">保存中...</div>';
 
     try {
-      const data = extractPageContent();
+      const data = await extractPageContent();
       const response = await chrome.runtime.sendMessage({
         type: "SAVE_CLIP",
         data: {

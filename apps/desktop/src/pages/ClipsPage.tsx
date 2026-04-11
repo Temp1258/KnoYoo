@@ -1,5 +1,21 @@
-import { useState, useEffect, useCallback } from "react";
-import { Search, Star, Filter, Library, Copy, Check, Sparkles, Globe, Calendar, RefreshCw, Lightbulb, ChevronDown, ChevronUp } from "lucide-react";
+import { useState, useEffect, useCallback, useRef } from "react";
+import {
+  Search,
+  Star,
+  Filter,
+  Library,
+  Copy,
+  Check,
+  Sparkles,
+  Globe,
+  Calendar,
+  RefreshCw,
+  Lightbulb,
+  ChevronDown,
+  ChevronUp,
+  Loader2,
+  Settings,
+} from "lucide-react";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 import type { WebClip } from "../types";
 import ClipCard from "../components/Clips/ClipCard";
@@ -24,7 +40,7 @@ function getDateFrom(range: TimeRange): string | undefined {
   return d.toISOString();
 }
 
-export default function ClipsPage() {
+export default function ClipsPage({ starredMode = false }: { starredMode?: boolean }) {
   const [clips, setClips] = useState<WebClip[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [allDomains, setAllDomains] = useState<string[]>([]);
@@ -51,24 +67,28 @@ export default function ClipsPage() {
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
-  // Skill suggestions
-  const [skillSuggestions, setSkillSuggestions] = useState<[string, number][]>([]);
-
   // Batch retag
   const [retagging, setRetagging] = useState(false);
+
+  // Pending AI processing count
+  const [pendingCount, setPendingCount] = useState(0);
+  const [aiConfigured, setAiConfigured] = useState(true);
+  const pendingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  const isStarred = starredMode || starredOnly;
 
   const loadClips = useCallback(async () => {
     try {
       if (query.trim()) {
         const results = await tauriInvoke<WebClip[]>("search_web_clips", { q: query });
-        setClips(results);
+        setClips(isStarred ? results.filter((c) => c.is_starred) : results);
       } else {
         const dateFrom = getDateFrom(timeRange);
         const results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
           page,
           pageSize: 20,
           tag: selectedTag,
-          starred: starredOnly || undefined,
+          starred: isStarred || undefined,
           domain: selectedDomain,
           dateFrom,
         });
@@ -79,7 +99,7 @@ export default function ClipsPage() {
     } catch (e) {
       console.error("Failed to load clips:", e);
     }
-  }, [query, page, selectedTag, selectedDomain, timeRange, starredOnly]);
+  }, [query, page, selectedTag, selectedDomain, timeRange, isStarred]);
 
   const loadMeta = useCallback(async () => {
     try {
@@ -103,31 +123,68 @@ export default function ClipsPage() {
     }
   }, []);
 
-  const loadSuggestions = useCallback(async () => {
-    try {
-      const suggestions = await tauriInvoke<[string, number][]>("suggest_skill_from_clips");
-      setSkillSuggestions(suggestions);
-    } catch (e) {
-      console.error(e);
-    }
-  }, []);
-
+  // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching on filter change
   useEffect(() => {
     loadClips();
     loadMeta();
     loadForgotten();
-    loadSuggestions();
-  }, [loadClips, loadMeta, loadForgotten, loadSuggestions]);
+  }, [loadClips, loadMeta, loadForgotten]);
 
   useEffect(() => {
     tauriInvoke<string>("get_clip_server_token").then(setServerToken).catch(console.error);
   }, []);
 
+  // Check AI config on mount + when config changes
+  const checkAiConfig = useCallback(() => {
+    tauriInvoke<string>("ai_smoketest")
+      .then((r) => {
+        setAiConfigured(r.startsWith("ok"));
+      })
+      .catch(() => setAiConfigured(false));
+  }, []);
+
+  useEffect(() => {
+    checkAiConfig();
+    const handler = async () => {
+      checkAiConfig();
+      // Auto-retag pending clips when AI is newly configured
+      const pending = await tauriInvoke<number>("count_pending_clips").catch(() => 0);
+      if (pending > 0) {
+        setRetagging(true);
+        await tauriInvoke("ai_batch_retag_clips").catch(console.error);
+        setRetagging(false);
+      }
+      loadClips();
+      loadMeta();
+    };
+    window.addEventListener("knoyoo-ai-config-changed", handler);
+    return () => window.removeEventListener("knoyoo-ai-config-changed", handler);
+  }, [checkAiConfig, loadClips, loadMeta]);
+
+  useEffect(() => {
+    const checkPending = () => {
+      tauriInvoke<number>("count_pending_clips")
+        .then((n) => {
+          setPendingCount(n);
+          if (n === 0 && pendingTimerRef.current) {
+            clearInterval(pendingTimerRef.current);
+            pendingTimerRef.current = null;
+          }
+        })
+        .catch(console.error);
+    };
+    checkPending();
+    pendingTimerRef.current = setInterval(checkPending, 3000);
+    return () => {
+      if (pendingTimerRef.current) clearInterval(pendingTimerRef.current);
+    };
+  }, [total]);
+
   const handleStar = async (id: number) => {
     await tauriInvoke("toggle_star_clip", { id });
     loadClips();
     if (selectedClip?.id === id) {
-      setSelectedClip((prev) => prev ? { ...prev, is_starred: !prev.is_starred } : null);
+      setSelectedClip((prev) => (prev ? { ...prev, is_starred: !prev.is_starred } : null));
     }
   };
 
@@ -172,7 +229,9 @@ export default function ClipsPage() {
     if (!fuzzyQuery.trim()) return;
     setFuzzyLoading(true);
     try {
-      const results = await tauriInvoke<WebClip[]>("ai_fuzzy_search_clips", { description: fuzzyQuery });
+      const results = await tauriInvoke<WebClip[]>("ai_fuzzy_search_clips", {
+        description: fuzzyQuery,
+      });
       setFuzzyResults(results);
     } catch (e) {
       console.error(e);
@@ -194,11 +253,7 @@ export default function ClipsPage() {
   // Detail view
   if (selectedClip) {
     return (
-      <ClipDetail
-        clip={selectedClip}
-        onBack={() => setSelectedClip(null)}
-        onStar={handleStar}
-      />
+      <ClipDetail clip={selectedClip} onBack={() => setSelectedClip(null)} onStar={handleStar} />
     );
   }
 
@@ -210,10 +265,27 @@ export default function ClipsPage() {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-3">
-          <h1 className="text-[28px] font-bold tracking-tight m-0">收藏库</h1>
-          <span className="text-[13px] text-text-tertiary">{total} 条收藏</span>
+          <h1 className="text-[28px] font-bold tracking-tight m-0">
+            {starredMode ? "标记" : "知识库"}
+          </h1>
+          <span className="text-[13px] text-text-tertiary">
+            {starredMode ? `${clips.length} 条标记` : `${total} 条收藏`}
+          </span>
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              loadClips();
+              loadMeta();
+              loadForgotten();
+            }}
+            title="刷新"
+          >
+            <RefreshCw size={14} />
+            刷新
+          </Button>
           <Button variant="ghost" size="sm" onClick={handleBatchRetag} disabled={retagging}>
             <RefreshCw size={14} className={retagging ? "animate-spin" : ""} />
             {retagging ? "标签中..." : "批量标签"}
@@ -225,41 +297,62 @@ export default function ClipsPage() {
         </div>
       </div>
 
-      {/* Weekly summary card */}
-      {weeklySummary ? (
-        <div className="p-4 rounded-xl bg-accent/5 border border-accent/10 mb-4">
-          <div className="text-[11px] font-medium text-accent mb-1">本周收藏摘要</div>
-          <p className="text-[13px] text-text leading-relaxed m-0">{weeklySummary}</p>
-        </div>
-      ) : (
-        <button
-          onClick={handleLoadSummary}
-          disabled={summaryLoading}
-          className="w-full p-3 rounded-xl bg-bg-secondary border border-border hover:border-accent/20 text-[12px] text-text-secondary mb-4 flex items-center justify-center gap-2 cursor-pointer transition-colors"
-        >
-          <Sparkles size={14} className={summaryLoading ? "animate-pulse" : ""} />
-          {summaryLoading ? "生成本周摘要中..." : "生成本周收藏摘要"}
-        </button>
-      )}
-
-      {/* Skill suggestions */}
-      {skillSuggestions.length > 0 && (
-        <div className="p-3 rounded-xl bg-green-500/5 border border-green-500/10 mb-4">
-          <div className="text-[11px] font-medium text-green-600 mb-2">
-            这些话题你收藏了很多，要加入技能树吗？
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {skillSuggestions.map(([tag, count]) => (
-              <span key={tag} className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-green-500/10 text-green-700 text-[12px]">
-                {tag} <span className="text-green-500/60">({count}篇)</span>
+      {/* Pending AI processing indicator (home only) */}
+      {!starredMode && pendingCount > 0 && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-500/5 border border-blue-500/15 mb-4">
+          {retagging ? (
+            <>
+              <Loader2 size={14} className="text-blue-500 animate-spin shrink-0" />
+              <span className="text-[12px] text-blue-600">
+                {pendingCount} 条内容正在 AI 解析中...
               </span>
-            ))}
-          </div>
+            </>
+          ) : (
+            <>
+              <Sparkles size={14} className="text-blue-500 shrink-0" />
+              <span className="text-[12px] text-blue-600">{pendingCount} 条内容待 AI 解析</span>
+              <div className="flex-1" />
+              <button
+                onClick={handleBatchRetag}
+                className="text-[11px] text-blue-500 hover:text-blue-600 cursor-pointer font-medium"
+              >
+                开始解析
+              </button>
+            </>
+          )}
         </div>
       )}
 
-      {/* "You may have forgotten" section */}
-      {forgottenClips.length > 0 && (
+      {/* AI not configured hint (home only) */}
+      {!starredMode && !aiConfigured && total > 0 && (
+        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-yellow-500/5 border border-yellow-500/15 mb-4">
+          <Settings size={14} className="text-yellow-600 shrink-0" />
+          <span className="text-[12px] text-yellow-700">
+            AI 未配置 — 点击左侧 ⚙ 设置 API Key 后，收藏内容将自动生成摘要和标签
+          </span>
+        </div>
+      )}
+
+      {/* Weekly summary card (home only) */}
+      {!starredMode &&
+        (weeklySummary ? (
+          <div className="p-4 rounded-xl bg-accent/5 border border-accent/10 mb-4">
+            <div className="text-[11px] font-medium text-accent mb-1">本周收藏摘要</div>
+            <p className="text-[13px] text-text leading-relaxed m-0">{weeklySummary}</p>
+          </div>
+        ) : (
+          <button
+            onClick={handleLoadSummary}
+            disabled={summaryLoading}
+            className="w-full p-3 rounded-xl bg-bg-secondary border border-border hover:border-accent/20 text-[12px] text-text-secondary mb-4 flex items-center justify-center gap-2 cursor-pointer transition-colors"
+          >
+            <Sparkles size={14} className={summaryLoading ? "animate-pulse" : ""} />
+            {summaryLoading ? "生成本周摘要中..." : "生成本周收藏摘要"}
+          </button>
+        ))}
+
+      {/* "You may have forgotten" section (home only) */}
+      {!starredMode && forgottenClips.length > 0 && (
         <div className="mb-4">
           <div className="flex items-center gap-2 mb-2">
             <Lightbulb size={14} className="text-yellow-500" />
@@ -273,7 +366,9 @@ export default function ClipsPage() {
                 className="text-left p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10 hover:border-yellow-500/20 transition-colors cursor-pointer"
               >
                 <div className="text-[12px] font-medium text-text line-clamp-1">{clip.title}</div>
-                <div className="text-[11px] text-text-tertiary line-clamp-1 mt-0.5">{clip.summary}</div>
+                <div className="text-[11px] text-text-tertiary line-clamp-1 mt-0.5">
+                  {clip.summary}
+                </div>
               </button>
             ))}
           </div>
@@ -283,14 +378,19 @@ export default function ClipsPage() {
       {/* Search bar with mode toggle */}
       <div className="flex gap-2 mb-4">
         <div className="relative flex-1">
-          <Search size={16} className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary" />
+          <Search
+            size={16}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
+          />
           {fuzzyMode ? (
             <input
               type="text"
               placeholder="描述你记得的内容... 例如「之前看过一个Rust生命周期的文章」"
               value={fuzzyQuery}
               onChange={(e) => setFuzzyQuery(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter") handleFuzzySearch(); }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleFuzzySearch();
+              }}
               className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-accent/5 border border-accent/20 text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors"
             />
           ) : (
@@ -298,7 +398,11 @@ export default function ClipsPage() {
               type="text"
               placeholder="搜索收藏内容..."
               value={query}
-              onChange={(e) => { setQuery(e.target.value); setPage(1); setFuzzyResults(null); }}
+              onChange={(e) => {
+                setQuery(e.target.value);
+                setPage(1);
+                setFuzzyResults(null);
+              }}
               className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors"
             />
           )}
@@ -334,7 +438,7 @@ export default function ClipsPage() {
         <Filter size={12} />
         筛选条件
         {showFilters ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-        {(selectedTag || selectedDomain || timeRange !== "all" || starredOnly) && (
+        {(selectedTag || selectedDomain || timeRange !== "all" || isStarred) && (
           <span className="w-1.5 h-1.5 rounded-full bg-accent" />
         )}
       </button>
@@ -343,23 +447,35 @@ export default function ClipsPage() {
         <div className="flex flex-col gap-3 mb-4 p-3 rounded-xl bg-bg-secondary border border-border">
           {/* Star + Time range */}
           <div className="flex items-center gap-2 flex-wrap">
-            <button
-              onClick={() => { setStarredOnly(!starredOnly); setPage(1); setFuzzyResults(null); }}
-              className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[12px] transition-colors cursor-pointer border ${
-                starredOnly
-                  ? "bg-yellow-500/10 text-yellow-600 border-yellow-500/20"
-                  : "bg-bg text-text-secondary border-border hover:border-accent/20"
-              }`}
-            >
-              <Star size={12} fill={starredOnly ? "currentColor" : "none"} />
-              星标
-            </button>
-            <div className="w-px h-4 bg-border mx-1" />
+            {!starredMode && (
+              <>
+                <button
+                  onClick={() => {
+                    setStarredOnly(!starredOnly);
+                    setPage(1);
+                    setFuzzyResults(null);
+                  }}
+                  className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[12px] transition-colors cursor-pointer border ${
+                    starredOnly
+                      ? "bg-yellow-500/10 text-yellow-600 border-yellow-500/20"
+                      : "bg-bg text-text-secondary border-border hover:border-accent/20"
+                  }`}
+                >
+                  <Star size={12} fill={starredOnly ? "currentColor" : "none"} />
+                  星标
+                </button>
+                <div className="w-px h-4 bg-border mx-1" />
+              </>
+            )}
             <Calendar size={12} className="text-text-tertiary" />
             {TIME_RANGES.map((tr) => (
               <button
                 key={tr.value}
-                onClick={() => { setTimeRange(tr.value); setPage(1); setFuzzyResults(null); }}
+                onClick={() => {
+                  setTimeRange(tr.value);
+                  setPage(1);
+                  setFuzzyResults(null);
+                }}
                 className={`px-2 py-1 rounded-lg text-[11px] transition-colors cursor-pointer border ${
                   timeRange === tr.value
                     ? "bg-accent/10 text-accent border-accent/20"
@@ -378,7 +494,11 @@ export default function ClipsPage() {
               {allTags.slice(0, 15).map((tag) => (
                 <button
                   key={tag}
-                  onClick={() => { setSelectedTag(selectedTag === tag ? null : tag); setPage(1); setFuzzyResults(null); }}
+                  onClick={() => {
+                    setSelectedTag(selectedTag === tag ? null : tag);
+                    setPage(1);
+                    setFuzzyResults(null);
+                  }}
                   className={`px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer border ${
                     selectedTag === tag
                       ? "bg-accent/10 text-accent border-accent/20"
@@ -398,7 +518,11 @@ export default function ClipsPage() {
               {allDomains.slice(0, 10).map((d) => (
                 <button
                   key={d}
-                  onClick={() => { setSelectedDomain(selectedDomain === d ? null : d); setPage(1); setFuzzyResults(null); }}
+                  onClick={() => {
+                    setSelectedDomain(selectedDomain === d ? null : d);
+                    setPage(1);
+                    setFuzzyResults(null);
+                  }}
                   className={`px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer border ${
                     selectedDomain === d
                       ? "bg-accent/10 text-accent border-accent/20"
@@ -417,9 +541,14 @@ export default function ClipsPage() {
       {fuzzyResults && (
         <div className="flex items-center gap-2 mb-3">
           <Sparkles size={13} className="text-accent" />
-          <span className="text-[12px] text-accent">AI 搜索结果 ({fuzzyResults.length} 条匹配)</span>
+          <span className="text-[12px] text-accent">
+            AI 搜索结果 ({fuzzyResults.length} 条匹配)
+          </span>
           <button
-            onClick={() => { setFuzzyResults(null); setFuzzyMode(false); }}
+            onClick={() => {
+              setFuzzyResults(null);
+              setFuzzyMode(false);
+            }}
             className="text-[11px] text-text-tertiary hover:text-text cursor-pointer ml-auto"
           >
             清除
@@ -436,9 +565,14 @@ export default function ClipsPage() {
               <p className="text-[14px] mb-1">没有找到匹配的收藏</p>
               <p className="text-[12px]">试试换个描述方式</p>
             </>
+          ) : starredMode ? (
+            <>
+              <p className="text-[14px] mb-1">还没有标记的内容</p>
+              <p className="text-[12px]">在知识库中点击星标按钮来标记重要内容</p>
+            </>
           ) : (
             <>
-              <p className="text-[14px] mb-1">收藏库是空的</p>
+              <p className="text-[14px] mb-1">知识库是空的</p>
               <p className="text-[12px]">安装浏览器插件，一键收藏有价值的网页内容</p>
             </>
           )}

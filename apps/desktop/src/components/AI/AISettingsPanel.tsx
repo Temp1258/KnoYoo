@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
 import { useAIConfig } from "../../hooks/useAIConfig";
 import Card from "../ui/Card";
@@ -6,21 +6,74 @@ import Input from "../ui/Input";
 import Button from "../ui/Button";
 
 const QUICK_PRESETS = [
-  { label: "DeepSeek", provider: "deepseek", api_base: "https://api.deepseek.com", model: "deepseek-chat", region: "cn" },
-  { label: "SiliconCloud", provider: "silicon", api_base: "https://api.siliconflow.cn", model: "deepseek-ai/DeepSeek-V3", region: "cn" },
-  { label: "通义千问", provider: "dashscope", api_base: "https://dashscope.aliyuncs.com/compatible-mode", model: "qwen-plus", region: "cn" },
-  { label: "智谱 GLM", provider: "zhipu", api_base: "https://open.bigmodel.cn/api/paas", model: "glm-4-flash", region: "cn" },
-  { label: "Moonshot", provider: "moonshot", api_base: "https://api.moonshot.cn", model: "moonshot-v1-8k", region: "cn" },
-  { label: "Ollama (本地)", provider: "ollama", api_base: "http://localhost:11434", model: "llama3", region: "cn" },
-  { label: "OpenAI", provider: "openai", api_base: "https://api.openai.com", model: "gpt-4o-mini", region: "intl" },
-  { label: "Anthropic", provider: "anthropic", api_base: "https://api.anthropic.com", model: "claude-sonnet-4-20250514", region: "intl" },
+  {
+    label: "DeepSeek",
+    provider: "deepseek",
+    api_base: "https://api.deepseek.com",
+    model: "deepseek-chat",
+    region: "cn",
+  },
+  {
+    label: "SiliconCloud",
+    provider: "silicon",
+    api_base: "https://api.siliconflow.cn",
+    model: "deepseek-ai/DeepSeek-V3",
+    region: "cn",
+  },
+  {
+    label: "通义千问",
+    provider: "dashscope",
+    api_base: "https://dashscope.aliyuncs.com/compatible-mode",
+    model: "qwen-plus",
+    region: "cn",
+  },
+  {
+    label: "智谱 GLM",
+    provider: "zhipu",
+    api_base: "https://open.bigmodel.cn/api/paas",
+    model: "glm-4-flash",
+    region: "cn",
+  },
+  {
+    label: "Moonshot",
+    provider: "moonshot",
+    api_base: "https://api.moonshot.cn",
+    model: "moonshot-v1-8k",
+    region: "cn",
+  },
+  {
+    label: "Ollama (本地)",
+    provider: "ollama",
+    api_base: "http://localhost:11434",
+    model: "llama3",
+    region: "cn",
+  },
+  {
+    label: "OpenAI",
+    provider: "openai",
+    api_base: "https://api.openai.com",
+    model: "gpt-4o-mini",
+    region: "intl",
+  },
+  {
+    label: "Anthropic",
+    provider: "anthropic",
+    api_base: "https://api.anthropic.com",
+    model: "claude-sonnet-4-20250514",
+    region: "intl",
+  },
 ];
 
 export default function AISettingsPanel() {
-  const { aiCfg, setAiCfg, aiMsg, saveConfig, smokeTest } = useAIConfig();
+  const { aiCfg, setAiCfg, aiMsg, loadConfig, saveConfig, smokeTest } = useAIConfig();
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  const applyPreset = (preset: typeof QUICK_PRESETS[0]) => {
+  // Load saved config from DB on mount
+  useEffect(() => {
+    loadConfig();
+  }, [loadConfig]);
+
+  const applyPreset = (preset: (typeof QUICK_PRESETS)[0]) => {
     setAiCfg({
       ...aiCfg,
       provider: preset.provider,
@@ -67,15 +120,33 @@ export default function AISettingsPanel() {
         </div>
       </div>
 
-      {/* API Key - always visible since it's the only required user input */}
+      {/* API Key - password field, never shows real key */}
       <div className="mb-3">
         <div className="text-[12px] text-text-tertiary mb-1">API Key</div>
-        <Input
-          placeholder="sk-... (填入你的密钥即可开始使用)"
-          value={aiCfg.api_key || ""}
-          onChange={(e) => setAiCfg({ ...aiCfg, api_key: e.target.value })}
-          className="font-mono"
-        />
+        <div className="flex gap-2">
+          <Input
+            type="password"
+            placeholder="sk-... (填入你的密钥即可开始使用)"
+            value={aiCfg.api_key || ""}
+            onChange={(e) => setAiCfg({ ...aiCfg, api_key: e.target.value })}
+            className="font-mono flex-1"
+          />
+          {aiCfg.api_key && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setAiCfg({ ...aiCfg, api_key: "" })}
+              title="清除并重新输入"
+            >
+              清除
+            </Button>
+          )}
+        </div>
+        {aiCfg.api_key?.includes("***") && (
+          <div className="text-[11px] text-text-tertiary mt-1">
+            已配置密钥（已脱敏显示）。如需更换，请先清除再输入新密钥。
+          </div>
+        )}
       </div>
 
       {/* Advanced toggle */}
@@ -122,12 +193,26 @@ export default function AISettingsPanel() {
         </div>
       )}
 
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <Button variant="primary" onClick={saveConfig}>
           保存
         </Button>
         <Button onClick={smokeTest}>测试连接</Button>
-        {aiMsg && <span className="text-[12px] text-text-secondary ml-2">{aiMsg}</span>}
+        {aiMsg && (
+          <span
+            className={`text-[12px] ml-2 ${
+              aiMsg.startsWith("连接成功")
+                ? "text-green-500"
+                : aiMsg === "已保存"
+                  ? "text-text-secondary"
+                  : aiMsg === "测试中..."
+                    ? "text-blue-500"
+                    : "text-red-500"
+            }`}
+          >
+            {aiMsg}
+          </span>
+        )}
       </div>
     </Card>
   );

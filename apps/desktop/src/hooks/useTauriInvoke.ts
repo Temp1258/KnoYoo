@@ -1,9 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 
-/**
- * Unified Tauri invoke wrapper.
- * Replaces both `invoke()` from App.tsx and `tauriInvoke()` from MindMapPage.tsx.
- */
+/** Unified Tauri invoke wrapper. */
 export async function tauriInvoke<T = unknown>(
   cmd: string,
   args?: Record<string, unknown>,

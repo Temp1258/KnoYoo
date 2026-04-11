@@ -8,6 +8,7 @@ use std::net::TcpListener;
 
 use crate::clips::NewClip;
 use crate::db::open_db;
+use crate::html_extract;
 
 const BIND_ADDR: &str = "127.0.0.1:19836";
 const MAX_BODY_SIZE: usize = 2 * 1024 * 1024; // 2 MB
@@ -128,8 +129,10 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         return Ok(());
     }
 
-    // Route: POST /api/clip
-    if request_line.starts_with("POST /api/clip") {
+    // Route: POST /api/clip (exact — must not match /api/clip-url)
+    if request_line.starts_with("POST /api/clip ")
+        || request_line.starts_with("POST /api/clip?")
+    {
         // Auth check
         let token = get_or_create_token()?;
         let auth = headers.get("authorization").cloned().unwrap_or_default();
@@ -170,6 +173,74 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         return Ok(());
     }
 
+    // Route: POST /api/clip-url — fetch URL server-side, extract content, and save
+    if request_line.starts_with("POST /api/clip-url") {
+        // Auth check
+        let token = get_or_create_token()?;
+        let auth = headers.get("authorization").cloned().unwrap_or_default();
+        let provided_token = auth.strip_prefix("Bearer ").unwrap_or(&auth);
+        if provided_token != token {
+            send_json_response(&mut stream, 401, r#"{"error":"unauthorized"}"#)?;
+            return Ok(());
+        }
+
+        // Read body
+        let content_length: usize = headers
+            .get("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+
+        if content_length > MAX_BODY_SIZE {
+            send_json_response(&mut stream, 413, r#"{"error":"body too large"}"#)?;
+            return Ok(());
+        }
+
+        let mut body = vec![0u8; content_length];
+        reader.read_exact(&mut body).map_err(|e| e.to_string())?;
+
+        #[derive(serde::Deserialize)]
+        struct ClipUrlRequest {
+            url: String,
+            #[serde(default = "default_source_hint")]
+            source_hint: String,
+        }
+        fn default_source_hint() -> String {
+            "article".to_string()
+        }
+
+        let req: ClipUrlRequest =
+            serde_json::from_slice(&body).map_err(|e| format!("invalid JSON: {e}"))?;
+
+        // Fetch and extract content from the URL
+        match html_extract::fetch_and_extract(&req.url) {
+            Ok(page) => {
+                let clip = NewClip {
+                    url: req.url,
+                    title: page.title,
+                    content: page.content,
+                    source_type: Some(req.source_hint),
+                    favicon: Some(page.favicon),
+                };
+                match crate::clips::add_web_clip(clip) {
+                    Ok(saved) => {
+                        let resp = serde_json::to_string(&saved)
+                            .unwrap_or_else(|_| r#"{"ok":true}"#.to_string());
+                        send_json_response(&mut stream, 200, &resp)?;
+                    }
+                    Err(e) => {
+                        let err_body = serde_json::json!({"error": e}).to_string();
+                        send_json_response(&mut stream, 500, &err_body)?;
+                    }
+                }
+            }
+            Err(e) => {
+                let err_body = serde_json::json!({"error": e}).to_string();
+                send_json_response(&mut stream, 422, &err_body)?;
+            }
+        }
+        return Ok(());
+    }
+
     // 404
     send_json_response(&mut stream, 404, r#"{"error":"not found"}"#)?;
     Ok(())
@@ -186,6 +257,7 @@ fn send_json_response(
         401 => "Unauthorized",
         404 => "Not Found",
         413 => "Payload Too Large",
+        422 => "Unprocessable Entity",
         500 => "Internal Server Error",
         _ => "OK",
     };
