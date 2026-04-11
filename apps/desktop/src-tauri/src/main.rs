@@ -100,6 +100,7 @@ fn main() {
             clips::search_web_clips,
             clips::delete_web_clip,
             clips::toggle_star_clip,
+            clips::update_web_clip,
             clips::count_web_clips,
             clips::count_pending_clips,
             clips::list_clip_tags,

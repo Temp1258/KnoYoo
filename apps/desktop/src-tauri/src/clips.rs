@@ -210,6 +210,37 @@ pub fn toggle_star_clip(id: i64) -> Result<bool, String> {
     Ok(starred)
 }
 
+/// Update summary and/or tags for a clip.
+#[tauri::command]
+pub fn update_web_clip(
+    id: i64,
+    summary: Option<String>,
+    tags: Option<Vec<String>>,
+) -> Result<WebClip, String> {
+    let conn = open_db()?;
+    if let Some(ref s) = summary {
+        conn.execute(
+            "UPDATE web_clips SET summary = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
+            rusqlite::params![s, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(ref t) = tags {
+        let tags_json = serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string());
+        conn.execute(
+            "UPDATE web_clips SET tags = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
+            rusqlite::params![tags_json, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    conn.query_row(
+        "SELECT * FROM web_clips WHERE id = ?1",
+        [id],
+        row_to_clip,
+    )
+    .map_err(|e| e.to_string())
+}
+
 /// Count total clips (for pagination).
 #[tauri::command]
 pub fn count_web_clips() -> Result<i64, String> {

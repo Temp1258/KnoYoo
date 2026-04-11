@@ -303,7 +303,16 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   // Narrow screen: full-page detail view
   if (selectedClip && !isWide) {
     return (
-      <ClipDetail clip={selectedClip} onBack={() => setSelectedClip(null)} onStar={handleStar} />
+      <ClipDetail
+        clip={selectedClip}
+        onBack={() => setSelectedClip(null)}
+        onStar={handleStar}
+        onUpdate={(c) => {
+          setSelectedClip(c);
+          loadClips();
+          loadMeta();
+        }}
+      />
     );
   }
 
@@ -321,6 +330,11 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
             clip={selectedClip}
             onBack={() => setSelectedClip(null)}
             onStar={handleStar}
+            onUpdate={(c) => {
+              setSelectedClip(c);
+              loadClips();
+              loadMeta();
+            }}
             compact
           />
         </div>
