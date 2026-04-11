@@ -2,13 +2,10 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import {
   Search,
   Star,
-  Filter,
   Library,
   Copy,
   Check,
   Sparkles,
-  Globe,
-  Calendar,
   RefreshCw,
   Lightbulb,
   ChevronDown,
@@ -25,6 +22,9 @@ import Button from "../components/ui/Button";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { useToast } from "../components/common/Toast";
 import { useMediaQuery } from "../hooks/useMediaQuery";
+import Combobox from "../components/ui/Combobox";
+import FilterChip from "../components/ui/FilterChip";
+import SegmentedControl from "../components/ui/SegmentedControl";
 
 type TimeRange = "all" | "week" | "month" | "quarter";
 
@@ -68,10 +68,12 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   const [weeklySummary, setWeeklySummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [summaryExpanded, setSummaryExpanded] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
 
-  // Loading
+  // Loading & infinite scroll
   const [loading, setLoading] = useState(true);
+  const [hasMore, setHasMore] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   // Batch retag
   const [retagging, setRetagging] = useState(false);
@@ -100,6 +102,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
 
   const loadClips = useCallback(async () => {
     setLoading(true);
+    setHasMore(true);
     try {
       if (query.trim()) {
         const results = await tauriInvoke<WebClip[]>("search_web_clips", { q: query });
@@ -124,6 +127,37 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
       setLoading(false);
     }
   }, [query, page, selectedTag, selectedDomain, timeRange, isStarred]);
+
+  const loadMore = useCallback(async () => {
+    if (loadingMore || !hasMore || query.trim()) return;
+    setLoadingMore(true);
+    try {
+      const nextPage = Math.floor(clips.length / 20) + 1;
+      const dateFrom = getDateFrom(timeRange);
+      const results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
+        page: nextPage,
+        pageSize: 20,
+        tag: selectedTag,
+        starred: isStarred || undefined,
+        domain: selectedDomain,
+        dateFrom,
+      });
+      if (results.length < 20) setHasMore(false);
+      if (results.length > 0) setClips((prev) => [...prev, ...results]);
+    } catch (e) {
+      console.error(e);
+    }
+    setLoadingMore(false);
+  }, [
+    loadingMore,
+    hasMore,
+    query,
+    clips.length,
+    timeRange,
+    selectedTag,
+    isStarred,
+    selectedDomain,
+  ]);
 
   const loadMeta = useCallback(async () => {
     try {
@@ -199,6 +233,19 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
       if (pendingTimerRef.current) clearInterval(pendingTimerRef.current);
     };
   }, [total]);
+
+  // Infinite scroll observer
+  useEffect(() => {
+    if (!sentinelRef.current || !hasMore) return;
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (entry.isIntersecting) loadMore();
+      },
+      { rootMargin: "200px" },
+    );
+    observer.observe(sentinelRef.current);
+    return () => observer.disconnect();
+  }, [hasMore, loadMore]);
 
   // Flush pending deletes on unmount
   useEffect(() => {
@@ -519,109 +566,78 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
             </div>
           )}
 
-          {/* Expandable filters */}
-          <button
-            onClick={() => setShowFilters(!showFilters)}
-            className="flex items-center gap-1 text-[12px] text-text-tertiary mb-2 cursor-pointer hover:text-text-secondary transition-colors"
-          >
-            <Filter size={12} />
-            筛选条件
-            {showFilters ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-            {(selectedTag || selectedDomain || timeRange !== "all" || isStarred) && (
-              <span className="w-1.5 h-1.5 rounded-full bg-accent" />
+          {/* Compact filter bar */}
+          <div className="flex items-center gap-2 flex-wrap mb-2">
+            {!starredMode && (
+              <button
+                onClick={() => {
+                  setStarredOnly(!starredOnly);
+                  setPage(1);
+                  setFuzzyResults(null);
+                }}
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] transition-colors cursor-pointer border ${
+                  starredOnly
+                    ? "bg-yellow-500/10 text-yellow-600 border-yellow-500/20"
+                    : "bg-bg text-text-secondary border-border hover:border-accent/20"
+                }`}
+              >
+                <Star size={11} fill={starredOnly ? "currentColor" : "none"} />
+                星标
+              </button>
             )}
-          </button>
+            <SegmentedControl
+              options={TIME_RANGES}
+              value={timeRange}
+              onChange={(v) => {
+                setTimeRange(v);
+                setPage(1);
+                setFuzzyResults(null);
+              }}
+            />
+            {allTags.length > 0 && (
+              <Combobox
+                options={allTags}
+                value={selectedTag}
+                onChange={(v) => {
+                  setSelectedTag(v);
+                  setPage(1);
+                  setFuzzyResults(null);
+                }}
+                placeholder="标签"
+              />
+            )}
+            {allDomains.length > 0 && (
+              <Combobox
+                options={allDomains}
+                value={selectedDomain}
+                onChange={(v) => {
+                  setSelectedDomain(v);
+                  setPage(1);
+                  setFuzzyResults(null);
+                }}
+                placeholder="域名"
+              />
+            )}
+          </div>
 
-          {showFilters && (
-            <div className="flex flex-col gap-3 mb-3 p-3 rounded-xl bg-bg-secondary border border-border">
-              {/* Star + Time range */}
-              <div className="flex items-center gap-2 flex-wrap">
-                {!starredMode && (
-                  <>
-                    <button
-                      onClick={() => {
-                        setStarredOnly(!starredOnly);
-                        setPage(1);
-                        setFuzzyResults(null);
-                      }}
-                      className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[12px] transition-colors cursor-pointer border ${
-                        starredOnly
-                          ? "bg-yellow-500/10 text-yellow-600 border-yellow-500/20"
-                          : "bg-bg text-text-secondary border-border hover:border-accent/20"
-                      }`}
-                    >
-                      <Star size={12} fill={starredOnly ? "currentColor" : "none"} />
-                      星标
-                    </button>
-                    <div className="w-px h-4 bg-border mx-1" />
-                  </>
-                )}
-                <Calendar size={12} className="text-text-tertiary" />
-                {TIME_RANGES.map((tr) => (
-                  <button
-                    key={tr.value}
-                    onClick={() => {
-                      setTimeRange(tr.value);
-                      setPage(1);
-                      setFuzzyResults(null);
-                    }}
-                    className={`px-2 py-1 rounded-lg text-[11px] transition-colors cursor-pointer border ${
-                      timeRange === tr.value
-                        ? "bg-accent/10 text-accent border-accent/20"
-                        : "bg-bg text-text-secondary border-border hover:border-accent/20"
-                    }`}
-                  >
-                    {tr.label}
-                  </button>
-                ))}
-              </div>
-
-              {/* Tags */}
-              {allTags.length > 0 && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="text-[11px] text-text-tertiary shrink-0">标签:</span>
-                  {allTags.slice(0, 15).map((tag) => (
-                    <button
-                      key={tag}
-                      onClick={() => {
-                        setSelectedTag(selectedTag === tag ? null : tag);
-                        setPage(1);
-                        setFuzzyResults(null);
-                      }}
-                      className={`px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer border ${
-                        selectedTag === tag
-                          ? "bg-accent/10 text-accent border-accent/20"
-                          : "bg-bg text-text-secondary border-border hover:border-accent/20"
-                      }`}
-                    >
-                      {tag}
-                    </button>
-                  ))}
-                </div>
+          {/* Active filter chips */}
+          {(selectedTag || selectedDomain || timeRange !== "all" || starredOnly) && (
+            <div className="flex flex-wrap gap-1.5 mb-2">
+              {starredOnly && <FilterChip label="星标" onDismiss={() => setStarredOnly(false)} />}
+              {timeRange !== "all" && (
+                <FilterChip
+                  label={TIME_RANGES.find((t) => t.value === timeRange)!.label}
+                  onDismiss={() => setTimeRange("all")}
+                />
               )}
-
-              {/* Domains */}
-              {allDomains.length > 0 && (
-                <div className="flex items-center gap-2 flex-wrap">
-                  <Globe size={12} className="text-text-tertiary shrink-0" />
-                  {allDomains.slice(0, 10).map((d) => (
-                    <button
-                      key={d}
-                      onClick={() => {
-                        setSelectedDomain(selectedDomain === d ? null : d);
-                        setPage(1);
-                        setFuzzyResults(null);
-                      }}
-                      className={`px-2 py-0.5 rounded-md text-[11px] transition-colors cursor-pointer border ${
-                        selectedDomain === d
-                          ? "bg-accent/10 text-accent border-accent/20"
-                          : "bg-bg text-text-secondary border-border hover:border-accent/20"
-                      }`}
-                    >
-                      {d}
-                    </button>
-                  ))}
-                </div>
+              {selectedTag && (
+                <FilterChip label={`标签: ${selectedTag}`} onDismiss={() => setSelectedTag(null)} />
+              )}
+              {selectedDomain && (
+                <FilterChip
+                  label={`域名: ${selectedDomain}`}
+                  onDismiss={() => setSelectedDomain(null)}
+                />
               )}
             </div>
           )}
@@ -703,26 +719,15 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
             </div>
           )}
 
-          {/* Pagination */}
-          {!fuzzyResults && total > 20 && (
-            <div className="flex items-center justify-center gap-2 mt-6">
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={page <= 1}
-                onClick={() => setPage((p) => p - 1)}
-              >
-                上一页
-              </Button>
-              <span className="text-[12px] text-text-tertiary">第 {page} 页</span>
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={displayClips.length < 20}
-                onClick={() => setPage((p) => p + 1)}
-              >
-                下一页
-              </Button>
+          {/* Infinite scroll sentinel */}
+          {!fuzzyResults && hasMore && displayClips.length > 0 && (
+            <div ref={sentinelRef} className="flex items-center justify-center py-4">
+              {loadingMore && (
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-3 w-full">
+                  <SkeletonCard />
+                  <SkeletonCard />
+                </div>
+              )}
             </div>
           )}
         </div>
