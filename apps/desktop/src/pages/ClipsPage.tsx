@@ -21,6 +21,8 @@ import type { WebClip } from "../types";
 import ClipCard from "../components/Clips/ClipCard";
 import ClipDetail from "../components/Clips/ClipDetail";
 import Button from "../components/ui/Button";
+import { SkeletonCard } from "../components/ui/Skeleton";
+import { useToast } from "../components/common/Toast";
 
 type TimeRange = "all" | "week" | "month" | "quarter";
 
@@ -67,17 +69,30 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   const [summaryLoading, setSummaryLoading] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
+  // Loading
+  const [loading, setLoading] = useState(true);
+
   // Batch retag
   const [retagging, setRetagging] = useState(false);
+
+  // Refresh animation
+  const [refreshing, setRefreshing] = useState(false);
 
   // Pending AI processing count
   const [pendingCount, setPendingCount] = useState(0);
   const [aiConfigured, setAiConfigured] = useState(true);
   const pendingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // Undo delete
+  const { showToast } = useToast();
+  const pendingDeletesRef = useRef<
+    Map<number, { timer: ReturnType<typeof setTimeout>; clip: WebClip }>
+  >(new Map());
+
   const isStarred = starredMode || starredOnly;
 
   const loadClips = useCallback(async () => {
+    setLoading(true);
     try {
       if (query.trim()) {
         const results = await tauriInvoke<WebClip[]>("search_web_clips", { q: query });
@@ -98,6 +113,8 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
       setTotal(count);
     } catch (e) {
       console.error("Failed to load clips:", e);
+    } finally {
+      setLoading(false);
     }
   }, [query, page, selectedTag, selectedDomain, timeRange, isStarred]);
 
@@ -123,7 +140,6 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
     }
   }, []);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect -- data fetching on filter change
   useEffect(() => {
     loadClips();
     loadMeta();
@@ -180,6 +196,17 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
     };
   }, [total]);
 
+  // Flush pending deletes on unmount
+  useEffect(() => {
+    return () => {
+      pendingDeletesRef.current.forEach(({ timer }, id) => {
+        clearTimeout(timer);
+        tauriInvoke("delete_web_clip", { id });
+      });
+      pendingDeletesRef.current.clear();
+    };
+  }, []);
+
   const handleStar = async (id: number) => {
     await tauriInvoke("toggle_star_clip", { id });
     loadClips();
@@ -188,11 +215,35 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
     }
   };
 
-  const handleDelete = async (id: number) => {
-    await tauriInvoke("delete_web_clip", { id });
+  const handleDelete = (id: number) => {
+    const clip = clips.find((c) => c.id === id);
+    if (!clip) return;
+
+    // Optimistically remove from UI
+    setClips((prev) => prev.filter((c) => c.id !== id));
     if (selectedClip?.id === id) setSelectedClip(null);
-    loadClips();
-    loadMeta();
+
+    // Schedule actual delete after 5s
+    const timer = setTimeout(() => {
+      pendingDeletesRef.current.delete(id);
+      tauriInvoke("delete_web_clip", { id }).then(() => {
+        loadMeta();
+      });
+    }, 5000);
+
+    pendingDeletesRef.current.set(id, { timer, clip });
+
+    showToast("已删除", "info", {
+      label: "撤销",
+      onClick: () => {
+        const pending = pendingDeletesRef.current.get(id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          pendingDeletesRef.current.delete(id);
+          setClips((prev) => [pending.clip, ...prev]);
+        }
+      },
+    });
   };
 
   const handleRetag = async (id: number) => {
@@ -276,14 +327,15 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
           <Button
             variant="ghost"
             size="sm"
-            onClick={() => {
-              loadClips();
-              loadMeta();
-              loadForgotten();
+            onClick={async () => {
+              setRefreshing(true);
+              await Promise.all([loadClips(), loadMeta(), loadForgotten()]);
+              setRefreshing(false);
             }}
             title="刷新"
+            disabled={refreshing}
           >
-            <RefreshCw size={14} />
+            <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
             刷新
           </Button>
           <Button variant="ghost" size="sm" onClick={handleBatchRetag} disabled={retagging}>
@@ -556,8 +608,17 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
         </div>
       )}
 
+      {/* Skeleton loading */}
+      {loading && clips.length === 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {Array.from({ length: 6 }, (_, i) => (
+            <SkeletonCard key={i} />
+          ))}
+        </div>
+      )}
+
       {/* Empty state */}
-      {displayClips.length === 0 && (
+      {!loading && displayClips.length === 0 && (
         <div className="flex flex-col items-center justify-center py-20 text-text-tertiary">
           <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
           {fuzzyResults !== null ? (

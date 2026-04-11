@@ -5,14 +5,20 @@ import Input from "../ui/Input";
 
 type ToastType = "success" | "error" | "info";
 
+interface ToastAction {
+  label: string;
+  onClick: () => void;
+}
+
 interface ToastItem {
   id: number;
   message: string;
   type: ToastType;
+  action?: ToastAction;
 }
 
 interface ToastContextValue {
-  showToast: (message: string, type?: ToastType) => void;
+  showToast: (message: string, type?: ToastType, action?: ToastAction) => void;
   showConfirm: (message: string) => Promise<boolean>;
   showPrompt: (message: string, defaultValue?: string) => Promise<string | null>;
 }
@@ -51,14 +57,17 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
     resolve: (v: string | null) => void;
   } | null>(null);
 
-  const showToast = useCallback((message: string, type: ToastType = "success") => {
-    const id = ++nextId;
-    setToasts((prev) => [...prev, { id, message, type }]);
-    const duration = type === "error" ? 5000 : 3000;
-    setTimeout(() => {
-      setToasts((prev) => prev.filter((t) => t.id !== id));
-    }, duration);
-  }, []);
+  const showToast = useCallback(
+    (message: string, type: ToastType = "success", action?: ToastAction) => {
+      const id = ++nextId;
+      setToasts((prev) => [...prev, { id, message, type, action }]);
+      const duration = action ? 5000 : type === "error" ? 5000 : 3000;
+      setTimeout(() => {
+        setToasts((prev) => prev.filter((t) => t.id !== id));
+      }, duration);
+    },
+    [],
+  );
 
   const showConfirm = useCallback((message: string): Promise<boolean> => {
     return new Promise((resolve) => {
@@ -100,6 +109,17 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
           >
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${dotStyles[t.type]}`} />
             <span className="flex-1">{t.message}</span>
+            {t.action && (
+              <button
+                className="shrink-0 text-[12px] text-accent font-medium hover:underline cursor-pointer"
+                onClick={() => {
+                  t.action!.onClick();
+                  setToasts((prev) => prev.filter((x) => x.id !== t.id));
+                }}
+              >
+                {t.action.label}
+              </button>
+            )}
             <button
               className="shrink-0 text-text-tertiary hover:text-text transition-colors cursor-pointer"
               onClick={() => setToasts((prev) => prev.filter((x) => x.id !== t.id))}

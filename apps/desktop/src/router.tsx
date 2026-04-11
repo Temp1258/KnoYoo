@@ -1,11 +1,16 @@
 import { lazy, Suspense } from "react";
 import { createBrowserRouter } from "react-router";
 import AppShell from "./components/Layout/AppShell";
+import { SkeletonCard } from "./components/ui/Skeleton";
 
 const ClipsPage = lazy(() => import("./pages/ClipsPage"));
 
 const fallback = (
-  <div className="flex h-full items-center justify-center text-neutral-400">加载中...</div>
+  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+    {Array.from({ length: 6 }, (_, i) => (
+      <SkeletonCard key={i} />
+    ))}
+  </div>
 );
 
 export default createBrowserRouter([

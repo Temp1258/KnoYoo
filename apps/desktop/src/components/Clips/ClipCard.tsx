@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Star, Trash2, ExternalLink, Tag, RefreshCw } from "lucide-react";
 import type { WebClip } from "../../types";
 
@@ -10,6 +11,8 @@ type Props = {
 };
 
 export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag }: Props) {
+  const [starBounce, setStarBounce] = useState(false);
+
   const domain = (() => {
     try {
       return new URL(clip.url).hostname.replace("www.", "");
@@ -67,7 +70,10 @@ export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag }: 
         </span>
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
-            onClick={(e) => { e.stopPropagation(); onRetag(clip.id); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onRetag(clip.id);
+            }}
             className="p-1 rounded-md text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors cursor-pointer"
             title="重新生成标签"
           >
@@ -84,18 +90,30 @@ export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag }: 
             <ExternalLink size={13} />
           </a>
           <button
-            onClick={(e) => { e.stopPropagation(); onStar(clip.id); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setStarBounce(true);
+              setTimeout(() => setStarBounce(false), 150);
+              onStar(clip.id);
+            }}
             className={`p-1 rounded-md transition-colors cursor-pointer ${
               clip.is_starred
                 ? "text-yellow-500"
                 : "text-text-tertiary hover:text-yellow-500 hover:bg-yellow-500/10"
             }`}
+            style={{
+              transform: starBounce ? "scale(0.85)" : "scale(1)",
+              transition: "transform 150ms ease",
+            }}
             title={clip.is_starred ? "取消星标" : "星标"}
           >
             <Star size={13} fill={clip.is_starred ? "currentColor" : "none"} />
           </button>
           <button
-            onClick={(e) => { e.stopPropagation(); onDelete(clip.id); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDelete(clip.id);
+            }}
             className="p-1 rounded-md text-text-tertiary hover:text-red-500 hover:bg-red-500/10 transition-colors cursor-pointer"
             title="删除"
           >

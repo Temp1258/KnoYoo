@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { MessageCircle, X, Send } from "lucide-react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import type { ChatMessage } from "../../types";
 
@@ -82,7 +84,13 @@ export default function ChatDrawer() {
                     : "bg-bg-tertiary text-text rounded-bl-sm"
                 }`}
               >
-                {m.content}
+                {m.role === "assistant" ? (
+                  <div className="prose-chat">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                  </div>
+                ) : (
+                  m.content
+                )}
               </div>
             </div>
           ))}
