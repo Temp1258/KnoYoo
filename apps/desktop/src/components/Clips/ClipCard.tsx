@@ -1,6 +1,40 @@
 import { useState } from "react";
-import { Star, Trash2, ExternalLink, Tag, RefreshCw } from "lucide-react";
+import {
+  Star,
+  Trash2,
+  ExternalLink,
+  Tag,
+  RefreshCw,
+  FileText,
+  Play,
+  MessageCircle,
+  Code,
+  Camera,
+  type LucideIcon,
+} from "lucide-react";
 import type { WebClip } from "../../types";
+
+const SOURCE_CONFIG: Record<
+  string,
+  { icon: LucideIcon; color: string; border: string; label: string }
+> = {
+  article: { icon: FileText, color: "text-blue-500", border: "border-l-blue-500", label: "文章" },
+  video: { icon: Play, color: "text-red-500", border: "border-l-red-500", label: "视频" },
+  tweet: { icon: MessageCircle, color: "text-sky-400", border: "border-l-sky-400", label: "推文" },
+  code: { icon: Code, color: "text-green-500", border: "border-l-green-500", label: "代码" },
+  screenshot: {
+    icon: Camera,
+    color: "text-purple-500",
+    border: "border-l-purple-500",
+    label: "截图",
+  },
+  doc: { icon: FileText, color: "text-orange-500", border: "border-l-orange-500", label: "文档" },
+};
+
+function getYouTubeId(url: string): string | null {
+  const match = url.match(/(?:youtu\.be\/|v=)([^&\s]+)/);
+  return match?.[1] ?? null;
+}
 
 type Props = {
   clip: WebClip;
@@ -21,17 +55,31 @@ export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag }: 
     }
   })();
 
+  const st = SOURCE_CONFIG[clip.source_type] || SOURCE_CONFIG.article;
+  const SourceIcon = st.icon;
+  const ytId = clip.source_type === "video" ? getYouTubeId(clip.url) : null;
+
   return (
     <div
-      className="group rounded-xl border border-border bg-bg-secondary p-4 hover:border-accent/30 transition-all cursor-pointer"
+      className={`group rounded-xl border border-border border-l-[3px] ${st.border} bg-bg-secondary p-4 hover:border-accent/30 transition-all cursor-pointer`}
       onClick={() => onSelect(clip)}
     >
+      {/* YouTube thumbnail */}
+      {ytId && (
+        <img
+          src={`https://img.youtube.com/vi/${ytId}/mqdefault.jpg`}
+          alt=""
+          className="w-full h-32 object-cover rounded-lg mb-2"
+        />
+      )}
+
       {/* Header */}
-      <div className="flex items-start gap-3 mb-2">
+      <div className="flex items-start gap-2.5 mb-2">
+        <SourceIcon size={14} className={`${st.color} mt-0.5 shrink-0`} />
         {clip.favicon ? (
-          <img src={clip.favicon} alt="" className="w-4 h-4 mt-1 rounded-sm shrink-0" />
+          <img src={clip.favicon} alt="" className="w-4 h-4 mt-0.5 rounded-sm shrink-0" />
         ) : (
-          <div className="w-4 h-4 mt-1 rounded-sm bg-bg-tertiary shrink-0" />
+          <div className="w-4 h-4 mt-0.5 rounded-sm bg-bg-tertiary shrink-0" />
         )}
         <div className="flex-1 min-w-0">
           <h3 className="text-[14px] font-medium text-text leading-snug line-clamp-2 m-0">

@@ -15,6 +15,7 @@ import {
   ChevronUp,
   Loader2,
   Settings,
+  X,
 } from "lucide-react";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 import type { WebClip } from "../types";
@@ -57,9 +58,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   const [tokenCopied, setTokenCopied] = useState(false);
   const [serverToken, setServerToken] = useState("");
 
-  // AI fuzzy search
-  const [fuzzyMode, setFuzzyMode] = useState(false);
-  const [fuzzyQuery, setFuzzyQuery] = useState("");
+  // AI fuzzy search (unified: triggered when FTS returns empty)
   const [fuzzyLoading, setFuzzyLoading] = useState(false);
   const [fuzzyResults, setFuzzyResults] = useState<WebClip[] | null>(null);
 
@@ -67,6 +66,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   const [forgottenClips, setForgottenClips] = useState<WebClip[]>([]);
   const [weeklySummary, setWeeklySummary] = useState<string | null>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryExpanded, setSummaryExpanded] = useState(false);
   const [showFilters, setShowFilters] = useState(false);
 
   // Loading
@@ -78,6 +78,9 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   // Refresh animation
   const [refreshing, setRefreshing] = useState(false);
 
+  // Banner
+  const [bannerDismissed, setBannerDismissed] = useState(false);
+
   // Pending AI processing count
   const [pendingCount, setPendingCount] = useState(0);
   const [aiConfigured, setAiConfigured] = useState(true);
@@ -88,6 +91,9 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   const pendingDeletesRef = useRef<
     Map<number, { timer: ReturnType<typeof setTimeout>; clip: WebClip }>
   >(new Map());
+
+  // Search debounce
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const isStarred = starredMode || starredOnly;
 
@@ -133,7 +139,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
 
   const loadForgotten = useCallback(async () => {
     try {
-      const forgotten = await tauriInvoke<WebClip[]>("forgotten_clips", { limit: 3 });
+      const forgotten = await tauriInvoke<WebClip[]>("forgotten_clips", { limit: 5 });
       setForgottenClips(forgotten);
     } catch (e) {
       console.error(e);
@@ -153,9 +159,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   // Check AI config on mount + when config changes
   const checkAiConfig = useCallback(() => {
     tauriInvoke<string>("ai_smoketest")
-      .then((r) => {
-        setAiConfigured(r.startsWith("ok"));
-      })
+      .then((r) => setAiConfigured(r.startsWith("ok")))
       .catch(() => setAiConfigured(false));
   }, []);
 
@@ -163,7 +167,6 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
     checkAiConfig();
     const handler = async () => {
       checkAiConfig();
-      // Auto-retag pending clips when AI is newly configured
       const pending = await tauriInvoke<number>("count_pending_clips").catch(() => 0);
       if (pending > 0) {
         setRetagging(true);
@@ -218,21 +221,13 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   const handleDelete = (id: number) => {
     const clip = clips.find((c) => c.id === id);
     if (!clip) return;
-
-    // Optimistically remove from UI
     setClips((prev) => prev.filter((c) => c.id !== id));
     if (selectedClip?.id === id) setSelectedClip(null);
-
-    // Schedule actual delete after 5s
     const timer = setTimeout(() => {
       pendingDeletesRef.current.delete(id);
-      tauriInvoke("delete_web_clip", { id }).then(() => {
-        loadMeta();
-      });
+      tauriInvoke("delete_web_clip", { id }).then(() => loadMeta());
     }, 5000);
-
     pendingDeletesRef.current.set(id, { timer, clip });
-
     showToast("已删除", "info", {
       label: "撤销",
       onClick: () => {
@@ -276,12 +271,12 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
     setTimeout(() => setTokenCopied(false), 2000);
   };
 
-  const handleFuzzySearch = async () => {
-    if (!fuzzyQuery.trim()) return;
+  const handleAISearch = async (searchQuery: string) => {
+    if (!searchQuery.trim()) return;
     setFuzzyLoading(true);
     try {
       const results = await tauriInvoke<WebClip[]>("ai_fuzzy_search_clips", {
-        description: fuzzyQuery,
+        description: searchQuery,
       });
       setFuzzyResults(results);
     } catch (e) {
@@ -295,6 +290,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
     try {
       const summary = await tauriInvoke<string>("ai_weekly_clip_summary");
       setWeeklySummary(summary);
+      setSummaryExpanded(true);
     } catch (e) {
       console.error(e);
     }
@@ -308,13 +304,14 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
     );
   }
 
-  // Determine which clips to show
   const displayClips = fuzzyResults ?? clips;
+  const showBanner =
+    !starredMode && !bannerDismissed && (pendingCount > 0 || (!aiConfigured && total > 0));
 
   return (
     <div>
       {/* Header */}
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
           <h1 className="text-[28px] font-bold tracking-tight m-0">
             {starredMode ? "标记" : "知识库"}
@@ -349,73 +346,126 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
         </div>
       </div>
 
-      {/* Pending AI processing indicator (home only) */}
-      {!starredMode && pendingCount > 0 && (
-        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-blue-500/5 border border-blue-500/15 mb-4">
-          {retagging ? (
-            <>
-              <Loader2 size={14} className="text-blue-500 animate-spin shrink-0" />
-              <span className="text-[12px] text-blue-600">
-                {pendingCount} 条内容正在 AI 解析中...
-              </span>
-            </>
+      {/* Merged banner (pending AI / AI not configured) */}
+      {showBanner && (
+        <div
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-xl mb-3 ${
+            pendingCount > 0
+              ? "bg-blue-500/5 border border-blue-500/15"
+              : "bg-yellow-500/5 border border-yellow-500/15"
+          }`}
+        >
+          {pendingCount > 0 ? (
+            retagging ? (
+              <>
+                <Loader2 size={14} className="text-blue-500 animate-spin shrink-0" />
+                <span className="text-[12px] text-blue-600">
+                  {pendingCount} 条内容正在 AI 解析中...
+                </span>
+              </>
+            ) : (
+              <>
+                <Sparkles size={14} className="text-blue-500 shrink-0" />
+                <span className="text-[12px] text-blue-600">{pendingCount} 条内容待 AI 解析</span>
+                <button
+                  onClick={handleBatchRetag}
+                  className="text-[11px] text-blue-500 hover:text-blue-600 cursor-pointer font-medium ml-2"
+                >
+                  开始解析
+                </button>
+              </>
+            )
           ) : (
             <>
-              <Sparkles size={14} className="text-blue-500 shrink-0" />
-              <span className="text-[12px] text-blue-600">{pendingCount} 条内容待 AI 解析</span>
-              <div className="flex-1" />
-              <button
-                onClick={handleBatchRetag}
-                className="text-[11px] text-blue-500 hover:text-blue-600 cursor-pointer font-medium"
-              >
-                开始解析
-              </button>
+              <Settings size={14} className="text-yellow-600 shrink-0" />
+              <span className="text-[12px] text-yellow-700">
+                AI 未配置 — 点击左侧 ⚙ 设置 API Key 后，收藏内容将自动生成摘要和标签
+              </span>
             </>
+          )}
+          <div className="flex-1" />
+          <button
+            onClick={() => setBannerDismissed(true)}
+            className="p-0.5 rounded text-text-tertiary hover:text-text transition-colors cursor-pointer shrink-0"
+          >
+            <X size={12} />
+          </button>
+        </div>
+      )}
+
+      {/* Sticky search bar */}
+      <div className="sticky top-0 z-10 bg-bg/80 backdrop-blur-sm -mx-6 px-6 py-2">
+        <div className="relative">
+          <Search
+            size={16}
+            className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
+          />
+          <input
+            type="text"
+            placeholder="搜索知识库..."
+            value={query}
+            onChange={(e) => {
+              const val = e.target.value;
+              setQuery(val);
+              setFuzzyResults(null);
+              setPage(1);
+              if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+              if (val.trim()) {
+                searchTimeoutRef.current = setTimeout(() => loadClips(), 300);
+              } else {
+                loadClips();
+              }
+            }}
+            className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors"
+          />
+        </div>
+      </div>
+
+      {/* Weekly summary (collapsible, home only) */}
+      {!starredMode && (
+        <div className="mt-3 mb-3">
+          {weeklySummary ? (
+            <div className="rounded-xl bg-accent/5 border border-accent/10">
+              <button
+                onClick={() => setSummaryExpanded(!summaryExpanded)}
+                className="w-full flex items-center gap-2 px-4 py-2.5 text-[11px] font-medium text-accent cursor-pointer"
+              >
+                <Sparkles size={12} />
+                本周收藏摘要
+                {summaryExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+              </button>
+              {summaryExpanded && (
+                <p className="px-4 pb-3 text-[13px] text-text leading-relaxed m-0">
+                  {weeklySummary}
+                </p>
+              )}
+            </div>
+          ) : (
+            <button
+              onClick={handleLoadSummary}
+              disabled={summaryLoading}
+              className="w-full p-2.5 rounded-xl bg-bg-secondary border border-border hover:border-accent/20 text-[12px] text-text-secondary flex items-center justify-center gap-2 cursor-pointer transition-colors"
+            >
+              <Sparkles size={13} className={summaryLoading ? "animate-pulse" : ""} />
+              {summaryLoading ? "生成本周摘要中..." : "生成本周收藏摘要"}
+            </button>
           )}
         </div>
       )}
 
-      {/* AI not configured hint (home only) */}
-      {!starredMode && !aiConfigured && total > 0 && (
-        <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-yellow-500/5 border border-yellow-500/15 mb-4">
-          <Settings size={14} className="text-yellow-600 shrink-0" />
-          <span className="text-[12px] text-yellow-700">
-            AI 未配置 — 点击左侧 ⚙ 设置 API Key 后，收藏内容将自动生成摘要和标签
-          </span>
-        </div>
-      )}
-
-      {/* Weekly summary card (home only) */}
-      {!starredMode &&
-        (weeklySummary ? (
-          <div className="p-4 rounded-xl bg-accent/5 border border-accent/10 mb-4">
-            <div className="text-[11px] font-medium text-accent mb-1">本周收藏摘要</div>
-            <p className="text-[13px] text-text leading-relaxed m-0">{weeklySummary}</p>
-          </div>
-        ) : (
-          <button
-            onClick={handleLoadSummary}
-            disabled={summaryLoading}
-            className="w-full p-3 rounded-xl bg-bg-secondary border border-border hover:border-accent/20 text-[12px] text-text-secondary mb-4 flex items-center justify-center gap-2 cursor-pointer transition-colors"
-          >
-            <Sparkles size={14} className={summaryLoading ? "animate-pulse" : ""} />
-            {summaryLoading ? "生成本周摘要中..." : "生成本周收藏摘要"}
-          </button>
-        ))}
-
-      {/* "You may have forgotten" section (home only) */}
+      {/* "You may have forgotten" — horizontal scroll */}
       {!starredMode && forgottenClips.length > 0 && (
-        <div className="mb-4">
-          <div className="flex items-center gap-2 mb-2">
-            <Lightbulb size={14} className="text-yellow-500" />
-            <span className="text-[12px] font-medium text-text-secondary">你可能忘了这些收藏</span>
+        <div className="mb-3">
+          <div className="flex items-center gap-2 mb-1.5">
+            <Lightbulb size={13} className="text-yellow-500" />
+            <span className="text-[11px] font-medium text-text-secondary">你可能忘了这些收藏</span>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          <div className="flex gap-2 overflow-x-auto pb-1">
             {forgottenClips.map((clip) => (
               <button
                 key={clip.id}
                 onClick={() => setSelectedClip(clip)}
-                className="text-left p-3 rounded-lg bg-yellow-500/5 border border-yellow-500/10 hover:border-yellow-500/20 transition-colors cursor-pointer"
+                className="shrink-0 w-[200px] text-left p-2.5 rounded-lg bg-yellow-500/5 border border-yellow-500/10 hover:border-yellow-500/20 transition-colors cursor-pointer"
               >
                 <div className="text-[12px] font-medium text-text line-clamp-1">{clip.title}</div>
                 <div className="text-[11px] text-text-tertiary line-clamp-1 mt-0.5">
@@ -426,61 +476,6 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
           </div>
         </div>
       )}
-
-      {/* Search bar with mode toggle */}
-      <div className="flex gap-2 mb-4">
-        <div className="relative flex-1">
-          <Search
-            size={16}
-            className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
-          />
-          {fuzzyMode ? (
-            <input
-              type="text"
-              placeholder="描述你记得的内容... 例如「之前看过一个Rust生命周期的文章」"
-              value={fuzzyQuery}
-              onChange={(e) => setFuzzyQuery(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleFuzzySearch();
-              }}
-              className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-accent/5 border border-accent/20 text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors"
-            />
-          ) : (
-            <input
-              type="text"
-              placeholder="搜索收藏内容..."
-              value={query}
-              onChange={(e) => {
-                setQuery(e.target.value);
-                setPage(1);
-                setFuzzyResults(null);
-              }}
-              className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors"
-            />
-          )}
-        </div>
-        <button
-          onClick={() => {
-            setFuzzyMode(!fuzzyMode);
-            setFuzzyResults(null);
-            setFuzzyQuery("");
-          }}
-          className={`px-3 py-2 rounded-xl text-[12px] transition-colors cursor-pointer border flex items-center gap-1.5 shrink-0 ${
-            fuzzyMode
-              ? "bg-accent/10 text-accent border-accent/20"
-              : "bg-bg-secondary text-text-secondary border-border hover:border-accent/20"
-          }`}
-          title="AI 模糊搜索：用自然语言描述你记得的内容"
-        >
-          <Sparkles size={13} />
-          AI 搜索
-        </button>
-        {fuzzyMode && (
-          <Button variant="ghost" size="sm" onClick={handleFuzzySearch} disabled={fuzzyLoading}>
-            {fuzzyLoading ? "搜索中..." : "搜索"}
-          </Button>
-        )}
-      </div>
 
       {/* Expandable filters */}
       <button
@@ -496,7 +491,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
       </button>
 
       {showFilters && (
-        <div className="flex flex-col gap-3 mb-4 p-3 rounded-xl bg-bg-secondary border border-border">
+        <div className="flex flex-col gap-3 mb-3 p-3 rounded-xl bg-bg-secondary border border-border">
           {/* Star + Time range */}
           <div className="flex items-center gap-2 flex-wrap">
             {!starredMode && (
@@ -597,10 +592,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
             AI 搜索结果 ({fuzzyResults.length} 条匹配)
           </span>
           <button
-            onClick={() => {
-              setFuzzyResults(null);
-              setFuzzyMode(false);
-            }}
+            onClick={() => setFuzzyResults(null)}
             className="text-[11px] text-text-tertiary hover:text-text cursor-pointer ml-auto"
           >
             清除
@@ -617,14 +609,26 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
         </div>
       )}
 
-      {/* Empty state */}
+      {/* Empty state / AI search prompt */}
       {!loading && displayClips.length === 0 && (
-        <div className="flex flex-col items-center justify-center py-20 text-text-tertiary">
+        <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
           <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
           {fuzzyResults !== null ? (
             <>
-              <p className="text-[14px] mb-1">没有找到匹配的收藏</p>
+              <p className="text-[14px] mb-1">AI 搜索未找到匹配内容</p>
               <p className="text-[12px]">试试换个描述方式</p>
+            </>
+          ) : query.trim() ? (
+            <>
+              <p className="text-[14px] mb-1">没有找到精确匹配的结果</p>
+              <button
+                onClick={() => handleAISearch(query)}
+                disabled={fuzzyLoading}
+                className="text-[13px] text-accent hover:underline cursor-pointer mt-2 flex items-center gap-1.5"
+              >
+                <Sparkles size={13} />
+                {fuzzyLoading ? "AI 搜索中..." : "试试 AI 搜索？"}
+              </button>
             </>
           ) : starredMode ? (
             <>
@@ -641,20 +645,22 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
       )}
 
       {/* Clip grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-        {displayClips.map((clip) => (
-          <ClipCard
-            key={clip.id}
-            clip={clip}
-            onStar={handleStar}
-            onDelete={handleDelete}
-            onSelect={setSelectedClip}
-            onRetag={handleRetag}
-          />
-        ))}
-      </div>
+      {displayClips.length > 0 && (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {displayClips.map((clip) => (
+            <ClipCard
+              key={clip.id}
+              clip={clip}
+              onStar={handleStar}
+              onDelete={handleDelete}
+              onSelect={setSelectedClip}
+              onRetag={handleRetag}
+            />
+          ))}
+        </div>
+      )}
 
-      {/* Pagination (only for non-fuzzy mode) */}
+      {/* Pagination */}
       {!fuzzyResults && total > 20 && (
         <div className="flex items-center justify-center gap-2 mt-6">
           <Button
