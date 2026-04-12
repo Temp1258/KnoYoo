@@ -22,15 +22,7 @@ export default createBrowserRouter([
         index: true,
         element: (
           <Suspense fallback={fallback}>
-            <ClipsPage key="home" />
-          </Suspense>
-        ),
-      },
-      {
-        path: "starred",
-        element: (
-          <Suspense fallback={fallback}>
-            <ClipsPage key="starred" starredMode />
+            <ClipsPage />
           </Suspense>
         ),
       },

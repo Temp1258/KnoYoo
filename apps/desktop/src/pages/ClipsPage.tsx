@@ -44,7 +44,7 @@ function getDateFrom(range: TimeRange): string | undefined {
   return d.toISOString();
 }
 
-export default function ClipsPage({ starredMode = false }: { starredMode?: boolean }) {
+export default function ClipsPage() {
   const [clips, setClips] = useState<WebClip[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [allDomains, setAllDomains] = useState<string[]>([]);
@@ -98,7 +98,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   // Search debounce
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isStarred = starredMode || starredOnly;
+  const isStarred = starredOnly;
 
   const loadClips = useCallback(async () => {
     setLoading(true);
@@ -107,6 +107,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
       if (query.trim()) {
         const results = await tauriInvoke<WebClip[]>("search_web_clips", { q: query });
         setClips(isStarred ? results.filter((c) => c.is_starred) : results);
+        setHasMore(false); // search results are not paginated
       } else {
         const dateFrom = getDateFrom(timeRange);
         const results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
@@ -118,6 +119,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
           dateFrom,
         });
         setClips(results);
+        if (results.length < 20) setHasMore(false);
       }
       const count = await tauriInvoke<number>("count_web_clips");
       setTotal(count);
@@ -143,7 +145,13 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
         dateFrom,
       });
       if (results.length < 20) setHasMore(false);
-      if (results.length > 0) setClips((prev) => [...prev, ...results]);
+      if (results.length > 0) {
+        setClips((prev) => {
+          const existingIds = new Set(prev.map((c) => c.id));
+          const fresh = results.filter((c) => !existingIds.has(c.id));
+          return fresh.length > 0 ? [...prev, ...fresh] : prev;
+        });
+      }
     } catch (e) {
       console.error(e);
     }
@@ -364,8 +372,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
   }
 
   const displayClips = fuzzyResults ?? clips;
-  const showBanner =
-    !starredMode && !bannerDismissed && (pendingCount > 0 || (!aiConfigured && total > 0));
+  const showBanner = !bannerDismissed && (pendingCount > 0 || (!aiConfigured && total > 0));
   const splitView = isWide && selectedClip;
 
   return (
@@ -391,12 +398,8 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
           {/* Header */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
-              <h1 className="text-[28px] font-bold tracking-tight m-0">
-                {starredMode ? "标记" : "知识库"}
-              </h1>
-              <span className="text-[13px] text-text-tertiary">
-                {starredMode ? `${clips.length} 条标记` : `${total} 条收藏`}
-              </span>
+              <h1 className="text-[28px] font-bold tracking-tight m-0">知识库</h1>
+              <span className="text-[13px] text-text-tertiary">{total} 条收藏</span>
             </div>
             <div className="flex items-center gap-2">
               <Button
@@ -507,7 +510,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
           </div>
 
           {/* Weekly summary (collapsible, home only) */}
-          {!starredMode && (
+          {
             <div className="mt-3 mb-3">
               {weeklySummary ? (
                 <div className="rounded-xl bg-accent/5 border border-accent/10">
@@ -536,10 +539,10 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
                 </button>
               )}
             </div>
-          )}
+          }
 
           {/* "You may have forgotten" — horizontal scroll */}
-          {!starredMode && forgottenClips.length > 0 && (
+          {forgottenClips.length > 0 && (
             <div className="mb-3">
               <div className="flex items-center gap-2 mb-1.5">
                 <Lightbulb size={13} className="text-yellow-500" />
@@ -568,7 +571,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
 
           {/* Compact filter bar */}
           <div className="flex items-center gap-2 flex-wrap mb-2">
-            {!starredMode && (
+            {
               <button
                 onClick={() => {
                   setStarredOnly(!starredOnly);
@@ -584,7 +587,7 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
                 <Star size={11} fill={starredOnly ? "currentColor" : "none"} />
                 星标
               </button>
-            )}
+            }
             <SegmentedControl
               options={TIME_RANGES}
               value={timeRange}
@@ -687,11 +690,6 @@ export default function ClipsPage({ starredMode = false }: { starredMode?: boole
                     <Sparkles size={13} />
                     {fuzzyLoading ? "AI 搜索中..." : "试试 AI 搜索？"}
                   </button>
-                </>
-              ) : starredMode ? (
-                <>
-                  <p className="text-[14px] mb-1">还没有标记的内容</p>
-                  <p className="text-[12px]">在知识库中点击星标按钮来标记重要内容</p>
                 </>
               ) : (
                 <>

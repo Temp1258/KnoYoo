@@ -1,10 +1,9 @@
-import { Home, Star, Settings, Sun, Moon } from "lucide-react";
+import { Home, Settings, Sun, Moon } from "lucide-react";
 import { useState, useEffect } from "react";
 import { NavLink } from "react-router";
 
 const navItems = [
   { to: "/", icon: Home, label: "主页" },
-  { to: "/starred", icon: Star, label: "标记" },
   { to: "/settings", icon: Settings, label: "设置" },
 ];
 
