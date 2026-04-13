@@ -68,9 +68,59 @@ pub fn open_db() -> Result<Connection, String> {
       INSERT INTO web_clips_fts(rowid, title, content, summary, tags)
         VALUES (new.id, new.title, new.content, new.summary, new.tags);
     END;
+
+    -- Collections for organizing clips
+    CREATE TABLE IF NOT EXISTS collections (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      name        TEXT NOT NULL,
+      description TEXT NOT NULL DEFAULT '',
+      icon        TEXT NOT NULL DEFAULT 'folder',
+      color       TEXT NOT NULL DEFAULT '#6b7280',
+      created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+
+    CREATE TABLE IF NOT EXISTS collection_clips (
+      collection_id INTEGER NOT NULL,
+      clip_id       INTEGER NOT NULL,
+      sort_order    INTEGER NOT NULL DEFAULT 0,
+      added_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      PRIMARY KEY (collection_id, clip_id),
+      FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
+      FOREIGN KEY (clip_id) REFERENCES web_clips(id) ON DELETE CASCADE
+    );
+
+    -- Weekly reports
+    CREATE TABLE IF NOT EXISTS weekly_reports (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      week_start  TEXT NOT NULL UNIQUE,
+      week_end    TEXT NOT NULL,
+      clip_count  INTEGER NOT NULL DEFAULT 0,
+      top_tags    TEXT NOT NULL DEFAULT '[]',
+      top_domains TEXT NOT NULL DEFAULT '[]',
+      ai_summary  TEXT NOT NULL DEFAULT '',
+      created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+    );
+
+    -- User notes attached to clips (1:1 relationship)
+    CREATE TABLE IF NOT EXISTS clip_notes (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      clip_id     INTEGER NOT NULL UNIQUE,
+      content     TEXT NOT NULL DEFAULT '',
+      created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+      FOREIGN KEY (clip_id) REFERENCES web_clips(id) ON DELETE CASCADE
+    );
     "#,
     )
     .map_err(|e| e.to_string())?;
+
+    // Additive migrations (idempotent — errors silently ignored if column already exists)
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN og_image TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
 
     MIGRATIONS_DONE.get_or_init(|| {
         tracing::info!("Running database migrations (first connection)...");

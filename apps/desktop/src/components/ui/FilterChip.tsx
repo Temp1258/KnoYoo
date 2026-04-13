@@ -7,7 +7,7 @@ type Props = {
 
 export default function FilterChip({ label, onDismiss }: Props) {
   return (
-    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[11px]">
+    <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent/10 text-accent text-[11px] animate-fade-in-up">
       {label}
       <button onClick={onDismiss} className="hover:text-danger cursor-pointer transition-colors">
         <X size={10} />

@@ -19,8 +19,28 @@ export type WebClip = {
   tags: string[];
   source_type: string;
   favicon: string;
+  og_image: string;
   is_read: boolean;
   is_starred: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type Collection = {
+  id: number;
+  name: string;
+  description: string;
+  icon: string;
+  color: string;
+  clip_count: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ClipNote = {
+  id: number;
+  clip_id: number;
+  content: string;
   created_at: string;
   updated_at: string;
 };

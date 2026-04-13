@@ -13,6 +13,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { WebClip } from "../../types";
+import HighlightText from "./HighlightText";
 
 const SOURCE_CONFIG: Record<
   string,
@@ -43,9 +44,20 @@ type Props = {
   onSelect: (clip: WebClip) => void;
   onRetag: (id: number) => void;
   isSelected?: boolean;
+  searchQuery?: string;
+  animateOut?: boolean;
 };
 
-export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag, isSelected }: Props) {
+export default function ClipCard({
+  clip,
+  onStar,
+  onDelete,
+  onSelect,
+  onRetag,
+  isSelected,
+  searchQuery = "",
+  animateOut,
+}: Props) {
   const [starBounce, setStarBounce] = useState(false);
 
   const domain = (() => {
@@ -62,22 +74,37 @@ export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag, is
 
   return (
     <div
-      className={`group rounded-xl border border-l-[3px] ${st.border} bg-bg-secondary p-4 hover:border-accent/30 transition-all cursor-pointer ${
+      className={`group relative rounded-xl border border-l-[3px] ${st.border} bg-bg-secondary dark:glass-card p-4 hover:border-accent/30 hover:shadow-md transition-all duration-200 cursor-pointer ${
         isSelected ? "border-accent/30 ring-2 ring-accent/20" : "border-border"
-      }`}
+      } ${animateOut ? "animate-slide-out-right" : ""}`}
       onClick={() => onSelect(clip)}
     >
-      {/* YouTube thumbnail */}
-      {ytId && (
+      {/* Unread indicator */}
+      {!clip.is_read && (
+        <div className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-accent" title="未读" />
+      )}
+      {/* Thumbnail: YouTube or OG image */}
+      {ytId ? (
         <img
           src={`https://img.youtube.com/vi/${ytId}/mqdefault.jpg`}
           alt=""
           className="w-full h-32 object-cover rounded-lg mb-2"
         />
+      ) : (
+        clip.og_image && (
+          <img
+            src={clip.og_image}
+            alt=""
+            className="w-full h-32 object-cover rounded-lg mb-2"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
+          />
+        )
       )}
 
       {/* Header */}
-      <div className="flex items-start gap-2.5 mb-2">
+      <div className="flex items-start gap-2.5 mb-1">
         <SourceIcon size={14} className={`${st.color} mt-0.5 shrink-0`} />
         {clip.favicon ? (
           <img src={clip.favicon} alt="" className="w-4 h-4 mt-0.5 rounded-sm shrink-0" />
@@ -85,27 +112,31 @@ export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag, is
           <div className="w-4 h-4 mt-0.5 rounded-sm bg-bg-tertiary shrink-0" />
         )}
         <div className="flex-1 min-w-0">
-          <h3 className="text-[14px] font-medium text-text leading-snug line-clamp-2 m-0">
-            {clip.title || "无标题"}
+          <h3 className="text-[15px] font-semibold text-text leading-snug line-clamp-2 m-0">
+            <HighlightText text={clip.title || "无标题"} query={searchQuery} />
           </h3>
-          <span className="text-[11px] text-text-tertiary">{domain}</span>
         </div>
+      </div>
+
+      {/* Meta line */}
+      <div className="text-[11px] text-text-tertiary mb-2 ml-[34px]">
+        {domain} &middot; {new Date(clip.created_at).toLocaleDateString("zh-CN")}
       </div>
 
       {/* Summary */}
       {clip.summary && (
         <p className="text-[12px] text-text-secondary leading-relaxed line-clamp-3 mb-3 m-0">
-          {clip.summary}
+          <HighlightText text={clip.summary} query={searchQuery} />
         </p>
       )}
 
       {/* Tags */}
       {clip.tags.length > 0 && (
-        <div className="flex flex-wrap gap-1 mb-3">
+        <div className="flex flex-wrap gap-1.5 mb-3">
           {clip.tags.map((tag) => (
             <span
               key={tag}
-              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-md bg-accent/8 text-accent text-[11px]"
+              className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-accent/8 text-accent text-[11px] font-medium"
             >
               <Tag size={10} />
               {tag}
@@ -114,11 +145,8 @@ export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag, is
         </div>
       )}
 
-      {/* Footer */}
-      <div className="flex items-center justify-between">
-        <span className="text-[11px] text-text-tertiary">
-          {new Date(clip.created_at).toLocaleDateString("zh-CN")}
-        </span>
+      {/* Footer (actions only, date moved to meta line) */}
+      <div className="flex items-center justify-end">
         <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <button
             onClick={(e) => {
@@ -144,18 +172,16 @@ export default function ClipCard({ clip, onStar, onDelete, onSelect, onRetag, is
             onClick={(e) => {
               e.stopPropagation();
               setStarBounce(true);
-              setTimeout(() => setStarBounce(false), 150);
+              setTimeout(() => setStarBounce(false), 400);
               onStar(clip.id);
             }}
             className={`p-1 rounded-md transition-colors cursor-pointer ${
+              starBounce ? "animate-star-bounce" : ""
+            } ${
               clip.is_starred
                 ? "text-yellow-500"
                 : "text-text-tertiary hover:text-yellow-500 hover:bg-yellow-500/10"
             }`}
-            style={{
-              transform: starBounce ? "scale(0.85)" : "scale(1)",
-              transition: "transform 150ms ease",
-            }}
             title={clip.is_starred ? "取消星标" : "星标"}
           >
             <Star size={13} fill={clip.is_starred ? "currentColor" : "none"} />

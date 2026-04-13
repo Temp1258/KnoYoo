@@ -1,9 +1,12 @@
 import { lazy, Suspense } from "react";
 import { createBrowserRouter } from "react-router";
 import AppShell from "./components/Layout/AppShell";
+import ClipsPage from "./pages/ClipsPage";
 import { SkeletonCard } from "./components/ui/Skeleton";
 
-const ClipsPage = lazy(() => import("./pages/ClipsPage"));
+const DiscoverPage = lazy(() => import("./pages/DiscoverPage"));
+const CollectionsPage = lazy(() => import("./pages/CollectionsPage"));
+const CollectionDetailPage = lazy(() => import("./pages/CollectionDetailPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
 
 const fallback = (
@@ -20,9 +23,29 @@ export default createBrowserRouter([
     children: [
       {
         index: true,
+        element: <ClipsPage />,
+      },
+      {
+        path: "discover",
         element: (
           <Suspense fallback={fallback}>
-            <ClipsPage />
+            <DiscoverPage />
+          </Suspense>
+        ),
+      },
+      {
+        path: "collections",
+        element: (
+          <Suspense fallback={fallback}>
+            <CollectionsPage />
+          </Suspense>
+        ),
+      },
+      {
+        path: "collections/:id",
+        element: (
+          <Suspense fallback={fallback}>
+            <CollectionDetailPage />
           </Suspense>
         ),
       },

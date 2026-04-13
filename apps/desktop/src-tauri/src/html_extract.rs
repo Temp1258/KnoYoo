@@ -22,6 +22,7 @@ pub struct ExtractedPage {
     pub title: String,
     pub content: String,
     pub favicon: String,
+    pub og_image: String,
 }
 
 /// Fetch a URL and extract its main content.
@@ -31,6 +32,7 @@ pub fn fetch_and_extract(url: &str) -> Result<ExtractedPage, String> {
 
     let title = extract_title(&doc).unwrap_or_default();
     let favicon = extract_favicon(&doc, url);
+    let og_image = extract_og_image(&doc, url);
     let content = extract_main_content(&doc);
 
     if content.len() < 50 {
@@ -41,6 +43,7 @@ pub fn fetch_and_extract(url: &str) -> Result<ExtractedPage, String> {
         title,
         content,
         favicon,
+        og_image,
     })
 }
 
@@ -122,6 +125,27 @@ fn resolve_url(href: &str, base: &str) -> String {
         }
     }
     href.to_string()
+}
+
+/// Extract Open Graph image from meta tags.
+fn extract_og_image(doc: &Html, page_url: &str) -> String {
+    let selectors = [
+        r#"meta[property="og:image"]"#,
+        r#"meta[name="twitter:image"]"#,
+    ];
+    for sel_str in &selectors {
+        if let Ok(sel) = Selector::parse(sel_str) {
+            if let Some(el) = doc.select(&sel).next() {
+                if let Some(content) = el.value().attr("content") {
+                    let url = content.trim();
+                    if !url.is_empty() {
+                        return resolve_url(url, page_url);
+                    }
+                }
+            }
+        }
+    }
+    String::new()
 }
 
 /// Extract main content from the parsed HTML document.

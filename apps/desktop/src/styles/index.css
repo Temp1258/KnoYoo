@@ -70,23 +70,30 @@ body {
 /* === Dark Mode === */
 .dark {
   --color-bg: #111113;
-  --color-bg-secondary: #1c1c1e;
+  --color-bg-secondary: #1e1e22;
   --color-bg-tertiary: #2c2c2e;
   --color-border: #38383a;
   --color-text: #f5f5f7;
   --color-text-secondary: #98989d;
   --color-text-tertiary: #636366;
-  --color-accent: #0a84ff;
-  --color-accent-hover: #409cff;
-  --color-accent-light: #0a84ff1a;
+  --color-accent: #3b8df0;
+  --color-accent-hover: #5ba0f4;
+  --color-accent-light: #3b8df01a;
   --color-danger: #ff453a;
   --color-danger-light: #ff453a1a;
   --color-success: #30d158;
   --color-success-light: #30d1581a;
+  --color-card-bg: rgba(30, 30, 34, 0.7);
   --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.2);
   --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
   --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.4);
   --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.dark .glass-card {
+  background: var(--color-card-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 /* === Scrollbar === */
@@ -118,6 +125,111 @@ body {
 ::selection {
   background: var(--color-accent-light);
   color: var(--color-text);
+}
+
+/* === Search Highlight === */
+mark {
+  background: var(--color-accent-light);
+  color: var(--color-text);
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* === Clip Content Markdown === */
+.prose-clip {
+  font-size: 14px;
+  line-height: 1.75;
+  color: var(--color-text-secondary);
+}
+.prose-clip h1 {
+  font-size: 1.5em;
+  font-weight: 700;
+  margin: 1.2em 0 0.6em;
+  color: var(--color-text);
+}
+.prose-clip h2 {
+  font-size: 1.3em;
+  font-weight: 600;
+  margin: 1em 0 0.5em;
+  color: var(--color-text);
+}
+.prose-clip h3 {
+  font-size: 1.1em;
+  font-weight: 600;
+  margin: 0.8em 0 0.4em;
+  color: var(--color-text);
+}
+.prose-clip p {
+  margin: 0 0 0.75em;
+}
+.prose-clip p:last-child {
+  margin-bottom: 0;
+}
+.prose-clip code {
+  background: var(--color-bg-tertiary);
+  padding: 2px 5px;
+  border-radius: 4px;
+  font-size: 0.9em;
+}
+.prose-clip pre {
+  background: var(--color-bg-tertiary);
+  padding: 12px 16px;
+  border-radius: 8px;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.prose-clip pre code {
+  background: none;
+  padding: 0;
+}
+.prose-clip ul,
+.prose-clip ol {
+  padding-left: 1.5em;
+  margin: 0.5em 0;
+}
+.prose-clip li {
+  margin: 0.25em 0;
+}
+.prose-clip blockquote {
+  border-left: 3px solid var(--color-accent);
+  margin: 0.75em 0;
+  padding: 0.5em 1em;
+  color: var(--color-text-secondary);
+  background: var(--color-accent-light);
+  border-radius: 0 6px 6px 0;
+}
+.prose-clip strong {
+  font-weight: 600;
+  color: var(--color-text);
+}
+.prose-clip a {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+.prose-clip img {
+  max-width: 100%;
+  border-radius: 8px;
+  margin: 0.75em 0;
+}
+.prose-clip table {
+  border-collapse: collapse;
+  margin: 0.75em 0;
+  font-size: 13px;
+  width: 100%;
+}
+.prose-clip th,
+.prose-clip td {
+  border: 1px solid var(--color-border);
+  padding: 6px 10px;
+}
+.prose-clip th {
+  background: var(--color-bg-tertiary);
+  font-weight: 600;
+}
+.prose-clip hr {
+  border: none;
+  border-top: 1px solid var(--color-border);
+  margin: 1.5em 0;
 }
 
 /* === Chat Markdown === */
@@ -172,4 +284,79 @@ body {
 .prose-chat td {
   border: 1px solid var(--color-border);
   padding: 4px 8px;
+}
+
+/* === Micro-interaction Keyframes === */
+@keyframes star-bounce {
+  0% {
+    transform: scale(1);
+  }
+  30% {
+    transform: scale(0.75);
+  }
+  60% {
+    transform: scale(1.2);
+  }
+  80% {
+    transform: scale(0.95);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+
+@keyframes slide-out-right {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(100%);
+  }
+}
+
+@keyframes fade-in-up {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes indeterminate-progress {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(400%);
+  }
+}
+
+.animate-star-bounce {
+  animation: star-bounce 400ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+.animate-slide-out-right {
+  animation: slide-out-right 300ms ease forwards;
+}
+
+.animate-fade-in-up {
+  animation: fade-in-up 200ms ease-out forwards;
+}
+
+.animate-fade-in {
+  animation: fade-in 200ms ease forwards;
 }
