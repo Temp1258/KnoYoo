@@ -98,6 +98,7 @@ export default function DiscoverPage() {
       {splitView && (
         <div className="w-3/5 order-2 overflow-y-auto px-6 py-6 border-l border-border">
           <ClipDetail
+            key={selectedClip.id}
             clip={selectedClip}
             onBack={() => setSelectedClip(null)}
             onStar={handleStar}
