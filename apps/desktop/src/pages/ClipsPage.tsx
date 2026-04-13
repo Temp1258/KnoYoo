@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "react-router";
 import {
   Search,
   Star,
@@ -7,17 +8,17 @@ import {
   Check,
   Sparkles,
   RefreshCw,
-  Lightbulb,
-  ChevronDown,
-  ChevronUp,
   Loader2,
   Settings,
   X,
+  BookOpen,
 } from "lucide-react";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 import type { WebClip } from "../types";
 import ClipCard from "../components/Clips/ClipCard";
 import ClipDetail from "../components/Clips/ClipDetail";
+import EmptyState from "../components/Clips/EmptyState";
+import OnboardingFlow from "../components/Onboarding/OnboardingFlow";
 import Button from "../components/ui/Button";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { useToast } from "../components/common/Toast";
@@ -25,6 +26,7 @@ import { useMediaQuery } from "../hooks/useMediaQuery";
 import Combobox from "../components/ui/Combobox";
 import FilterChip from "../components/ui/FilterChip";
 import SegmentedControl from "../components/ui/SegmentedControl";
+import { useSearchHistory } from "../hooks/useSearchHistory";
 
 type TimeRange = "all" | "week" | "month" | "quarter";
 
@@ -45,6 +47,9 @@ function getDateFrom(range: TimeRange): string | undefined {
 }
 
 export default function ClipsPage() {
+  const [searchParams] = useSearchParams();
+  const starredFromUrl = searchParams.get("starred") === "true";
+
   const [clips, setClips] = useState<WebClip[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [allDomains, setAllDomains] = useState<string[]>([]);
@@ -52,7 +57,8 @@ export default function ClipsPage() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
-  const [starredOnly, setStarredOnly] = useState(false);
+  const [starredOnly, setStarredOnly] = useState(starredFromUrl);
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const [selectedClip, setSelectedClip] = useState<WebClip | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -62,12 +68,6 @@ export default function ClipsPage() {
   // AI fuzzy search (unified: triggered when FTS returns empty)
   const [fuzzyLoading, setFuzzyLoading] = useState(false);
   const [fuzzyResults, setFuzzyResults] = useState<WebClip[] | null>(null);
-
-  // Smart info feed
-  const [forgottenClips, setForgottenClips] = useState<WebClip[]>([]);
-  const [weeklySummary, setWeeklySummary] = useState<string | null>(null);
-  const [summaryLoading, setSummaryLoading] = useState(false);
-  const [summaryExpanded, setSummaryExpanded] = useState(false);
 
   // Loading & infinite scroll
   const [loading, setLoading] = useState(true);
@@ -84,12 +84,17 @@ export default function ClipsPage() {
   // Banner
   const [bannerDismissed, setBannerDismissed] = useState(false);
 
+  // Onboarding
+  const [showOnboarding, setShowOnboarding] = useState(false);
+
   // Pending AI processing count
   const [pendingCount, setPendingCount] = useState(0);
   const [aiConfigured, setAiConfigured] = useState(true);
   const pendingTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Undo delete
+  // Delete animation + undo
+  const [slidingOutIds, setSlidingOutIds] = useState<Set<number>>(new Set());
+  const animationTimersRef = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map());
   const { showToast } = useToast();
   const pendingDeletesRef = useRef<
     Map<number, { timer: ReturnType<typeof setTimeout>; clip: WebClip }>
@@ -98,52 +103,94 @@ export default function ClipsPage() {
   // Search debounce
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const isStarred = starredOnly;
+  // Search UX
+  const [searchFocused, setSearchFocused] = useState(false);
+  const [aiSearchMode, setAiSearchMode] = useState(false);
+  const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const { history: searchHistory, addQuery: addSearchHistory } = useSearchHistory();
+
+  // Use refs for filter values to avoid re-creating loadClips on every filter change
+  const filtersRef = useRef({
+    query,
+    page,
+    selectedTag,
+    selectedDomain,
+    timeRange,
+    starredOnly,
+    unreadOnly,
+  });
+  filtersRef.current = {
+    query,
+    page,
+    selectedTag,
+    selectedDomain,
+    timeRange,
+    starredOnly,
+    unreadOnly,
+  };
+
+  // Stale request guard: only apply results from the latest request
+  const requestIdRef = useRef(0);
 
   const loadClips = useCallback(async () => {
+    const f = filtersRef.current;
+    const currentRequestId = ++requestIdRef.current;
     setLoading(true);
     setHasMore(true);
     try {
-      if (query.trim()) {
-        const results = await tauriInvoke<WebClip[]>("search_web_clips", { q: query });
-        setClips(isStarred ? results.filter((c) => c.is_starred) : results);
-        setHasMore(false); // search results are not paginated
+      let results: WebClip[];
+      if (f.query.trim()) {
+        results = await tauriInvoke<WebClip[]>("search_web_clips", { q: f.query });
+        if (f.starredOnly) results = results.filter((c) => c.is_starred);
       } else {
-        const dateFrom = getDateFrom(timeRange);
-        const results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
-          page,
+        const dateFrom = getDateFrom(f.timeRange);
+        results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
+          page: f.page,
           pageSize: 20,
-          tag: selectedTag,
-          starred: isStarred || undefined,
-          domain: selectedDomain,
+          tag: f.selectedTag,
+          starred: f.starredOnly || undefined,
+          unread: f.unreadOnly || undefined,
+          domain: f.selectedDomain,
           dateFrom,
         });
-        setClips(results);
-        if (results.length < 20) setHasMore(false);
       }
+      // Discard stale response if a newer request was started
+      if (currentRequestId !== requestIdRef.current) return;
+      setClips(results);
+      setHasMore(!f.query.trim() && results.length >= 20);
       const count = await tauriInvoke<number>("count_web_clips");
+      if (currentRequestId !== requestIdRef.current) return;
       setTotal(count);
     } catch (e) {
+      if (currentRequestId !== requestIdRef.current) return;
       console.error("Failed to load clips:", e);
     } finally {
-      setLoading(false);
+      if (currentRequestId === requestIdRef.current) setLoading(false);
     }
-  }, [query, page, selectedTag, selectedDomain, timeRange, isStarred]);
+  }, []); // stable reference — reads filters from ref
+
+  const clipsLengthRef = useRef(clips.length);
+  clipsLengthRef.current = clips.length;
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore || query.trim()) return;
+    if (loadingMore || !hasMore || filtersRef.current.query.trim()) return;
+    const snapshotId = requestIdRef.current; // snapshot to detect filter changes
     setLoadingMore(true);
     try {
-      const nextPage = Math.floor(clips.length / 20) + 1;
-      const dateFrom = getDateFrom(timeRange);
+      const f = filtersRef.current;
+      const nextPage = Math.floor(clipsLengthRef.current / 20) + 1;
+      const dateFrom = getDateFrom(f.timeRange);
       const results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
         page: nextPage,
         pageSize: 20,
-        tag: selectedTag,
-        starred: isStarred || undefined,
-        domain: selectedDomain,
+        tag: f.selectedTag,
+        starred: f.starredOnly || undefined,
+        unread: f.unreadOnly || undefined,
+        domain: f.selectedDomain,
         dateFrom,
       });
+      // Discard if filters changed while loading
+      if (snapshotId !== requestIdRef.current) return;
       if (results.length < 20) setHasMore(false);
       if (results.length > 0) {
         setClips((prev) => {
@@ -153,19 +200,11 @@ export default function ClipsPage() {
         });
       }
     } catch (e) {
+      if (snapshotId !== requestIdRef.current) return;
       console.error(e);
     }
-    setLoadingMore(false);
-  }, [
-    loadingMore,
-    hasMore,
-    query,
-    clips.length,
-    timeRange,
-    selectedTag,
-    isStarred,
-    selectedDomain,
-  ]);
+    if (snapshotId === requestIdRef.current) setLoadingMore(false);
+  }, [loadingMore, hasMore]);
 
   const loadMeta = useCallback(async () => {
     try {
@@ -180,31 +219,52 @@ export default function ClipsPage() {
     }
   }, []);
 
-  const loadForgotten = useCallback(async () => {
-    try {
-      const forgotten = await tauriInvoke<WebClip[]>("forgotten_clips", { limit: 5 });
-      setForgottenClips(forgotten);
-    } catch (e) {
-      console.error(e);
-    }
-  }, []);
+  useEffect(() => {
+    setStarredOnly(starredFromUrl);
+  }, [starredFromUrl]);
 
+  // Trigger loadClips when any filter changes
   useEffect(() => {
     loadClips();
+  }, [loadClips, query, page, selectedTag, selectedDomain, timeRange, starredOnly, unreadOnly]);
+
+  // loadMeta only once on mount (tags/domains don't change with filters)
+  useEffect(() => {
     loadMeta();
-    loadForgotten();
-  }, [loadClips, loadMeta, loadForgotten]);
+  }, [loadMeta]);
 
   useEffect(() => {
     tauriInvoke<string>("get_clip_server_token").then(setServerToken).catch(console.error);
   }, []);
 
-  // Check AI config on mount + when config changes
+  // Check onboarding status (only once, after first clips load)
+  const onboardingChecked = useRef(false);
+  useEffect(() => {
+    if (onboardingChecked.current || loading) return;
+    onboardingChecked.current = true;
+    if (total === 0) {
+      tauriInvoke<{ clip_count: number; onboarding_complete: boolean }>("get_app_status")
+        .then((status) => {
+          if (status.clip_count === 0 && !status.onboarding_complete) {
+            setShowOnboarding(true);
+          }
+        })
+        .catch(console.error);
+    }
+  }, [loading, total]);
+
+  // Check AI config — lightweight: only check if config keys exist, no API call
   const checkAiConfig = useCallback(() => {
-    tauriInvoke<string>("ai_smoketest")
-      .then((r) => setAiConfigured(r.startsWith("ok")))
+    tauriInvoke<Record<string, string>>("get_ai_config")
+      .then((cfg) => setAiConfigured(Boolean(cfg.provider && cfg.api_key)))
       .catch(() => setAiConfigured(false));
   }, []);
+
+  // Only run once on mount, not on every loadClips change
+  const loadClipsRef = useRef(loadClips);
+  loadClipsRef.current = loadClips;
+  const loadMetaRef = useRef(loadMeta);
+  loadMetaRef.current = loadMeta;
 
   useEffect(() => {
     checkAiConfig();
@@ -216,12 +276,12 @@ export default function ClipsPage() {
         await tauriInvoke("ai_batch_retag_clips").catch(console.error);
         setRetagging(false);
       }
-      loadClips();
-      loadMeta();
+      loadClipsRef.current();
+      loadMetaRef.current();
     };
     window.addEventListener("knoyoo-ai-config-changed", handler);
     return () => window.removeEventListener("knoyoo-ai-config-changed", handler);
-  }, [checkAiConfig, loadClips, loadMeta]);
+  }, [checkAiConfig]);
 
   useEffect(() => {
     const checkPending = () => {
@@ -240,7 +300,7 @@ export default function ClipsPage() {
     return () => {
       if (pendingTimerRef.current) clearInterval(pendingTimerRef.current);
     };
-  }, [total]);
+  }, []);
 
   // Infinite scroll observer
   useEffect(() => {
@@ -255,14 +315,20 @@ export default function ClipsPage() {
     return () => observer.disconnect();
   }, [hasMore, loadMore]);
 
-  // Flush pending deletes on unmount
+  // Cleanup timers on unmount
   useEffect(() => {
+    const animTimers = animationTimersRef.current;
+    const pendingDeletes = pendingDeletesRef.current;
     return () => {
-      pendingDeletesRef.current.forEach(({ timer }, id) => {
+      if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+      animTimers.forEach((t) => clearTimeout(t));
+      animTimers.clear();
+      pendingDeletes.forEach(({ timer }, id) => {
         clearTimeout(timer);
         tauriInvoke("delete_web_clip", { id });
       });
-      pendingDeletesRef.current.clear();
+      pendingDeletes.clear();
     };
   }, []);
 
@@ -277,24 +343,36 @@ export default function ClipsPage() {
   const handleDelete = (id: number) => {
     const clip = clips.find((c) => c.id === id);
     if (!clip) return;
-    setClips((prev) => prev.filter((c) => c.id !== id));
     if (selectedClip?.id === id) setSelectedClip(null);
-    const timer = setTimeout(() => {
-      pendingDeletesRef.current.delete(id);
-      tauriInvoke("delete_web_clip", { id }).then(() => loadMeta());
-    }, 5000);
-    pendingDeletesRef.current.set(id, { timer, clip });
-    showToast("已删除", "info", {
-      label: "撤销",
-      onClick: () => {
-        const pending = pendingDeletesRef.current.get(id);
-        if (pending) {
-          clearTimeout(pending.timer);
-          pendingDeletesRef.current.delete(id);
-          setClips((prev) => [pending.clip, ...prev]);
-        }
-      },
-    });
+    // Start slide-out animation
+    setSlidingOutIds((prev) => new Set(prev).add(id));
+    // After animation, remove from list and schedule actual delete
+    const animTimer = setTimeout(() => {
+      animationTimersRef.current.delete(id);
+      setSlidingOutIds((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
+      setClips((prev) => prev.filter((c) => c.id !== id));
+      const timer = setTimeout(() => {
+        pendingDeletesRef.current.delete(id);
+        tauriInvoke("delete_web_clip", { id }).then(() => loadMeta());
+      }, 5000);
+      pendingDeletesRef.current.set(id, { timer, clip });
+      showToast("已删除", "info", {
+        label: "撤销",
+        onClick: () => {
+          const pending = pendingDeletesRef.current.get(id);
+          if (pending) {
+            clearTimeout(pending.timer);
+            pendingDeletesRef.current.delete(id);
+            setClips((prev) => [pending.clip, ...prev]);
+          }
+        },
+      });
+    }, 300);
+    animationTimersRef.current.set(id, animTimer);
   };
 
   const handleRetag = async (id: number) => {
@@ -341,16 +419,35 @@ export default function ClipsPage() {
     setFuzzyLoading(false);
   };
 
-  const handleLoadSummary = async () => {
-    setSummaryLoading(true);
-    try {
-      const summary = await tauriInvoke<string>("ai_weekly_clip_summary");
-      setWeeklySummary(summary);
-      setSummaryExpanded(true);
-    } catch (e) {
-      console.error(e);
+  const handleLoadDemo = async () => {
+    const demos = [
+      {
+        url: "https://example.com/rust-ownership",
+        title: "深入理解 Rust 所有权机制",
+        content: "Rust 的所有权系统是其最独特的特性之一，它在编译时保证内存安全，无需垃圾回收器...",
+        source_type: "article",
+        favicon: "",
+      },
+      {
+        url: "https://example.com/react-19",
+        title: "React 19 新特性一览",
+        content: "React 19 带来了服务端组件、Actions、新的 hooks 等重大更新...",
+        source_type: "article",
+        favicon: "",
+      },
+      {
+        url: "https://youtube.com/watch?v=demo123",
+        title: "10 分钟学会 Docker",
+        content: "Docker 容器化技术入门：从安装到部署你的第一个应用...",
+        source_type: "video",
+        favicon: "",
+      },
+    ];
+    for (const demo of demos) {
+      await tauriInvoke("add_web_clip", { clip: demo }).catch(console.error);
     }
-    setSummaryLoading(false);
+    loadClips();
+    loadMeta();
   };
 
   const isWide = useMediaQuery("(min-width: 1024px)");
@@ -359,6 +456,7 @@ export default function ClipsPage() {
   if (selectedClip && !isWide) {
     return (
       <ClipDetail
+        key={selectedClip.id}
         clip={selectedClip}
         onBack={() => setSelectedClip(null)}
         onStar={handleStar}
@@ -407,7 +505,7 @@ export default function ClipsPage() {
                 size="sm"
                 onClick={async () => {
                   setRefreshing(true);
-                  await Promise.all([loadClips(), loadMeta(), loadForgotten()]);
+                  await Promise.all([loadClips(), loadMeta()]);
                   setRefreshing(false);
                 }}
                 title="刷新"
@@ -490,8 +588,13 @@ export default function ClipsPage() {
               />
               <input
                 type="text"
-                placeholder="搜索知识库..."
+                placeholder={aiSearchMode ? "AI 搜索：描述你记得的内容..." : "搜索知识库..."}
                 value={query}
+                onFocus={() => setSearchFocused(true)}
+                onBlur={() => {
+                  if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
+                  blurTimeoutRef.current = setTimeout(() => setSearchFocused(false), 200);
+                }}
                 onChange={(e) => {
                   const val = e.target.value;
                   setQuery(val);
@@ -499,75 +602,57 @@ export default function ClipsPage() {
                   setPage(1);
                   if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
                   if (val.trim()) {
-                    searchTimeoutRef.current = setTimeout(() => loadClips(), 300);
+                    if (aiSearchMode) {
+                      searchTimeoutRef.current = setTimeout(() => handleAISearch(val), 500);
+                    } else {
+                      searchTimeoutRef.current = setTimeout(() => {
+                        loadClips();
+                        addSearchHistory(val);
+                      }, 300);
+                    }
                   } else {
-                    loadClips();
+                    // filtersRef hasn't updated yet (React batches state),
+                    // so let the useEffect handle re-loading on next render
                   }
                 }}
-                className="w-full pl-9 pr-4 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 transition-colors"
+                className="w-full pl-9 pr-10 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 focus:shadow-md focus:ring-2 focus:ring-accent/15 transition-all duration-200"
               />
+              <button
+                onClick={() => setAiSearchMode(!aiSearchMode)}
+                className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
+                  aiSearchMode ? "text-accent bg-accent/10" : "text-text-tertiary hover:text-accent"
+                }`}
+                title={aiSearchMode ? "切换为普通搜索" : "切换为 AI 搜索"}
+              >
+                <Sparkles size={14} />
+              </button>
             </div>
-          </div>
-
-          {/* Weekly summary (collapsible, home only) */}
-          {
-            <div className="mt-3 mb-3">
-              {weeklySummary ? (
-                <div className="rounded-xl bg-accent/5 border border-accent/10">
+            {/* Search history dropdown */}
+            {searchFocused && !query && searchHistory.length > 0 && (
+              <div className="absolute left-6 right-6 mt-1 rounded-xl bg-bg-secondary border border-border shadow-md z-20 py-1">
+                {searchHistory.map((h) => (
                   <button
-                    onClick={() => setSummaryExpanded(!summaryExpanded)}
-                    className="w-full flex items-center gap-2 px-4 py-2.5 text-[11px] font-medium text-accent cursor-pointer"
+                    key={h}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      setQuery(h);
+                      setPage(1);
+                      setFuzzyResults(null);
+                      if (aiSearchMode) {
+                        handleAISearch(h);
+                      } else {
+                        setTimeout(() => loadClips(), 0);
+                      }
+                    }}
+                    className="w-full text-left px-4 py-2 text-[12px] text-text-secondary hover:bg-bg-tertiary transition-colors cursor-pointer"
                   >
-                    <Sparkles size={12} />
-                    本周收藏摘要
-                    {summaryExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
-                  </button>
-                  {summaryExpanded && (
-                    <p className="px-4 pb-3 text-[13px] text-text leading-relaxed m-0">
-                      {weeklySummary}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <button
-                  onClick={handleLoadSummary}
-                  disabled={summaryLoading}
-                  className="w-full p-2.5 rounded-xl bg-bg-secondary border border-border hover:border-accent/20 text-[12px] text-text-secondary flex items-center justify-center gap-2 cursor-pointer transition-colors"
-                >
-                  <Sparkles size={13} className={summaryLoading ? "animate-pulse" : ""} />
-                  {summaryLoading ? "生成本周摘要中..." : "生成本周收藏摘要"}
-                </button>
-              )}
-            </div>
-          }
-
-          {/* "You may have forgotten" — horizontal scroll */}
-          {forgottenClips.length > 0 && (
-            <div className="mb-3">
-              <div className="flex items-center gap-2 mb-1.5">
-                <Lightbulb size={13} className="text-yellow-500" />
-                <span className="text-[11px] font-medium text-text-secondary">
-                  你可能忘了这些收藏
-                </span>
-              </div>
-              <div className="flex gap-2 overflow-x-auto pb-1">
-                {forgottenClips.map((clip) => (
-                  <button
-                    key={clip.id}
-                    onClick={() => setSelectedClip(clip)}
-                    className="shrink-0 w-[200px] text-left p-2.5 rounded-lg bg-yellow-500/5 border border-yellow-500/10 hover:border-yellow-500/20 transition-colors cursor-pointer"
-                  >
-                    <div className="text-[12px] font-medium text-text line-clamp-1">
-                      {clip.title}
-                    </div>
-                    <div className="text-[11px] text-text-tertiary line-clamp-1 mt-0.5">
-                      {clip.summary}
-                    </div>
+                    <Search size={12} className="inline mr-2 text-text-tertiary" />
+                    {h}
                   </button>
                 ))}
               </div>
-            </div>
-          )}
+            )}
+          </div>
 
           {/* Compact filter bar */}
           <div className="flex items-center gap-2 flex-wrap mb-2">
@@ -586,6 +671,23 @@ export default function ClipsPage() {
               >
                 <Star size={11} fill={starredOnly ? "currentColor" : "none"} />
                 星标
+              </button>
+            }
+            {
+              <button
+                onClick={() => {
+                  setUnreadOnly(!unreadOnly);
+                  setPage(1);
+                  setFuzzyResults(null);
+                }}
+                className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] transition-colors cursor-pointer border ${
+                  unreadOnly
+                    ? "bg-accent/10 text-accent border-accent/20"
+                    : "bg-bg text-text-secondary border-border hover:border-accent/20"
+                }`}
+              >
+                <BookOpen size={11} />
+                未读
               </button>
             }
             <SegmentedControl
@@ -624,9 +726,10 @@ export default function ClipsPage() {
           </div>
 
           {/* Active filter chips */}
-          {(selectedTag || selectedDomain || timeRange !== "all" || starredOnly) && (
+          {(selectedTag || selectedDomain || timeRange !== "all" || starredOnly || unreadOnly) && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {starredOnly && <FilterChip label="星标" onDismiss={() => setStarredOnly(false)} />}
+              {unreadOnly && <FilterChip label="未读" onDismiss={() => setUnreadOnly(false)} />}
               {timeRange !== "all" && (
                 <FilterChip
                   label={TIME_RANGES.find((t) => t.value === timeRange)!.label}
@@ -672,15 +775,16 @@ export default function ClipsPage() {
 
           {/* Empty state / AI search prompt */}
           {!loading && displayClips.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
-              <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
+            <>
               {fuzzyResults !== null ? (
-                <>
+                <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
+                  <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
                   <p className="text-[14px] mb-1">AI 搜索未找到匹配内容</p>
                   <p className="text-[12px]">试试换个描述方式</p>
-                </>
+                </div>
               ) : query.trim() ? (
-                <>
+                <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
+                  <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
                   <p className="text-[14px] mb-1">没有找到精确匹配的结果</p>
                   <button
                     onClick={() => handleAISearch(query)}
@@ -690,19 +794,35 @@ export default function ClipsPage() {
                     <Sparkles size={13} />
                     {fuzzyLoading ? "AI 搜索中..." : "试试 AI 搜索？"}
                   </button>
-                </>
+                </div>
+              ) : total === 0 ? (
+                showOnboarding ? (
+                  <OnboardingFlow
+                    serverToken={serverToken}
+                    onComplete={() => {
+                      setShowOnboarding(false);
+                      loadClips();
+                    }}
+                  />
+                ) : (
+                  <EmptyState
+                    onLoadDemo={handleLoadDemo}
+                    onCopyToken={handleCopyToken}
+                    tokenCopied={tokenCopied}
+                  />
+                )
               ) : (
-                <>
-                  <p className="text-[14px] mb-1">知识库是空的</p>
-                  <p className="text-[12px]">安装浏览器插件，一键收藏有价值的网页内容</p>
-                </>
+                <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
+                  <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
+                  <p className="text-[14px]">当前筛选条件下没有结果</p>
+                </div>
               )}
-            </div>
+            </>
           )}
 
           {/* Clip grid */}
           {displayClips.length > 0 && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 animate-fade-in">
               {displayClips.map((clip) => (
                 <ClipCard
                   key={clip.id}
@@ -712,6 +832,8 @@ export default function ClipsPage() {
                   onSelect={setSelectedClip}
                   onRetag={handleRetag}
                   isSelected={selectedClip?.id === clip.id}
+                  searchQuery={query}
+                  animateOut={slidingOutIds.has(clip.id)}
                 />
               ))}
             </div>

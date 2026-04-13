@@ -2,12 +2,14 @@ import { useState, useEffect } from "react";
 import { Sun, Moon } from "lucide-react";
 import SegmentedControl from "../components/ui/SegmentedControl";
 import AISettingsPanel from "../components/AI/AISettingsPanel";
+import BookmarkImportDialog from "../components/Import/BookmarkImportDialog";
 
-type Tab = "ai" | "display" | "about";
+type Tab = "ai" | "display" | "import" | "about";
 
 const TABS = [
   { value: "ai" as Tab, label: "AI 配置" },
   { value: "display" as Tab, label: "显示" },
+  { value: "import" as Tab, label: "导入" },
   { value: "about" as Tab, label: "关于" },
 ];
 
@@ -45,6 +47,8 @@ export default function SettingsPage() {
           </div>
         </div>
       )}
+
+      {tab === "import" && <BookmarkImportDialog />}
 
       {tab === "about" && (
         <div className="space-y-3">

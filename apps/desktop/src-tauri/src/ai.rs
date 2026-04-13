@@ -160,17 +160,59 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<String, String
         buf
     };
 
+    // Gather collections
+    let collections_ctx: String = {
+        let mut stmt = conn
+            .prepare("SELECT name FROM collections ORDER BY updated_at DESC LIMIT 10")
+            .map_err(|e| e.to_string())?;
+        let names: Vec<String> = stmt
+            .query_map([], |r| r.get::<_, String>(0))
+            .map_err(|e| e.to_string())?
+            .flatten()
+            .collect();
+        if names.is_empty() {
+            String::new()
+        } else {
+            format!("\n## 用户的知识集合\n{}\n", names.join(", "))
+        }
+    };
+
+    // Gather recent notes
+    let notes_ctx: String = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT cn.content, wc.title FROM clip_notes cn
+                 JOIN web_clips wc ON cn.clip_id = wc.id
+                 ORDER BY cn.updated_at DESC LIMIT 5",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut buf = String::new();
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let content: String = row.get(0).map_err(|e| e.to_string())?;
+            let title: String = row.get(1).map_err(|e| e.to_string())?;
+            buf.push_str(&format!("- 关于「{}」的笔记: {}\n", title, content.chars().take(100).collect::<String>()));
+        }
+        if buf.is_empty() {
+            String::new()
+        } else {
+            format!("\n## 用户的学习笔记\n{}", buf)
+        }
+    };
+
     let system_prompt = format!(
         "你是 KnoYoo AI 知识助手。用户有一个个人知识库，以下是知识库中的内容。\n\n\
         **重要规则：回答问题时必须优先基于知识库中的内容。**\n\
         - 如果知识库中有相关信息，直接引用并回答，注明来源\n\
         - 如果知识库中没有相关信息，再用你自己的知识补充，并说明这不是来自用户的知识库\n\n\
-        ## 用户知识库\n{}",
+        ## 用户知识库\n{}{}{}",
         if clips_ctx.is_empty() {
             "（知识库暂无内容）\n"
         } else {
             &clips_ctx
         },
+        collections_ctx,
+        notes_ctx,
     );
 
     let mut full_messages: Vec<serde_json::Value> =
@@ -248,6 +290,62 @@ pub fn auto_configure_ollama(model: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
     Ok(())
+}
+
+// ── Proactive Suggestions ────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct AiSuggestion {
+    pub suggestion_type: String,
+    pub title: String,
+    pub description: String,
+}
+
+/// Rule-based suggestions (no AI call needed).
+#[tauri::command]
+pub fn ai_suggest_actions() -> Result<Vec<AiSuggestion>, String> {
+    let conn = open_db()?;
+    let mut suggestions = Vec::new();
+
+    // Check unread pile-up
+    let unread_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM web_clips WHERE is_read = 0", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    if unread_count >= 10 {
+        suggestions.push(AiSuggestion {
+            suggestion_type: "review_clips".to_string(),
+            title: format!("你有 {} 条未读收藏", unread_count),
+            description: "找时间回顾一下最近收藏的内容".to_string(),
+        });
+    }
+
+    // Check tag clusters that could become collections
+    let mut stmt = conn
+        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
+        .map_err(|e| e.to_string())?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    for r in rows {
+        let json_str = r.map_err(|e| e.to_string())?;
+        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&json_str) {
+            for t in tags {
+                *tag_counts.entry(t).or_insert(0) += 1;
+            }
+        }
+    }
+    for (tag, count) in &tag_counts {
+        if *count >= 5 {
+            suggestions.push(AiSuggestion {
+                suggestion_type: "create_collection".to_string(),
+                title: format!("关于「{}」的收藏已有 {} 条", tag, count),
+                description: "是否要创建一个专题集合？".to_string(),
+            });
+        }
+    }
+
+    // Limit to 3 suggestions
+    suggestions.truncate(3);
+    Ok(suggestions)
 }
 
 #[cfg(test)]

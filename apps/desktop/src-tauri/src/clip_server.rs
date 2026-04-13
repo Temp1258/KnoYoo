@@ -148,6 +148,10 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
 
+        if content_length == 0 {
+            send_json_response(&mut stream, 400, r#"{"error":"empty body"}"#)?;
+            return Ok(());
+        }
         if content_length > MAX_BODY_SIZE {
             send_json_response(&mut stream, 413, r#"{"error":"body too large"}"#)?;
             return Ok(());
@@ -190,6 +194,10 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
             .and_then(|v| v.parse().ok())
             .unwrap_or(0);
 
+        if content_length == 0 {
+            send_json_response(&mut stream, 400, r#"{"error":"empty body"}"#)?;
+            return Ok(());
+        }
         if content_length > MAX_BODY_SIZE {
             send_json_response(&mut stream, 413, r#"{"error":"body too large"}"#)?;
             return Ok(());
@@ -220,6 +228,7 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
                     content: page.content,
                     source_type: Some(req.source_hint),
                     favicon: Some(page.favicon),
+                    og_image: Some(page.og_image),
                 };
                 match crate::clips::add_web_clip(clip) {
                     Ok(saved) => {

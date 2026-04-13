@@ -79,6 +79,7 @@ export default function DiscoverPage() {
   if (selectedClip && !isWide) {
     return (
       <ClipDetail
+        key={selectedClip.id}
         clip={selectedClip}
         onBack={() => setSelectedClip(null)}
         onStar={handleStar}

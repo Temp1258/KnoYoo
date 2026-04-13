@@ -4,7 +4,10 @@ mod ai;
 mod ai_client;
 mod clip_server;
 mod clips;
+mod collections;
 mod db;
+mod export;
+mod import;
 mod error;
 mod html_extract;
 mod models;
@@ -32,6 +35,7 @@ fn main() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
             // Build tray right-click menu
             let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
@@ -90,11 +94,14 @@ fn main() {
             ai::ai_smoketest,
             ai::ai_chat,
             ai::ai_chat_with_context,
+            ai::ai_suggest_actions,
             ai::detect_ollama,
             ai::auto_configure_ollama,
             // Database
             db::check_db_health,
             // Web Clips
+            clips::mark_clip_read,
+            clips::toggle_read_clip,
             clips::add_web_clip,
             clips::list_web_clips,
             clips::search_web_clips,
@@ -113,6 +120,29 @@ fn main() {
             clips::list_clip_domains,
             clips::forgotten_clips,
             clips::ai_weekly_clip_summary,
+            clips::get_app_status,
+            clips::set_onboarding_complete,
+            clips::get_weekly_stats,
+            clips::find_related_clips,
+            clips::save_clip_note,
+            clips::get_clip_note,
+            clips::delete_clip_note,
+            // Collections
+            collections::create_collection,
+            collections::update_collection,
+            collections::delete_collection,
+            collections::list_collections,
+            collections::get_collection,
+            collections::add_clip_to_collection,
+            collections::remove_clip_from_collection,
+            collections::list_collection_clips,
+            collections::list_clip_collections,
+            // Export
+            export::export_clip_to_file,
+            export::export_collection_to_dir,
+            // Import
+            import::parse_bookmark_file,
+            import::import_bookmarks,
             // Clip server
             clip_server::get_clip_server_token,
             clip_server::get_clip_server_port,

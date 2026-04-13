@@ -15,6 +15,7 @@ pub struct WebClip {
     pub tags: Vec<String>,
     pub source_type: String,
     pub favicon: String,
+    pub og_image: String,
     pub is_read: bool,
     pub is_starred: bool,
     pub created_at: String,
@@ -28,11 +29,12 @@ pub struct NewClip {
     pub content: String,
     pub source_type: Option<String>,
     pub favicon: Option<String>,
+    pub og_image: Option<String>,
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 
-fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
+pub(crate) fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
     let tags_json: String = row.get("tags")?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
     Ok(WebClip {
@@ -44,6 +46,7 @@ fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
         tags,
         source_type: row.get("source_type")?,
         favicon: row.get("favicon")?,
+        og_image: row.get("og_image")?,
         is_read: row.get::<_, i64>("is_read")? != 0,
         is_starred: row.get::<_, i64>("is_starred")? != 0,
         created_at: row.get("created_at")?,
@@ -59,17 +62,19 @@ pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
     let conn = open_db()?;
     let source_type = clip.source_type.unwrap_or_else(|| "article".to_string());
     let favicon = clip.favicon.unwrap_or_default();
+    let og_image = clip.og_image.unwrap_or_default();
 
     conn.execute(
-        "INSERT INTO web_clips (url, title, content, source_type, favicon)
-         VALUES (?1, ?2, ?3, ?4, ?5)
+        "INSERT INTO web_clips (url, title, content, source_type, favicon, og_image)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
          ON CONFLICT(url) DO UPDATE SET
            title=excluded.title,
            content=excluded.content,
            source_type=excluded.source_type,
            favicon=excluded.favicon,
+           og_image=CASE WHEN excluded.og_image != '' THEN excluded.og_image ELSE web_clips.og_image END,
            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-        rusqlite::params![clip.url, clip.title, clip.content, source_type, favicon],
+        rusqlite::params![clip.url, clip.title, clip.content, source_type, favicon, og_image],
     )
     .map_err(|e| e.to_string())?;
 
@@ -604,6 +609,37 @@ pub fn ai_fuzzy_search_clips(description: String) -> Result<Vec<WebClip>, String
     Ok(out)
 }
 
+/// Mark a clip as read.
+#[tauri::command]
+pub fn mark_clip_read(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute(
+        "UPDATE web_clips SET is_read = 1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Toggle read status on a clip.
+#[tauri::command]
+pub fn toggle_read_clip(id: i64) -> Result<bool, String> {
+    let conn = open_db()?;
+    conn.execute(
+        "UPDATE web_clips SET is_read = 1 - is_read, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    let is_read: bool = conn
+        .query_row(
+            "SELECT is_read FROM web_clips WHERE id = ?1",
+            [id],
+            |r| Ok(r.get::<_, i64>(0)? != 0),
+        )
+        .map_err(|e| e.to_string())?;
+    Ok(is_read)
+}
+
 /// List clips with advanced filters: time range, domain, source type.
 #[tauri::command]
 #[allow(non_snake_case)]
@@ -613,6 +649,7 @@ pub fn list_web_clips_advanced(
     tag: Option<String>,
     sourceType: Option<String>,
     starred: Option<bool>,
+    unread: Option<bool>,
     domain: Option<String>,
     dateFrom: Option<String>,
     dateTo: Option<String>,
@@ -636,6 +673,9 @@ pub fn list_web_clips_advanced(
     if let Some(s) = starred {
         conditions.push(format!("is_starred = ?{}", params.len() + 1));
         params.push(Box::new(if s { 1i64 } else { 0i64 }));
+    }
+    if let Some(true) = unread {
+        conditions.push("is_read = 0".to_string());
     }
     if let Some(ref d) = domain {
         conditions.push(format!("url LIKE ?{}", params.len() + 1));
@@ -773,5 +813,299 @@ pub fn ai_weekly_clip_summary() -> Result<String, String> {
     ];
 
     ai_client::chat(&config, messages, 0.4).map_err(String::from)
+}
+
+// ── App Status ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct AppStatus {
+    pub clip_count: i64,
+    pub ai_configured: bool,
+    pub has_collections: bool,
+    pub has_notes: bool,
+    pub onboarding_complete: bool,
+}
+
+#[tauri::command]
+pub fn get_app_status() -> Result<AppStatus, String> {
+    let conn = open_db()?;
+    let clip_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM web_clips", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let ai_configured = crate::db::read_ai_config(&conn)
+        .map(|cfg| AiClientConfig::from_map(&cfg).is_ok())
+        .unwrap_or(false);
+    let has_collections: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM collections", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let has_notes: bool = conn
+        .query_row("SELECT COUNT(*) > 0 FROM clip_notes", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let onboarding_complete = crate::db::kv_get(&conn, "onboarding_complete")?
+        .map(|v| v == "true")
+        .unwrap_or(false);
+    Ok(AppStatus {
+        clip_count,
+        ai_configured,
+        has_collections,
+        has_notes,
+        onboarding_complete,
+    })
+}
+
+#[tauri::command]
+pub fn set_onboarding_complete() -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute(
+        "INSERT INTO app_kv(key, val) VALUES('onboarding_complete', 'true')
+         ON CONFLICT(key) DO UPDATE SET val='true'",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Related Clips ────────────────────────────────────────────────────────
+
+/// Find clips related to the given clip via shared tags and domain.
+/// Uses lightweight queries to avoid loading all clip content into memory.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub fn find_related_clips(clipId: i64, limit: Option<u32>) -> Result<Vec<WebClip>, String> {
+    let conn = open_db()?;
+    let limit = limit.unwrap_or(5).min(10);
+
+    // Get source clip's tags and domain
+    let (tags_json, url): (String, String) = conn
+        .query_row(
+            "SELECT tags, url FROM web_clips WHERE id = ?1",
+            [clipId],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+    let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    let domain = url
+        .split("//")
+        .nth(1)
+        .and_then(|s| s.split('/').next())
+        .map(|h| h.strip_prefix("www.").unwrap_or(h))
+        .unwrap_or("")
+        .to_string();
+
+    if tags.is_empty() && domain.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Score candidates using only id, tags, url — NOT loading content
+    let mut stmt = conn
+        .prepare("SELECT id, tags, url FROM web_clips WHERE id != ?1")
+        .map_err(|e| e.to_string())?;
+    let mut scored: Vec<(i64, i64)> = Vec::new(); // (score, id)
+    let mut rows = stmt.query([clipId]).map_err(|e| e.to_string())?;
+    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+        let cid: i64 = row.get(0).map_err(|e| e.to_string())?;
+        let ctags_json: String = row.get(1).map_err(|e| e.to_string())?;
+        let curl: String = row.get(2).map_err(|e| e.to_string())?;
+        let ctags: Vec<String> = serde_json::from_str(&ctags_json).unwrap_or_default();
+        let mut score: i64 = 0;
+        for t in &ctags {
+            if tags.contains(t) {
+                score += 3;
+            }
+        }
+        if !domain.is_empty() && curl.contains(&domain) {
+            score += 1;
+        }
+        if score > 0 {
+            scored.push((score, cid));
+        }
+    }
+    drop(rows);
+
+    scored.sort_by(|a, b| b.0.cmp(&a.0));
+    scored.truncate(limit as usize);
+
+    if scored.is_empty() {
+        return Ok(vec![]);
+    }
+
+    // Only now load full WebClip for the top N candidates
+    let ids: Vec<i64> = scored.iter().map(|(_, id)| *id).collect();
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!("SELECT * FROM web_clips WHERE id IN ({})", placeholders);
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
+    let clip_rows = stmt.query_map(params.as_slice(), row_to_clip).map_err(|e| e.to_string())?;
+
+    let mut result_map: std::collections::HashMap<i64, WebClip> = std::collections::HashMap::new();
+    for r in clip_rows {
+        let clip = r.map_err(|e| e.to_string())?;
+        result_map.insert(clip.id, clip);
+    }
+
+    // Return in scored order
+    Ok(scored.iter().filter_map(|(_, id)| result_map.remove(id)).collect())
+}
+
+// ── Clip Notes ───────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ClipNote {
+    pub id: i64,
+    pub clip_id: i64,
+    pub content: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+/// Save or update a note for a clip (UPSERT).
+#[tauri::command]
+#[allow(non_snake_case)]
+pub fn save_clip_note(clipId: i64, content: String) -> Result<ClipNote, String> {
+    let conn = open_db()?;
+    conn.execute(
+        "INSERT INTO clip_notes (clip_id, content)
+         VALUES (?1, ?2)
+         ON CONFLICT(clip_id) DO UPDATE SET
+           content = excluded.content,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+        rusqlite::params![clipId, content],
+    )
+    .map_err(|e| e.to_string())?;
+
+    conn.query_row(
+        "SELECT id, clip_id, content, created_at, updated_at FROM clip_notes WHERE clip_id = ?1",
+        [clipId],
+        |r| {
+            Ok(ClipNote {
+                id: r.get(0)?,
+                clip_id: r.get(1)?,
+                content: r.get(2)?,
+                created_at: r.get(3)?,
+                updated_at: r.get(4)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Get a note for a clip.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub fn get_clip_note(clipId: i64) -> Result<Option<ClipNote>, String> {
+    use rusqlite::OptionalExtension;
+    let conn = open_db()?;
+    conn.query_row(
+        "SELECT id, clip_id, content, created_at, updated_at FROM clip_notes WHERE clip_id = ?1",
+        [clipId],
+        |r| {
+            Ok(ClipNote {
+                id: r.get(0)?,
+                clip_id: r.get(1)?,
+                content: r.get(2)?,
+                created_at: r.get(3)?,
+                updated_at: r.get(4)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|e| e.to_string())
+}
+
+// ── Weekly Stats ─────────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize)]
+pub struct WeeklyStats {
+    pub daily_counts: Vec<(String, i64)>,
+    pub top_tags: Vec<(String, i64)>,
+    pub top_domains: Vec<(String, i64)>,
+    pub total_clips: i64,
+    pub total_notes: i64,
+    pub total_collections: i64,
+}
+
+/// Get lightweight weekly stats (no AI call).
+#[tauri::command]
+pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
+    let conn = open_db()?;
+
+    // Daily counts for last 28 days
+    let mut stmt = conn
+        .prepare(
+            "SELECT date(created_at) AS day, COUNT(*) AS cnt
+             FROM web_clips
+             WHERE created_at >= datetime('now', '-28 days')
+             GROUP BY day ORDER BY day ASC",
+        )
+        .map_err(|e| e.to_string())?;
+    let daily_counts: Vec<(String, i64)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .collect();
+
+    // Top tags (from all clips)
+    let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut tag_stmt = conn
+        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
+        .map_err(|e| e.to_string())?;
+    let tag_rows = tag_stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    for r in tag_rows {
+        let json_str = r.map_err(|e| e.to_string())?;
+        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&json_str) {
+            for t in tags {
+                *tag_counts.entry(t).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut top_tags: Vec<(String, i64)> = tag_counts.into_iter().collect();
+    top_tags.sort_by(|a, b| b.1.cmp(&a.1));
+    top_tags.truncate(10);
+
+    // Top domains
+    let mut dom_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    let mut dom_stmt = conn
+        .prepare("SELECT url FROM web_clips")
+        .map_err(|e| e.to_string())?;
+    let dom_rows = dom_stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
+    for r in dom_rows {
+        let url = r.map_err(|e| e.to_string())?;
+        if let Some(host) = url.split("//").nth(1).and_then(|s| s.split('/').next()) {
+            let domain = host.strip_prefix("www.").unwrap_or(host);
+            *dom_counts.entry(domain.to_string()).or_insert(0) += 1;
+        }
+    }
+    let mut top_domains: Vec<(String, i64)> = dom_counts.into_iter().collect();
+    top_domains.sort_by(|a, b| b.1.cmp(&a.1));
+    top_domains.truncate(10);
+
+    let total_clips: i64 = conn
+        .query_row("SELECT COUNT(*) FROM web_clips", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let total_notes: i64 = conn
+        .query_row("SELECT COUNT(*) FROM clip_notes", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+    let total_collections: i64 = conn
+        .query_row("SELECT COUNT(*) FROM collections", [], |r| r.get(0))
+        .map_err(|e| e.to_string())?;
+
+    Ok(WeeklyStats {
+        daily_counts,
+        top_tags,
+        top_domains,
+        total_clips,
+        total_notes,
+        total_collections,
+    })
+}
+
+/// Delete a note for a clip.
+#[tauri::command]
+#[allow(non_snake_case)]
+pub fn delete_clip_note(clipId: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute("DELETE FROM clip_notes WHERE clip_id = ?1", [clipId])
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
