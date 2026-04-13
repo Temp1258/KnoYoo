@@ -85,15 +85,12 @@ fn send_chat(
         body["max_tokens"] = serde_json::json!(mt);
     }
 
+    // ureq 2.x returns Err for 4xx/5xx, so `?` propagates HTTP errors
     let resp = ureq::post(&url)
         .set("Authorization", &format!("Bearer {}", config.api_key))
         .set("Content-Type", "application/json")
         .timeout(AI_TIMEOUT)
         .send_json(body)?;
-
-    if resp.status() >= 300 {
-        return Err(AppError::ai(format!("AI API 返回 HTTP {}", resp.status())));
-    }
 
     // Read response with size limit to prevent OOM
     let reader = resp.into_reader().take(MAX_RESPONSE_BYTES);

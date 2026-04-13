@@ -19,17 +19,18 @@ pub fn get_or_create_token() -> Result<String, String> {
     if let Some(token) = crate::db::kv_get(&conn, "clip_server_token")? {
         return Ok(token);
     }
-    // Generate a random token
-    let token: String = (0..32)
-        .map(|_| {
-            let idx = (std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .subsec_nanos()
-                % 36) as usize;
-            b"abcdefghijklmnopqrstuvwxyz0123456789"[idx] as char
-        })
-        .collect();
+    // Generate a cryptographically random token
+    let token: String = {
+        use std::collections::hash_map::RandomState;
+        use std::hash::{BuildHasher, Hasher};
+        const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
+        (0..32)
+            .map(|_| {
+                let idx = RandomState::new().build_hasher().finish() as usize % CHARSET.len();
+                CHARSET[idx] as char
+            })
+            .collect()
+    };
 
     conn.execute(
         "INSERT INTO app_kv(key, val) VALUES('clip_server_token', ?1)

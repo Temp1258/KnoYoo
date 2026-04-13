@@ -25,8 +25,64 @@ pub struct ExtractedPage {
     pub og_image: String,
 }
 
+/// Validate that a URL is safe to fetch (no internal/private networks).
+fn validate_url_safe(url: &str) -> Result<(), String> {
+    let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
+
+    match parsed.scheme() {
+        "http" | "https" => {}
+        s => return Err(format!("Unsupported scheme: {s}")),
+    }
+
+    let host = parsed
+        .host_str()
+        .ok_or_else(|| "URL has no host".to_string())?;
+
+    // Block obviously private/internal hostnames
+    let blocked_hosts = [
+        "localhost",
+        "127.0.0.1",
+        "0.0.0.0",
+        "[::1]",
+        "metadata.google.internal",
+    ];
+    let host_lower = host.to_lowercase();
+    if blocked_hosts.iter().any(|b| host_lower == *b) {
+        return Err(format!("Blocked host: {host}"));
+    }
+
+    // Block private IP ranges
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        let is_private = match ip {
+            std::net::IpAddr::V4(v4) => {
+                v4.is_loopback()
+                    || v4.is_private()
+                    || v4.is_link_local()
+                    || v4.octets()[0] == 169 && v4.octets()[1] == 254 // link-local
+                    || v4.is_broadcast()
+                    || v4.is_unspecified()
+            }
+            std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
+        };
+        if is_private {
+            return Err(format!("Blocked private/internal IP: {host}"));
+        }
+    }
+
+    // Block common internal TLDs
+    if host_lower.ends_with(".local")
+        || host_lower.ends_with(".internal")
+        || host_lower.ends_with(".localhost")
+    {
+        return Err(format!("Blocked internal hostname: {host}"));
+    }
+
+    Ok(())
+}
+
 /// Fetch a URL and extract its main content.
 pub fn fetch_and_extract(url: &str) -> Result<ExtractedPage, String> {
+    validate_url_safe(url)?;
     let html = fetch_html(url)?;
     let doc = Html::parse_document(&html);
 
@@ -47,18 +103,55 @@ pub fn fetch_and_extract(url: &str) -> Result<ExtractedPage, String> {
     })
 }
 
+/// Maximum redirect hops to follow.
+const MAX_REDIRECTS: u8 = 5;
+
 fn fetch_html(url: &str) -> Result<String, String> {
-    let resp = ureq::get(url)
-        .set(
-            "User-Agent",
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
-             (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-        )
-        .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
-        .set("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
+    let mut current_url = url.to_string();
+
+    // Agent with no auto-redirects so we can validate each hop
+    let agent = ureq::AgentBuilder::new()
+        .redirects(0)
         .timeout(FETCH_TIMEOUT)
-        .call()
-        .map_err(|e| format!("Failed to fetch URL: {e}"))?;
+        .build();
+
+    // Manual redirect loop: validate each hop against SSRF rules
+    for _ in 0..MAX_REDIRECTS {
+        validate_url_safe(&current_url)?;
+
+        let resp = agent
+            .get(&current_url)
+            .set(
+                "User-Agent",
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 \
+                 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            )
+            .set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+            .set("Accept-Language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
+            .call();
+
+        match resp {
+            Ok(r) => return read_html_body(r),
+            Err(ureq::Error::Status(status, r)) if (301..=308).contains(&status) => {
+                let location = r
+                    .header("location")
+                    .ok_or_else(|| format!("Redirect {status} without Location header"))?
+                    .to_string();
+                // Resolve relative redirect URLs
+                current_url = resolve_url(&location, &current_url);
+                continue;
+            }
+            Err(ureq::Error::Status(status, _)) => {
+                return Err(format!("HTTP {status} from {current_url}"));
+            }
+            Err(e) => return Err(format!("Failed to fetch URL: {e}")),
+        }
+    }
+
+    Err(format!("Too many redirects (>{MAX_REDIRECTS})"))
+}
+
+fn read_html_body(resp: ureq::Response) -> Result<String, String> {
 
     let content_type = resp
         .header("Content-Type")

@@ -89,7 +89,8 @@ pub fn import_bookmarks(path: String, fetchContent: bool) -> Result<ImportResult
                         favicon: Some(page.favicon),
                         og_image: Some(page.og_image),
                     };
-                    match crate::clips::add_web_clip(clip) {
+                    // Use no-autotag variant to avoid spawning a thread per import
+                    match crate::clips::add_web_clip_no_autotag(clip) {
                         Ok(_) => imported += 1,
                         Err(_) => failed += 1,
                     }
@@ -103,7 +104,7 @@ pub fn import_bookmarks(path: String, fetchContent: bool) -> Result<ImportResult
                         favicon: None,
                         og_image: None,
                     };
-                    match crate::clips::add_web_clip(clip) {
+                    match crate::clips::add_web_clip_no_autotag(clip) {
                         Ok(_) => imported += 1,
                         Err(_) => failed += 1,
                     }

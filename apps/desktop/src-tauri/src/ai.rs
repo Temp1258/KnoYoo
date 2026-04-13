@@ -7,14 +7,16 @@ use crate::db::open_db;
 use crate::models::ChatMessage;
 
 /// Mask an API key for display: show first 3 and last 4 chars.
+/// Uses char-based indexing to avoid panics on multi-byte strings.
 fn mask_api_key(key: &str) -> String {
-    let len = key.len();
+    let chars: Vec<char> = key.chars().collect();
+    let len = chars.len();
     if len <= 8 {
         return "*".repeat(len);
     }
-    let prefix = &key[..3];
-    let suffix = &key[len - 4..];
-    format!("{}{}{}",prefix, "*".repeat(len - 7), suffix)
+    let prefix: String = chars[..3].iter().collect();
+    let suffix: String = chars[len - 4..].iter().collect();
+    format!("{}{}{}", prefix, "*".repeat(len - 7), suffix)
 }
 
 /// Read AI config: returns {provider, api_base, api_key (masked), model}

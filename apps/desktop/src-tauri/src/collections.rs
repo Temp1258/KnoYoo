@@ -63,45 +63,49 @@ pub fn update_collection(
     icon: Option<String>,
     color: Option<String>,
 ) -> Result<Collection, String> {
-    let conn = open_db()?;
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     if let Some(ref n) = name {
-        conn.execute(
+        tx.execute(
             "UPDATE collections SET name = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
             rusqlite::params![n, id],
         )
         .map_err(|e| e.to_string())?;
     }
     if let Some(ref d) = description {
-        conn.execute(
+        tx.execute(
             "UPDATE collections SET description = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
             rusqlite::params![d, id],
         )
         .map_err(|e| e.to_string())?;
     }
     if let Some(ref i) = icon {
-        conn.execute(
+        tx.execute(
             "UPDATE collections SET icon = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
             rusqlite::params![i, id],
         )
         .map_err(|e| e.to_string())?;
     }
     if let Some(ref c) = color {
-        conn.execute(
+        tx.execute(
             "UPDATE collections SET color = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
             rusqlite::params![c, id],
         )
         .map_err(|e| e.to_string())?;
     }
-    conn.query_row(
-        "SELECT c.*, COALESCE(cnt.n, 0) AS clip_count
-         FROM collections c
-         LEFT JOIN (SELECT collection_id, COUNT(*) AS n FROM collection_clips GROUP BY collection_id) cnt
-           ON cnt.collection_id = c.id
-         WHERE c.id = ?1",
-        [id],
-        row_to_collection,
-    )
-    .map_err(|e| e.to_string())
+    let collection = tx
+        .query_row(
+            "SELECT c.*, COALESCE(cnt.n, 0) AS clip_count
+             FROM collections c
+             LEFT JOIN (SELECT collection_id, COUNT(*) AS n FROM collection_clips GROUP BY collection_id) cnt
+               ON cnt.collection_id = c.id
+             WHERE c.id = ?1",
+            [id],
+            row_to_collection,
+        )
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(collection)
 }
 
 #[tauri::command]

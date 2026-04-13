@@ -2,20 +2,29 @@ use crate::clips::{row_to_clip, WebClip};
 use crate::db::open_db;
 use rusqlite::OptionalExtension;
 
+/// Escape a string for use in YAML double-quoted values.
+fn yaml_escape(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
+        .replace('\t', "\\t")
+}
+
 fn clip_to_markdown(clip: &WebClip, note: Option<&str>) -> String {
     let tags_str = clip
         .tags
         .iter()
-        .map(|t| format!("\"{}\"", t))
+        .map(|t| format!("\"{}\"", yaml_escape(t)))
         .collect::<Vec<_>>()
         .join(", ");
 
     let mut md = format!(
         "---\ntitle: \"{}\"\nurl: \"{}\"\ntags: [{}]\nsource_type: \"{}\"\nsaved_at: \"{}\"\n---\n\n# {}\n\n",
-        clip.title.replace('"', "\\\""),
-        clip.url,
+        yaml_escape(&clip.title),
+        yaml_escape(&clip.url),
         tags_str,
-        clip.source_type,
+        yaml_escape(&clip.source_type),
         clip.created_at,
         clip.title,
     );
@@ -40,7 +49,20 @@ fn clip_to_markdown(clip: &WebClip, note: Option<&str>) -> String {
 fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' || c == ' ' || c > '\u{4e00}' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric()
+                || c == '-'
+                || c == '_'
+                || c == ' '
+                || ('\u{4e00}'..='\u{9fff}').contains(&c) // CJK Unified Ideographs
+                || ('\u{3400}'..='\u{4dbf}').contains(&c) // CJK Extension A
+                || ('\u{3000}'..='\u{303f}').contains(&c) // CJK Symbols
+            {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect::<String>()
         .trim()
         .chars()

@@ -1,5 +1,4 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { useSearchParams } from "react-router";
 import {
   Search,
   Star,
@@ -12,6 +11,8 @@ import {
   Settings,
   X,
   BookOpen,
+  SlidersHorizontal,
+  MoreHorizontal,
 } from "lucide-react";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 import type { WebClip } from "../types";
@@ -47,9 +48,6 @@ function getDateFrom(range: TimeRange): string | undefined {
 }
 
 export default function ClipsPage() {
-  const [searchParams] = useSearchParams();
-  const starredFromUrl = searchParams.get("starred") === "true";
-
   const [clips, setClips] = useState<WebClip[]>([]);
   const [allTags, setAllTags] = useState<string[]>([]);
   const [allDomains, setAllDomains] = useState<string[]>([]);
@@ -57,8 +55,11 @@ export default function ClipsPage() {
   const [selectedTag, setSelectedTag] = useState<string | null>(null);
   const [selectedDomain, setSelectedDomain] = useState<string | null>(null);
   const [timeRange, setTimeRange] = useState<TimeRange>("all");
-  const [starredOnly, setStarredOnly] = useState(starredFromUrl);
+  const [starredOnly, setStarredOnly] = useState(false);
   const [unreadOnly, setUnreadOnly] = useState(false);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
   const [selectedClip, setSelectedClip] = useState<WebClip | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -219,10 +220,6 @@ export default function ClipsPage() {
     }
   }, []);
 
-  useEffect(() => {
-    setStarredOnly(starredFromUrl);
-  }, [starredFromUrl]);
-
   // Trigger loadClips when any filter changes
   useEffect(() => {
     loadClips();
@@ -273,8 +270,8 @@ export default function ClipsPage() {
       const pending = await tauriInvoke<number>("count_pending_clips").catch(() => 0);
       if (pending > 0) {
         setRetagging(true);
+        // Triggers background processing; polling detects completion
         await tauriInvoke("ai_batch_retag_clips").catch(console.error);
-        setRetagging(false);
       }
       loadClipsRef.current();
       loadMetaRef.current();
@@ -283,14 +280,20 @@ export default function ClipsPage() {
     return () => window.removeEventListener("knoyoo-ai-config-changed", handler);
   }, [checkAiConfig]);
 
+  // Track previous pending count to detect batch completion
+  const prevPendingRef = useRef(0);
   useEffect(() => {
     const checkPending = () => {
       tauriInvoke<number>("count_pending_clips")
         .then((n) => {
+          const prev = prevPendingRef.current;
+          prevPendingRef.current = n;
           setPendingCount(n);
-          if (n === 0 && pendingTimerRef.current) {
-            clearInterval(pendingTimerRef.current);
-            pendingTimerRef.current = null;
+          // Batch retag finished: pending dropped to 0 from a nonzero value
+          if (n === 0 && prev > 0) {
+            setRetagging(false);
+            loadClipsRef.current();
+            loadMetaRef.current();
           }
         })
         .catch(console.error);
@@ -331,6 +334,18 @@ export default function ClipsPage() {
       pendingDeletes.clear();
     };
   }, []);
+
+  // Close more-menu on outside click
+  useEffect(() => {
+    if (!moreMenuOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(e.target as Node)) {
+        setMoreMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [moreMenuOpen]);
 
   const handleStar = async (id: number) => {
     await tauriInvoke("toggle_star_clip", { id });
@@ -389,14 +404,15 @@ export default function ClipsPage() {
     setRetagging(true);
     try {
       const count = await tauriInvoke<number>("ai_batch_retag_clips");
-      if (count > 0) {
-        loadClips();
-        loadMeta();
+      if (count === 0) {
+        setRetagging(false);
       }
+      // count > 0: tagging runs in background; pendingCount polling will
+      // detect completion and clear retagging state
     } catch (e) {
       console.error(e);
+      setRetagging(false);
     }
-    setRetagging(false);
   };
 
   const handleCopyToken = async () => {
@@ -472,6 +488,12 @@ export default function ClipsPage() {
   const displayClips = fuzzyResults ?? clips;
   const showBanner = !bannerDismissed && (pendingCount > 0 || (!aiConfigured && total > 0));
   const splitView = isWide && selectedClip;
+  const activeFilterCount =
+    (starredOnly ? 1 : 0) +
+    (unreadOnly ? 1 : 0) +
+    (timeRange !== "all" ? 1 : 0) +
+    (selectedTag ? 1 : 0) +
+    (selectedDomain ? 1 : 0);
 
   return (
     <div className={splitView ? "flex gap-0 -mx-6 -my-6 h-[calc(100vh)]" : ""}>
@@ -494,41 +516,25 @@ export default function ClipsPage() {
       )}
       <div className={splitView ? "w-2/5 order-1 overflow-y-auto px-4 py-4" : ""}>
         <div>
-          {/* Header */}
+          {/* Header — clean: title + count + refresh */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
               <h1 className="text-[28px] font-bold tracking-tight m-0">知识库</h1>
               <span className="text-[13px] text-text-tertiary">{total} 条收藏</span>
             </div>
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={async () => {
-                  setRefreshing(true);
-                  await Promise.all([loadClips(), loadMeta()]);
-                  setRefreshing(false);
-                }}
-                title="刷新"
-                disabled={refreshing}
-              >
-                <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
-                刷新
-              </Button>
-              <Button variant="ghost" size="sm" onClick={handleBatchRetag} disabled={retagging}>
-                <RefreshCw size={14} className={retagging ? "animate-spin" : ""} />
-                {retagging ? "标签中..." : "批量标签"}
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={handleCopyToken}
-                title="复制插件连接 Token"
-              >
-                {tokenCopied ? <Check size={14} /> : <Copy size={14} />}
-                {tokenCopied ? "已复制" : "插件 Token"}
-              </Button>
-            </div>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={async () => {
+                setRefreshing(true);
+                await Promise.all([loadClips(), loadMeta()]);
+                setRefreshing(false);
+              }}
+              title="刷新"
+              disabled={refreshing}
+            >
+              <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} />
+            </Button>
           </div>
 
           {/* Merged banner (pending AI / AI not configured) */}
@@ -580,54 +586,111 @@ export default function ClipsPage() {
             </div>
           )}
 
-          {/* Sticky search bar */}
+          {/* Sticky search + filter toggle + more menu */}
           <div className="sticky top-0 z-10 bg-bg/80 backdrop-blur-sm -mx-6 px-6 py-2">
-            <div className="relative">
-              <Search
-                size={16}
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
-              />
-              <input
-                type="text"
-                placeholder={aiSearchMode ? "AI 搜索：描述你记得的内容..." : "搜索知识库..."}
-                value={query}
-                onFocus={() => setSearchFocused(true)}
-                onBlur={() => {
-                  if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
-                  blurTimeoutRef.current = setTimeout(() => setSearchFocused(false), 200);
-                }}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setQuery(val);
-                  setFuzzyResults(null);
-                  setPage(1);
-                  if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
-                  if (val.trim()) {
-                    if (aiSearchMode) {
-                      searchTimeoutRef.current = setTimeout(() => handleAISearch(val), 500);
-                    } else {
-                      searchTimeoutRef.current = setTimeout(() => {
-                        loadClips();
-                        addSearchHistory(val);
-                      }, 300);
+            <div className="flex items-center gap-2">
+              {/* Search input */}
+              <div className="relative flex-1">
+                <Search
+                  size={16}
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary"
+                />
+                <input
+                  type="text"
+                  placeholder={aiSearchMode ? "AI 搜索：描述你记得的内容..." : "搜索知识库..."}
+                  value={query}
+                  onFocus={() => setSearchFocused(true)}
+                  onBlur={() => {
+                    if (blurTimeoutRef.current) clearTimeout(blurTimeoutRef.current);
+                    blurTimeoutRef.current = setTimeout(() => setSearchFocused(false), 200);
+                  }}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setQuery(val);
+                    setFuzzyResults(null);
+                    setPage(1);
+                    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+                    if (val.trim()) {
+                      if (aiSearchMode) {
+                        searchTimeoutRef.current = setTimeout(() => handleAISearch(val), 500);
+                      } else {
+                        searchTimeoutRef.current = setTimeout(() => {
+                          loadClips();
+                          addSearchHistory(val);
+                        }, 300);
+                      }
                     }
-                  } else {
-                    // filtersRef hasn't updated yet (React batches state),
-                    // so let the useEffect handle re-loading on next render
-                  }
-                }}
-                className="w-full pl-9 pr-10 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 focus:shadow-md focus:ring-2 focus:ring-accent/15 transition-all duration-200"
-              />
+                  }}
+                  className="w-full pl-9 pr-10 py-2.5 rounded-xl bg-bg-secondary border border-border text-[13px] text-text placeholder:text-text-tertiary focus:outline-none focus:border-accent/40 focus:shadow-md focus:ring-2 focus:ring-accent/15 transition-all duration-200"
+                />
+                <button
+                  onClick={() => setAiSearchMode(!aiSearchMode)}
+                  className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
+                    aiSearchMode
+                      ? "text-accent bg-accent/10"
+                      : "text-text-tertiary hover:text-accent"
+                  }`}
+                  title={aiSearchMode ? "切换为普通搜索" : "切换为 AI 搜索"}
+                >
+                  <Sparkles size={14} />
+                </button>
+              </div>
+
+              {/* Filter toggle */}
               <button
-                onClick={() => setAiSearchMode(!aiSearchMode)}
-                className={`absolute right-3 top-1/2 -translate-y-1/2 p-1 rounded-md transition-colors cursor-pointer ${
-                  aiSearchMode ? "text-accent bg-accent/10" : "text-text-tertiary hover:text-accent"
+                onClick={() => setFiltersOpen(!filtersOpen)}
+                className={`relative p-2 rounded-xl border transition-colors cursor-pointer shrink-0 ${
+                  filtersOpen || activeFilterCount > 0
+                    ? "bg-accent/10 text-accent border-accent/20"
+                    : "bg-bg-secondary text-text-secondary border-border hover:border-accent/20"
                 }`}
-                title={aiSearchMode ? "切换为普通搜索" : "切换为 AI 搜索"}
+                title="筛选"
               >
-                <Sparkles size={14} />
+                <SlidersHorizontal size={16} />
+                {activeFilterCount > 0 && (
+                  <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-accent text-white text-[10px] flex items-center justify-center font-medium">
+                    {activeFilterCount}
+                  </span>
+                )}
               </button>
+
+              {/* More menu */}
+              <div className="relative" ref={moreMenuRef}>
+                <button
+                  onClick={() => setMoreMenuOpen(!moreMenuOpen)}
+                  className="p-2 rounded-xl border border-border bg-bg-secondary text-text-secondary hover:border-accent/20 transition-colors cursor-pointer shrink-0"
+                  title="更多操作"
+                >
+                  <MoreHorizontal size={16} />
+                </button>
+                {moreMenuOpen && (
+                  <div className="absolute right-0 mt-1 w-40 rounded-xl bg-bg-secondary border border-border shadow-lg z-30 py-1">
+                    <button
+                      onClick={() => {
+                        handleBatchRetag();
+                        setMoreMenuOpen(false);
+                      }}
+                      disabled={retagging}
+                      className="w-full text-left px-3 py-2 text-[12px] text-text hover:bg-bg-tertiary transition-colors cursor-pointer flex items-center gap-2"
+                    >
+                      <RefreshCw size={13} className={retagging ? "animate-spin" : ""} />
+                      {retagging ? "标签中..." : "批量标签"}
+                    </button>
+                    <button
+                      onClick={() => {
+                        handleCopyToken();
+                        setMoreMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-2 text-[12px] text-text hover:bg-bg-tertiary transition-colors cursor-pointer flex items-center gap-2"
+                    >
+                      {tokenCopied ? <Check size={13} /> : <Copy size={13} />}
+                      {tokenCopied ? "Token 已复制" : "复制插件 Token"}
+                    </button>
+                  </div>
+                )}
+              </div>
             </div>
+
             {/* Search history dropdown */}
             {searchFocused && !query && searchHistory.length > 0 && (
               <div className="absolute left-6 right-6 mt-1 rounded-xl bg-bg-secondary border border-border shadow-md z-20 py-1">
@@ -655,9 +718,9 @@ export default function ClipsPage() {
             )}
           </div>
 
-          {/* Compact filter bar */}
-          <div className="flex items-center gap-2 flex-wrap mb-2">
-            {
+          {/* Collapsible filter panel */}
+          {filtersOpen && (
+            <div className="flex items-center gap-2 flex-wrap mb-2 pt-1 animate-fade-in">
               <button
                 onClick={() => {
                   setStarredOnly(!starredOnly);
@@ -673,8 +736,6 @@ export default function ClipsPage() {
                 <Star size={11} fill={starredOnly ? "currentColor" : "none"} />
                 星标
               </button>
-            }
-            {
               <button
                 onClick={() => {
                   setUnreadOnly(!unreadOnly);
@@ -690,44 +751,44 @@ export default function ClipsPage() {
                 <BookOpen size={11} />
                 未读
               </button>
-            }
-            <SegmentedControl
-              options={TIME_RANGES}
-              value={timeRange}
-              onChange={(v) => {
-                setTimeRange(v);
-                setPage(1);
-                setFuzzyResults(null);
-              }}
-            />
-            {allTags.length > 0 && (
-              <Combobox
-                options={allTags}
-                value={selectedTag}
+              <SegmentedControl
+                options={TIME_RANGES}
+                value={timeRange}
                 onChange={(v) => {
-                  setSelectedTag(v);
+                  setTimeRange(v);
                   setPage(1);
                   setFuzzyResults(null);
                 }}
-                placeholder="标签"
               />
-            )}
-            {allDomains.length > 0 && (
-              <Combobox
-                options={allDomains}
-                value={selectedDomain}
-                onChange={(v) => {
-                  setSelectedDomain(v);
-                  setPage(1);
-                  setFuzzyResults(null);
-                }}
-                placeholder="域名"
-              />
-            )}
-          </div>
+              {allTags.length > 0 && (
+                <Combobox
+                  options={allTags}
+                  value={selectedTag}
+                  onChange={(v) => {
+                    setSelectedTag(v);
+                    setPage(1);
+                    setFuzzyResults(null);
+                  }}
+                  placeholder="标签"
+                />
+              )}
+              {allDomains.length > 0 && (
+                <Combobox
+                  options={allDomains}
+                  value={selectedDomain}
+                  onChange={(v) => {
+                    setSelectedDomain(v);
+                    setPage(1);
+                    setFuzzyResults(null);
+                  }}
+                  placeholder="域名"
+                />
+              )}
+            </div>
+          )}
 
-          {/* Active filter chips */}
-          {(selectedTag || selectedDomain || timeRange !== "all" || starredOnly || unreadOnly) && (
+          {/* Active filter chips (always visible when filters are active) */}
+          {activeFilterCount > 0 && (
             <div className="flex flex-wrap gap-1.5 mb-2">
               {starredOnly && <FilterChip label="星标" onDismiss={() => setStarredOnly(false)} />}
               {unreadOnly && <FilterChip label="未读" onDismiss={() => setUnreadOnly(false)} />}

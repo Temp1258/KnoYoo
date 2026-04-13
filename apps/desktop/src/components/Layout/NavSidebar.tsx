@@ -1,15 +1,9 @@
-import { Library, Star, Compass, Settings, Sun, Moon, FolderOpen } from "lucide-react";
+import { Library, Compass, Settings, Sun, Moon, FolderOpen } from "lucide-react";
 import { useState, useEffect } from "react";
 import { NavLink, useLocation } from "react-router";
 
 const navItems = [
-  { to: "/", icon: Library, label: "全部", exact: true },
-  {
-    to: "/?starred=true",
-    icon: Star,
-    label: "星标",
-    matchFn: (path: string, search: string) => path === "/" && search.includes("starred=true"),
-  },
+  { to: "/", icon: Library, label: "知识库", exact: true },
   { to: "/collections", icon: FolderOpen, label: "集合", exact: false },
   { to: "/discover", icon: Compass, label: "发现", exact: false },
   { to: "/settings", icon: Settings, label: "设置", exact: false },
@@ -18,16 +12,11 @@ const navItems = [
 function NavItems() {
   const location = useLocation();
   const currentPath = location.pathname;
-  const currentSearch = location.search;
 
   return (
     <div className="flex flex-col gap-1">
-      {navItems.map(({ to, icon: Icon, label, exact, matchFn }) => {
-        const isActive = matchFn
-          ? matchFn(currentPath, currentSearch)
-          : exact
-            ? currentPath === "/" && !currentSearch.includes("starred=true")
-            : currentPath.startsWith(to.split("?")[0]) && to !== "/";
+      {navItems.map(({ to, icon: Icon, label, exact }) => {
+        const isActive = exact ? currentPath === "/" : currentPath.startsWith(to) && to !== "/";
 
         return (
           <NavLink

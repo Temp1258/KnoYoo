@@ -1,10 +1,11 @@
 use directories::ProjectDirs;
 use rusqlite::Connection;
 use std::path::PathBuf;
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-/// Tracks whether migrations have been run for the current process.
-static MIGRATIONS_DONE: OnceLock<bool> = OnceLock::new();
+/// Tracks whether schema has been successfully initialized for this process.
+/// Using Mutex<bool> instead of OnceLock so failed initialization can be retried.
+static SCHEMA_INITIALIZED: Mutex<bool> = Mutex::new(false);
 
 pub fn app_data_dir() -> Result<PathBuf, String> {
     let proj = ProjectDirs::from("", "KnoYoo", "Desktop")
@@ -19,10 +20,8 @@ pub fn app_db_path() -> Result<PathBuf, String> {
     Ok(app_data_dir()?.join("notes.db"))
 }
 
-/// Open SQLite database and run schema creation (idempotent).
-pub fn open_db() -> Result<Connection, String> {
-    let db_path = app_db_path()?;
-    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+/// Run schema creation and migrations (only once per process).
+fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
         r#"
     PRAGMA foreign_keys = ON;
@@ -122,10 +121,26 @@ pub fn open_db() -> Result<Connection, String> {
     )
     .ok();
 
-    MIGRATIONS_DONE.get_or_init(|| {
-        tracing::info!("Running database migrations (first connection)...");
-        true
-    });
+    tracing::info!("Database schema initialized");
+    Ok(())
+}
+
+/// Open SQLite database. Schema is created only on the first successful call per process.
+/// If schema initialization fails, it will be retried on the next call.
+pub fn open_db() -> Result<Connection, String> {
+    let db_path = app_db_path()?;
+    let conn = Connection::open(db_path).map_err(|e| e.to_string())?;
+
+    // Always enable foreign keys (per-connection setting in SQLite)
+    conn.execute_batch("PRAGMA foreign_keys = ON;")
+        .map_err(|e| e.to_string())?;
+
+    // Schema creation: only once on success, retried on failure
+    let mut initialized = SCHEMA_INITIALIZED.lock().unwrap_or_else(|e| e.into_inner());
+    if !*initialized {
+        ensure_schema(&conn)?;
+        *initialized = true;
+    }
 
     Ok(conn)
 }

@@ -3,6 +3,15 @@ use serde::{Deserialize, Serialize};
 use crate::ai_client::{self, AiClientConfig};
 use crate::db::open_db;
 
+// ── Helpers ──────────────────────────────────────────────────────────────
+
+/// Escape special characters in SQLite LIKE patterns.
+fn escape_like(s: &str) -> String {
+    s.replace('\\', "\\\\")
+        .replace('%', "\\%")
+        .replace('_', "\\_")
+}
+
 // ── Models ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -56,9 +65,8 @@ pub(crate) fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
 
 // ── Commands ──────────────────────────────────────────────────────────────
 
-/// Add a new web clip. If URL already exists, update it.
-#[tauri::command]
-pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
+/// Internal: insert a clip without triggering auto-tag. Used by import paths.
+pub(crate) fn add_web_clip_no_autotag(clip: NewClip) -> Result<WebClip, String> {
     let conn = open_db()?;
     let source_type = clip.source_type.unwrap_or_else(|| "article".to_string());
     let favicon = clip.favicon.unwrap_or_default();
@@ -78,13 +86,18 @@ pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
     )
     .map_err(|e| e.to_string())?;
 
-    let row = conn
-        .query_row(
-            "SELECT * FROM web_clips WHERE url = ?1",
-            [&clip.url],
-            row_to_clip,
-        )
-        .map_err(|e| e.to_string())?;
+    conn.query_row(
+        "SELECT * FROM web_clips WHERE url = ?1",
+        [&clip.url],
+        row_to_clip,
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Add a new web clip. If URL already exists, update it.
+#[tauri::command]
+pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
+    let row = add_web_clip_no_autotag(clip)?;
 
     // Trigger async AI tagging in background (best-effort)
     let clip_id = row.id;
@@ -116,8 +129,8 @@ pub fn list_web_clips(
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(ref t) = tag {
-        conditions.push(format!("tags LIKE ?{}", params.len() + 1));
-        params.push(Box::new(format!("%\"{}\"%", t)));
+        conditions.push(format!("tags LIKE ?{} ESCAPE '\\'", params.len() + 1));
+        params.push(Box::new(format!("%\"{}\"%", escape_like(t))));
     }
     if let Some(ref st) = sourceType {
         conditions.push(format!("source_type = ?{}", params.len() + 1));
@@ -222,9 +235,10 @@ pub fn update_web_clip(
     summary: Option<String>,
     tags: Option<Vec<String>>,
 ) -> Result<WebClip, String> {
-    let conn = open_db()?;
+    let mut conn = open_db()?;
+    let tx = conn.transaction().map_err(|e| e.to_string())?;
     if let Some(ref s) = summary {
-        conn.execute(
+        tx.execute(
             "UPDATE web_clips SET summary = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
             rusqlite::params![s, id],
         )
@@ -232,18 +246,21 @@ pub fn update_web_clip(
     }
     if let Some(ref t) = tags {
         let tags_json = serde_json::to_string(t).unwrap_or_else(|_| "[]".to_string());
-        conn.execute(
+        tx.execute(
             "UPDATE web_clips SET tags = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
             rusqlite::params![tags_json, id],
         )
         .map_err(|e| e.to_string())?;
     }
-    conn.query_row(
-        "SELECT * FROM web_clips WHERE id = ?1",
-        [id],
-        row_to_clip,
-    )
-    .map_err(|e| e.to_string())
+    let clip = tx
+        .query_row(
+            "SELECT * FROM web_clips WHERE id = ?1",
+            [id],
+            row_to_clip,
+        )
+        .map_err(|e| e.to_string())?;
+    tx.commit().map_err(|e| e.to_string())?;
+    Ok(clip)
 }
 
 /// Count total clips (for pagination).
@@ -274,48 +291,37 @@ pub fn count_pending_clips() -> Result<i64, String> {
     .map_err(|e| e.to_string())
 }
 
-/// Get all unique tags across all clips.
+/// Get all unique tags across all clips (aggregated in SQL via json_each).
 #[tauri::command]
 pub fn list_clip_tags() -> Result<Vec<String>, String> {
     let conn = open_db()?;
     let mut stmt = conn
-        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
+        .prepare(
+            "SELECT DISTINCT je.value FROM web_clips, json_each(web_clips.tags) je
+             WHERE web_clips.tags != '[]'
+             ORDER BY je.value",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
-
-    let mut all_tags = std::collections::BTreeSet::new();
-    for r in rows {
-        let json_str = r.map_err(|e| e.to_string())?;
-        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&json_str) {
-            for t in tags {
-                all_tags.insert(t);
-            }
-        }
-    }
-    Ok(all_tags.into_iter().collect())
+    Ok(rows.flatten().collect())
 }
 
 // ── AI Auto-tag ───────────────────────────────────────────────────────────
 
 /// Collect existing tags for AI context (tag reuse).
 fn gather_existing_tags(conn: &rusqlite::Connection) -> Vec<String> {
-    let mut stmt = conn
-        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
-        .unwrap_or_else(|_| conn.prepare("SELECT '[]'").unwrap());
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).ok();
-    let mut all = std::collections::BTreeSet::new();
-    if let Some(rows) = rows {
-        for r in rows.flatten() {
-            if let Ok(tags) = serde_json::from_str::<Vec<String>>(&r) {
-                for t in tags {
-                    all.insert(t);
-                }
-            }
-        }
-    }
-    all.into_iter().collect()
+    conn.prepare(
+        "SELECT DISTINCT je.value FROM web_clips, json_each(web_clips.tags) je
+         WHERE web_clips.tags != '[]'
+         ORDER BY je.value",
+    )
+    .and_then(|mut stmt| {
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        Ok(rows.flatten().collect())
+    })
+    .unwrap_or_default()
 }
 
 fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
@@ -410,6 +416,7 @@ pub fn ai_auto_tag_clip(id: i64) -> Result<(), String> {
 }
 
 /// Batch re-tag all clips that have no summary yet.
+/// Returns the count of clips to process; actual tagging runs in a background thread.
 #[tauri::command]
 pub fn ai_batch_retag_clips() -> Result<i64, String> {
     let conn = open_db()?;
@@ -417,16 +424,24 @@ pub fn ai_batch_retag_clips() -> Result<i64, String> {
         let mut stmt = conn
             .prepare("SELECT id FROM web_clips WHERE summary = '' ORDER BY id")
             .map_err(|e| e.to_string())?;
-        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))
+        let rows = stmt
+            .query_map([], |r| r.get::<_, i64>(0))
             .map_err(|e| e.to_string())?;
         rows.flatten().collect()
     };
     let total = ids.len() as i64;
-    for id in ids {
-        if let Err(e) = auto_tag_clip_inner(id) {
-            tracing::warn!("Batch retag clip {} failed: {}", id, e);
-        }
+
+    if total > 0 {
+        std::thread::spawn(move || {
+            for id in ids {
+                if let Err(e) = auto_tag_clip_inner(id) {
+                    tracing::warn!("Batch retag clip {} failed: {}", id, e);
+                }
+            }
+            tracing::info!("Batch retag completed: {} clips processed", total);
+        });
     }
+
     Ok(total)
 }
 
@@ -663,8 +678,8 @@ pub fn list_web_clips_advanced(
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(ref t) = tag {
-        conditions.push(format!("tags LIKE ?{}", params.len() + 1));
-        params.push(Box::new(format!("%\"{}\"%", t)));
+        conditions.push(format!("tags LIKE ?{} ESCAPE '\\'", params.len() + 1));
+        params.push(Box::new(format!("%\"{}\"%", escape_like(t))));
     }
     if let Some(ref st) = sourceType {
         conditions.push(format!("source_type = ?{}", params.len() + 1));
@@ -678,8 +693,8 @@ pub fn list_web_clips_advanced(
         conditions.push("is_read = 0".to_string());
     }
     if let Some(ref d) = domain {
-        conditions.push(format!("url LIKE ?{}", params.len() + 1));
-        params.push(Box::new(format!("%{}%", d)));
+        conditions.push(format!("url LIKE ?{} ESCAPE '\\'", params.len() + 1));
+        params.push(Box::new(format!("%{}%", escape_like(d))));
     }
     if let Some(ref from) = dateFrom {
         conditions.push(format!("created_at >= ?{}", params.len() + 1));
@@ -713,25 +728,32 @@ pub fn list_web_clips_advanced(
 }
 
 /// Get all unique domains from clips (for domain filter).
+/// Extracts host from URL in SQL to avoid loading all URLs into memory.
 #[tauri::command]
 pub fn list_clip_domains() -> Result<Vec<String>, String> {
     let conn = open_db()?;
     let mut stmt = conn
-        .prepare("SELECT DISTINCT url FROM web_clips")
+        .prepare(
+            "SELECT DISTINCT
+               REPLACE(
+                 SUBSTR(url,
+                   INSTR(url, '://') + 3,
+                   CASE WHEN INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/') > 0
+                     THEN INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/') - 1
+                     ELSE LENGTH(url)
+                   END
+                 ),
+                 'www.', ''
+               ) AS domain
+             FROM web_clips
+             WHERE INSTR(url, '://') > 0
+             ORDER BY domain",
+        )
         .map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map([], |r| r.get::<_, String>(0))
         .map_err(|e| e.to_string())?;
-
-    let mut domains = std::collections::BTreeSet::new();
-    for r in rows {
-        let url = r.map_err(|e| e.to_string())?;
-        if let Some(host) = url.split("//").nth(1).and_then(|s| s.split('/').next()) {
-            let domain = host.strip_prefix("www.").unwrap_or(host);
-            domains.insert(domain.to_string());
-        }
-    }
-    Ok(domains.into_iter().collect())
+    Ok(rows.flatten().collect())
 }
 
 /// "You may have forgotten" — return random old clips not viewed recently.
@@ -868,7 +890,7 @@ pub fn set_onboarding_complete() -> Result<(), String> {
 // ── Related Clips ────────────────────────────────────────────────────────
 
 /// Find clips related to the given clip via shared tags and domain.
-/// Uses lightweight queries to avoid loading all clip content into memory.
+/// Uses SQL json_each to match tags in the database instead of loading all clips.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn find_related_clips(clipId: i64, limit: Option<u32>) -> Result<Vec<WebClip>, String> {
@@ -896,55 +918,68 @@ pub fn find_related_clips(clipId: i64, limit: Option<u32>) -> Result<Vec<WebClip
         return Ok(vec![]);
     }
 
-    // Score candidates using only id, tags, url — NOT loading content
+    // Build tag matching via SQL json_each — no full table scan needed
+    if !tags.is_empty() {
+        let tag_placeholders = tags
+            .iter()
+            .enumerate()
+            .map(|(i, _)| format!("?{}", i + 2))
+            .collect::<Vec<_>>()
+            .join(",");
+
+        // Score = 3 * matching_tags + 1 if same domain
+        let sql = format!(
+            "SELECT wc.*, (COUNT(je.value) * 3) AS tag_score
+             FROM web_clips wc, json_each(wc.tags) je
+             WHERE je.value IN ({tag_placeholders})
+               AND wc.id != ?1
+               AND wc.tags != '[]'
+             GROUP BY wc.id
+             ORDER BY tag_score DESC
+             LIMIT ?{}",
+            tags.len() + 2,
+        );
+
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        params.push(Box::new(clipId));
+        for t in &tags {
+            params.push(Box::new(t.clone()));
+        }
+        params.push(Box::new(i64::from(limit)));
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+        let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+        let rows = stmt
+            .query_map(param_refs.as_slice(), row_to_clip)
+            .map_err(|e| e.to_string())?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        return Ok(out);
+    }
+
+    // Tags empty but domain exists — fall back to domain matching only
     let mut stmt = conn
-        .prepare("SELECT id, tags, url FROM web_clips WHERE id != ?1")
+        .prepare(
+            "SELECT * FROM web_clips
+             WHERE id != ?1 AND url LIKE ?2 ESCAPE '\\'
+             ORDER BY datetime(created_at) DESC
+             LIMIT ?3",
+        )
         .map_err(|e| e.to_string())?;
-    let mut scored: Vec<(i64, i64)> = Vec::new(); // (score, id)
-    let mut rows = stmt.query([clipId]).map_err(|e| e.to_string())?;
-    while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-        let cid: i64 = row.get(0).map_err(|e| e.to_string())?;
-        let ctags_json: String = row.get(1).map_err(|e| e.to_string())?;
-        let curl: String = row.get(2).map_err(|e| e.to_string())?;
-        let ctags: Vec<String> = serde_json::from_str(&ctags_json).unwrap_or_default();
-        let mut score: i64 = 0;
-        for t in &ctags {
-            if tags.contains(t) {
-                score += 3;
-            }
-        }
-        if !domain.is_empty() && curl.contains(&domain) {
-            score += 1;
-        }
-        if score > 0 {
-            scored.push((score, cid));
-        }
+    let domain_pattern = format!("%{}%", escape_like(&domain));
+    let rows = stmt
+        .query_map(rusqlite::params![clipId, domain_pattern, limit], row_to_clip)
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
     }
-    drop(rows);
-
-    scored.sort_by(|a, b| b.0.cmp(&a.0));
-    scored.truncate(limit as usize);
-
-    if scored.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Only now load full WebClip for the top N candidates
-    let ids: Vec<i64> = scored.iter().map(|(_, id)| *id).collect();
-    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-    let sql = format!("SELECT * FROM web_clips WHERE id IN ({})", placeholders);
-    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
-    let params: Vec<&dyn rusqlite::types::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::types::ToSql).collect();
-    let clip_rows = stmt.query_map(params.as_slice(), row_to_clip).map_err(|e| e.to_string())?;
-
-    let mut result_map: std::collections::HashMap<i64, WebClip> = std::collections::HashMap::new();
-    for r in clip_rows {
-        let clip = r.map_err(|e| e.to_string())?;
-        result_map.insert(clip.id, clip);
-    }
-
-    // Return in scored order
-    Ok(scored.iter().filter_map(|(_, id)| result_map.remove(id)).collect())
+    Ok(out)
 }
 
 // ── Clip Notes ───────────────────────────────────────────────────────────
@@ -1044,40 +1079,51 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
         .flatten()
         .collect();
 
-    // Top tags (from all clips)
-    let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    // Top tags — aggregated in SQL via json_each (no full-table Rust deserialization)
     let mut tag_stmt = conn
-        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
+        .prepare(
+            "SELECT je.value AS tag, COUNT(*) AS cnt
+             FROM web_clips, json_each(web_clips.tags) je
+             WHERE web_clips.tags != '[]'
+             GROUP BY je.value
+             ORDER BY cnt DESC
+             LIMIT 10",
+        )
         .map_err(|e| e.to_string())?;
-    let tag_rows = tag_stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-    for r in tag_rows {
-        let json_str = r.map_err(|e| e.to_string())?;
-        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&json_str) {
-            for t in tags {
-                *tag_counts.entry(t).or_insert(0) += 1;
-            }
-        }
-    }
-    let mut top_tags: Vec<(String, i64)> = tag_counts.into_iter().collect();
-    top_tags.sort_by(|a, b| b.1.cmp(&a.1));
-    top_tags.truncate(10);
+    let top_tags: Vec<(String, i64)> = tag_stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .collect();
 
-    // Top domains
-    let mut dom_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    // Top domains — extract host from URL in SQL
+    // SQLite doesn't have a built-in host extractor, so we use SUBSTR + INSTR
     let mut dom_stmt = conn
-        .prepare("SELECT url FROM web_clips")
+        .prepare(
+            "SELECT
+               REPLACE(
+                 SUBSTR(url,
+                   INSTR(url, '://') + 3,
+                   CASE WHEN INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/') > 0
+                     THEN INSTR(SUBSTR(url, INSTR(url, '://') + 3), '/') - 1
+                     ELSE LENGTH(url)
+                   END
+                 ),
+                 'www.', ''
+               ) AS domain,
+               COUNT(*) AS cnt
+             FROM web_clips
+             WHERE INSTR(url, '://') > 0
+             GROUP BY domain
+             ORDER BY cnt DESC
+             LIMIT 10",
+        )
         .map_err(|e| e.to_string())?;
-    let dom_rows = dom_stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-    for r in dom_rows {
-        let url = r.map_err(|e| e.to_string())?;
-        if let Some(host) = url.split("//").nth(1).and_then(|s| s.split('/').next()) {
-            let domain = host.strip_prefix("www.").unwrap_or(host);
-            *dom_counts.entry(domain.to_string()).or_insert(0) += 1;
-        }
-    }
-    let mut top_domains: Vec<(String, i64)> = dom_counts.into_iter().collect();
-    top_domains.sort_by(|a, b| b.1.cmp(&a.1));
-    top_domains.truncate(10);
+    let top_domains: Vec<(String, i64)> = dom_stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?)))
+        .map_err(|e| e.to_string())?
+        .flatten()
+        .collect();
 
     let total_clips: i64 = conn
         .query_row("SELECT COUNT(*) FROM web_clips", [], |r| r.get(0))

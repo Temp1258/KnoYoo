@@ -8,8 +8,18 @@ import { ping, sendClip, sendClipUrl, type ClipPayload } from "../utils/api";
 
 // ── Offline queue ────────────────────────────────────────────────────────
 
+const MAX_QUEUE_SIZE = 100;
+
 interface QueuedClip extends ClipPayload {
   queuedAt: number;
+}
+
+// Serialize all queue operations through a promise chain to prevent races
+let queueLock: Promise<unknown> = Promise.resolve();
+function withQueueLock<T>(fn: () => Promise<T>): Promise<T> {
+  const next = queueLock.then(fn, fn);
+  queueLock = next.catch(() => {}); // prevent unhandled rejection chain
+  return next;
 }
 
 async function getQueue(): Promise<QueuedClip[]> {
@@ -22,32 +32,40 @@ async function setQueue(queue: QueuedClip[]): Promise<void> {
 }
 
 async function enqueue(clip: ClipPayload): Promise<void> {
-  const queue = await getQueue();
-  queue.push({ ...clip, queuedAt: Date.now() });
-  await setQueue(queue);
+  return withQueueLock(async () => {
+    const queue = await getQueue();
+    if (queue.length >= MAX_QUEUE_SIZE) {
+      // Drop oldest item to make room
+      queue.shift();
+    }
+    queue.push({ ...clip, queuedAt: Date.now() });
+    await setQueue(queue);
+  });
 }
 
 async function flushQueue(): Promise<number> {
-  const queue = await getQueue();
-  if (queue.length === 0) return 0;
+  return withQueueLock(async () => {
+    const queue = await getQueue();
+    if (queue.length === 0) return 0;
 
-  const isOnline = await ping();
-  if (!isOnline) return 0;
+    const isOnline = await ping();
+    if (!isOnline) return 0;
 
-  let sent = 0;
-  const remaining: QueuedClip[] = [];
+    let sent = 0;
+    const remaining: QueuedClip[] = [];
 
-  for (const item of queue) {
-    try {
-      await sendClip(item);
-      sent++;
-    } catch {
-      remaining.push(item);
+    for (const item of queue) {
+      try {
+        await sendClip(item);
+        sent++;
+      } catch {
+        remaining.push(item);
+      }
     }
-  }
 
-  await setQueue(remaining);
-  return sent;
+    await setQueue(remaining);
+    return sent;
+  });
 }
 
 // ── Message handler ──────────────────────────────────────────────────────
