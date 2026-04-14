@@ -1,0 +1,118 @@
+name: Release Build
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to rebuild (e.g. v2.0.1)'
+        required: true
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            rust_target: x86_64-pc-windows-msvc
+            bundles: msi
+            label: windows-x64
+          - os: macos-14
+            rust_target: aarch64-apple-darwin
+            bundles: dmg
+            label: macos-arm64
+          - os: macos-13
+            rust_target: x86_64-apple-darwin
+            bundles: dmg
+            label: macos-x64
+          - os: ubuntu-22.04
+            rust_target: x86_64-unknown-linux-gnu
+            bundles: appimage,deb
+            label: linux-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Resolve ref
+        id: ref
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "ref=${{ github.event.inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "ref=${{ github.ref }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ref.outputs.ref }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: apps/desktop/src-tauri -> target
+          key: ${{ matrix.rust_target }}
+
+      # Linux needs the WebKit + GTK dev headers for Tauri's WebView.
+      - name: Install Linux dependencies
+        if: startsWith(matrix.os, 'ubuntu')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libgtk-3-dev \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libayatana-appindicator3-dev
+
+      - name: Install JS deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Build Tauri bundle
+        run: |
+          cd apps/desktop
+          pnpm exec tauri build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
+
+      # Grab whatever the platform produced. Tauri puts files under
+      # target/<target>/release/bundle/{msi,dmg,appimage,deb}/.
+      - name: Collect artifacts
+        id: collect
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          find apps/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle \
+            -type f \( -name "*.msi" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) \
+            -exec cp {} release-assets/ \;
+          ls -lh release-assets/
+
+      - name: Upload as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: knoyoo-${{ matrix.label }}
+          path: release-assets/*
+          if-no-files-found: error
+
+      # Attach to the GitHub Release matching the tag. Safe to run on
+      # workflow_dispatch too — softprops will find the release by tag.
+      - name: Attach to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.ref.outputs.ref }}
+          files: release-assets/*
+          fail_on_unmatched_files: false
