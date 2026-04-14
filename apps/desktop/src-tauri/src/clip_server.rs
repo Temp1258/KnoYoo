@@ -130,13 +130,13 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         }
     }
 
-    // CORS preflight
+    // CORS preflight: intentionally respond WITHOUT Access-Control-Allow-* headers.
+    // The browser extension uses host_permissions (Manifest V3) which bypasses CORS
+    // checks entirely. Regular webpages therefore cannot use fetch() to read
+    // responses from this server — preventing token exfiltration from malicious
+    // pages that stumble onto 127.0.0.1:19836.
     if request_line.starts_with("OPTIONS ") {
         let response = "HTTP/1.1 204 No Content\r\n\
-            Access-Control-Allow-Origin: *\r\n\
-            Access-Control-Allow-Methods: POST, GET, OPTIONS\r\n\
-            Access-Control-Allow-Headers: Content-Type, Authorization\r\n\
-            Access-Control-Max-Age: 86400\r\n\
             Content-Length: 0\r\n\r\n";
         stream
             .write_all(response.as_bytes())
@@ -340,11 +340,11 @@ fn send_json_response(
         500 => "Internal Server Error",
         _ => "OK",
     };
+    // Deliberately NO Access-Control-Allow-* headers. Extensions bypass CORS via
+    // host_permissions, so they keep working. Websites can't read responses.
     let response = format!(
         "HTTP/1.1 {} {}\r\n\
          Content-Type: application/json; charset=utf-8\r\n\
-         Access-Control-Allow-Origin: *\r\n\
-         Access-Control-Allow-Headers: Content-Type, Authorization\r\n\
          Content-Length: {}\r\n\r\n{}",
         status,
         status_text,

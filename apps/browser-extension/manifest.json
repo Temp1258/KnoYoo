@@ -3,7 +3,7 @@
   "name": "KnoYoo 网页收藏助手",
   "version": "2.0.0",
   "description": "一键收藏网页内容到 KnoYoo 本地知识库",
-  "permissions": ["activeTab", "storage", "alarms", "contextMenus", "tabs"],
+  "permissions": ["activeTab", "storage", "alarms", "contextMenus", "tabs", "notifications"],
   "host_permissions": ["http://localhost:19836/*"],
   "action": {
     "default_popup": "popup.html",

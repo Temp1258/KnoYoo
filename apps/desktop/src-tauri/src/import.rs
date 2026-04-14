@@ -22,6 +22,12 @@ pub struct ImportResult {
 /// Maximum bookmark file size (50 MB).
 const MAX_BOOKMARK_FILE_SIZE: u64 = 50 * 1024 * 1024;
 
+/// Hard cap on number of entries parsed from a single file — protects against
+/// pathological HTML bombs that would otherwise blow up memory before any
+/// dedup/insertion happens. A real export from a mainstream browser rarely
+/// exceeds a few thousand bookmarks.
+const MAX_BOOKMARK_ENTRIES: usize = 10_000;
+
 /// Parse a Netscape Bookmark File (Chrome/Firefox/Edge export format).
 #[tauri::command]
 pub fn parse_bookmark_file(path: String) -> Result<Vec<BookmarkEntry>, String> {
@@ -36,8 +42,18 @@ pub fn parse_bookmark_file(path: String) -> Result<Vec<BookmarkEntry>, String> {
     let mut entries = Vec::new();
 
     for el in doc.select(&a_sel) {
+        if entries.len() >= MAX_BOOKMARK_ENTRIES {
+            tracing::warn!(
+                "parse_bookmark_file: truncated at {} entries (file may be pathological)",
+                MAX_BOOKMARK_ENTRIES
+            );
+            break;
+        }
+
         let url = el.value().attr("href").unwrap_or("").to_string();
-        if url.is_empty() || !url.starts_with("http") {
+        // Use proper URL parsing rather than prefix-matching to block
+        // javascript:/data:/file:/vbscript: and malformed URLs like "http:foo".
+        if !crate::clips::is_http_url(&url) {
             continue;
         }
         let title = el.text().collect::<String>().trim().to_string();

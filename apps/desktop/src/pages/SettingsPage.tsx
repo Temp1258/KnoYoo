@@ -1,9 +1,11 @@
 import { useState, useEffect, useCallback } from "react";
-import { Sun, Moon, Database, Download, Upload, ShieldCheck } from "lucide-react";
+import { Database, Download, Upload, ShieldCheck } from "lucide-react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import SegmentedControl from "../components/ui/SegmentedControl";
 import AISettingsPanel from "../components/AI/AISettingsPanel";
 import BookmarkImportDialog from "../components/Import/BookmarkImportDialog";
+import ThemePicker from "../components/Settings/ThemePicker";
+import { useTheme } from "../hooks/useTheme";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 
 type Tab = "ai" | "display" | "data" | "import" | "about";
@@ -24,7 +26,7 @@ function formatBytes(bytes: number): string {
 
 export default function SettingsPage() {
   const [tab, setTab] = useState<Tab>("ai");
-  const [dark, setDark] = useState(() => document.documentElement.classList.contains("dark"));
+  const { auto, setAuto } = useTheme();
 
   // Data tab state
   const [dbPath, setDbPath] = useState("");
@@ -33,11 +35,6 @@ export default function SettingsPage() {
   const [dataLoading, setDataLoading] = useState(false);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [importConfirm, setImportConfirm] = useState(false);
-
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", dark);
-    localStorage.setItem("knoyoo-theme", dark ? "dark" : "light");
-  }, [dark]);
 
   const loadDataInfo = useCallback(async () => {
     setDataLoading(true);
@@ -104,16 +101,36 @@ export default function SettingsPage() {
         <div className="space-y-4">
           <div className="flex items-center justify-between p-4 rounded-xl bg-bg-secondary border border-border">
             <div>
-              <div className="text-[14px] font-medium text-text">主题</div>
-              <div className="text-[12px] text-text-tertiary mt-0.5">切换亮色或暗色模式</div>
+              <div className="text-[14px] font-medium text-text">跟随系统外观</div>
+              <div className="text-[12px] text-text-tertiary mt-0.5">
+                开启后根据系统的亮/暗模式自动切换
+              </div>
             </div>
             <button
-              onClick={() => setDark((d) => !d)}
-              className="flex items-center gap-2 px-3 py-1.5 rounded-lg border border-border text-[12px] text-text-secondary hover:border-accent/30 transition-colors cursor-pointer"
+              type="button"
+              role="switch"
+              aria-checked={auto}
+              onClick={() => setAuto(!auto)}
+              className={`relative w-10 h-6 rounded-full transition-colors cursor-pointer ${
+                auto ? "bg-accent" : "bg-bg-tertiary border border-border"
+              }`}
             >
-              {dark ? <Moon size={14} /> : <Sun size={14} />}
-              {dark ? "暗色" : "亮色"}
+              <span
+                className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow-sm transition-all ${
+                  auto ? "left-[18px]" : "left-0.5"
+                }`}
+              />
             </button>
+          </div>
+
+          <div className="p-4 rounded-xl bg-bg-secondary border border-border">
+            <div className="mb-3">
+              <div className="text-[14px] font-medium text-text">主题风格</div>
+              <div className="text-[12px] text-text-tertiary mt-0.5">
+                {auto ? "已跟随系统，手动选择将关闭自动切换" : "选择你喜欢的视觉风格"}
+              </div>
+            </div>
+            <ThemePicker />
           </div>
         </div>
       )}

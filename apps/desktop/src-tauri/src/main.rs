@@ -2,6 +2,7 @@
 
 mod ai;
 mod ai_client;
+mod books;
 mod clip_server;
 mod clips;
 mod collections;
@@ -11,6 +12,7 @@ mod import;
 mod error;
 mod html_extract;
 mod models;
+mod youtube;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -160,6 +162,22 @@ fn main() {
             // Clip server
             clip_server::get_clip_server_token,
             clip_server::get_clip_server_port,
+            // Books
+            books::add_book,
+            books::list_books,
+            books::get_book,
+            books::update_book,
+            books::delete_book,
+            books::restore_book,
+            books::purge_book,
+            books::list_books_trash,
+            books::count_books_trash,
+            books::empty_books_trash,
+            books::count_books,
+            books::set_book_cover,
+            books::read_book_cover,
+            books::open_book_externally,
+            books::ai_summarize_book,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

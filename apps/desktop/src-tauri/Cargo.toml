@@ -45,4 +45,8 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 scraper = "0.21"
 url = "2"
 getrandom = "0.2"
+sha2 = "0.10"
+epub = "2"
+lopdf = "0.34"
+base64 = "0.22"
 

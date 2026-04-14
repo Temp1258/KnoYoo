@@ -12,6 +12,16 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
+/// Reject any URL whose scheme isn't http/https. Protects the UI from
+/// clickable XSS via `<a href={clip.url}>` when the URL is e.g. `javascript:`.
+/// Also blocks `file:`, `data:`, `chrome://`, `vbscript:`, etc.
+pub(crate) fn is_http_url(s: &str) -> bool {
+    match url::Url::parse(s) {
+        Ok(u) => matches!(u.scheme(), "http" | "https"),
+        Err(_) => false,
+    }
+}
+
 // ── Models ────────────────────────────────────────────────────────────────
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -74,6 +84,9 @@ const MAX_CONTENT_LEN: usize = 512_000;
 pub(crate) fn add_web_clip_no_autotag(clip: NewClip) -> Result<WebClip, String> {
     if clip.url.is_empty() || clip.url.len() > 4096 {
         return Err("无效的 URL".to_string());
+    }
+    if !is_http_url(&clip.url) {
+        return Err("仅支持 http/https 链接".to_string());
     }
     if clip.title.len() > 2048 {
         return Err("标题过长".to_string());
@@ -494,22 +507,54 @@ fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
 
     let reply = ai_client::chat(&config, messages, 0.2).map_err(String::from)?;
 
-    // Parse response
+    // Parse response. AI output is *untrusted* — sanitize every field before
+    // we write it to the DB so a compromised provider can't bloat rows or
+    // inject forbidden source_type values.
     let json_str = crate::ai::extract_json(&reply).unwrap_or(reply);
     if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&json_str) {
-        let summary = parsed["summary"].as_str().unwrap_or("").to_string();
-        let tags = parsed["tags"]
+        // Summary: hard cap so a 10MB AI response can't DoS the DB.
+        const MAX_SUMMARY_CHARS: usize = 10_000;
+        let summary: String = parsed["summary"]
+            .as_str()
+            .unwrap_or("")
+            .chars()
+            .take(MAX_SUMMARY_CHARS)
+            .collect();
+
+        // Tags: trim + 200-char cap per tag + 100-count cap overall + dedup.
+        const MAX_TAG_CHARS: usize = 200;
+        const MAX_TAG_COUNT: usize = 100;
+        let tags: Vec<String> = parsed["tags"]
             .as_array()
             .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(String::from))
-                    .collect::<Vec<_>>()
+                let mut out: Vec<String> = Vec::new();
+                for v in arr {
+                    if out.len() >= MAX_TAG_COUNT {
+                        break;
+                    }
+                    if let Some(s) = v.as_str() {
+                        let t = s.trim();
+                        if t.is_empty() || t.chars().count() > MAX_TAG_CHARS {
+                            continue;
+                        }
+                        let owned = t.to_string();
+                        if !out.contains(&owned) {
+                            out.push(owned);
+                        }
+                    }
+                }
+                out
             })
             .unwrap_or_default();
-        let source_type = parsed["source_type"]
-            .as_str()
-            .unwrap_or("article")
-            .to_string();
+
+        // source_type: whitelist. Anything unexpected falls back to "article".
+        const ALLOWED_SOURCE_TYPES: &[&str] = &["article", "video", "tweet", "code", "doc"];
+        let st_raw = parsed["source_type"].as_str().unwrap_or("article");
+        let source_type = if ALLOWED_SOURCE_TYPES.contains(&st_raw) {
+            st_raw.to_string()
+        } else {
+            "article".to_string()
+        };
 
         let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
 
@@ -1380,5 +1425,36 @@ pub fn delete_chat_session(id: i64) -> Result<(), String> {
     conn.execute("DELETE FROM chat_sessions WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_http_url;
+
+    #[test]
+    fn accepts_http_and_https() {
+        assert!(is_http_url("http://example.com"));
+        assert!(is_http_url("https://example.com/path?q=1"));
+        assert!(is_http_url("HTTPS://EXAMPLE.COM"));
+    }
+
+    #[test]
+    fn rejects_dangerous_schemes() {
+        assert!(!is_http_url("javascript:alert(1)"));
+        assert!(!is_http_url("data:text/html,<script>alert(1)</script>"));
+        assert!(!is_http_url("file:///etc/passwd"));
+        assert!(!is_http_url("vbscript:msgbox"));
+        assert!(!is_http_url("chrome://settings"));
+    }
+
+    #[test]
+    fn rejects_malformed() {
+        // We only defend against dangerous schemes; `http:foo` has scheme=http
+        // and would be accepted (browsers consider it valid-ish), but obvious
+        // garbage without any scheme must be rejected.
+        assert!(!is_http_url(""));
+        assert!(!is_http_url("not a url"));
+        assert!(!is_http_url("//example.com")); // scheme-relative; not a full URL
+    }
 }
 

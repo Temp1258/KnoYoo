@@ -67,7 +67,7 @@ body {
   height: 100%;
 }
 
-/* === Dark Mode === */
+/* === Dark Mode (baseline for all dark themes) === */
 .dark {
   --color-bg: #111113;
   --color-bg-secondary: #1e1e22;
@@ -94,6 +94,152 @@ body {
   background: var(--color-card-bg);
   backdrop-filter: blur(12px);
   -webkit-backdrop-filter: blur(12px);
+}
+
+/* === Sepia (warm paper, long-form reading) === */
+[data-theme="sepia"] {
+  --color-bg: #f4ecd8;
+  --color-bg-secondary: #fbf5e5;
+  --color-bg-tertiary: #ece2c8;
+  --color-border: #e3d5b5;
+  --color-text: #433422;
+  --color-text-secondary: #7a6a4f;
+  --color-text-tertiary: #a89876;
+  --color-accent: #a0642c;
+  --color-accent-hover: #8c5624;
+  --color-accent-light: #a0642c1f;
+  --color-danger: #b4432c;
+  --color-danger-light: #b4432c1f;
+  --color-success: #5c7a3a;
+  --color-success-light: #5c7a3a1f;
+  --shadow-xs: 0 1px 2px rgba(86, 58, 20, 0.05);
+  --shadow-sm: 0 1px 3px rgba(86, 58, 20, 0.07);
+  --shadow-md: 0 2px 8px rgba(86, 58, 20, 0.09);
+  --shadow-lg: 0 4px 16px rgba(86, 58, 20, 0.13);
+}
+
+/* === Forest (sage mist, cool green) === */
+[data-theme="forest"] {
+  --color-bg: #e9efe7;
+  --color-bg-secondary: #f4f8f2;
+  --color-bg-tertiary: #dce5d7;
+  --color-border: #c5d3be;
+  --color-text: #13301f;
+  --color-text-secondary: #4b6858;
+  --color-text-tertiary: #8ba290;
+  --color-accent: #2d7a4e;
+  --color-accent-hover: #236340;
+  --color-accent-light: #2d7a4e1f;
+  --color-danger: #b34a3a;
+  --color-danger-light: #b34a3a1f;
+  --color-success: #3f8a4a;
+  --color-success-light: #3f8a4a1f;
+  --shadow-xs: 0 1px 2px rgba(19, 48, 31, 0.05);
+  --shadow-sm: 0 1px 3px rgba(19, 48, 31, 0.07);
+  --shadow-md: 0 2px 8px rgba(19, 48, 31, 0.09);
+  --shadow-lg: 0 4px 16px rgba(19, 48, 31, 0.13);
+}
+
+/* === Midnight (cool dark, focused coding) === */
+.dark[data-theme="midnight"] {
+  --color-bg: #0f1b2d;
+  --color-bg-secondary: #172a41;
+  --color-bg-tertiary: #203551;
+  --color-border: #2a3d5a;
+  --color-text: #e6ecf5;
+  --color-text-secondary: #93a8c2;
+  --color-text-tertiary: #5d738f;
+  --color-accent: #7cb2ff;
+  --color-accent-hover: #9ac5ff;
+  --color-accent-light: #7cb2ff1f;
+  --color-danger: #ff7b6e;
+  --color-danger-light: #ff7b6e1f;
+  --color-success: #7ed491;
+  --color-success-light: #7ed4911f;
+  --color-card-bg: rgba(23, 42, 65, 0.7);
+}
+
+/* === Sunset (expressive dark) === */
+.dark[data-theme="sunset"] {
+  --color-bg: #1c1626;
+  --color-bg-secondary: #2a2038;
+  --color-bg-tertiary: #352849;
+  --color-border: #443556;
+  --color-text: #f3e8ff;
+  --color-text-secondary: #c0a6d9;
+  --color-text-tertiary: #8b7aa3;
+  --color-accent: #e879a8;
+  --color-accent-hover: #f191b9;
+  --color-accent-light: #e879a81f;
+  --color-danger: #ff7b6e;
+  --color-danger-light: #ff7b6e1f;
+  --color-success: #8ad89c;
+  --color-success-light: #8ad89c1f;
+  --color-card-bg: rgba(42, 32, 56, 0.7);
+}
+
+/* === Void (pure AMOLED black) === */
+.dark[data-theme="void"] {
+  --color-bg: #000000;
+  --color-bg-secondary: #0a0a0a;
+  --color-bg-tertiary: #1a1a1a;
+  --color-border: #262626;
+  --color-text: #ffffff;
+  --color-text-secondary: #a3a3a3;
+  --color-text-tertiary: #6b6b6b;
+  --color-accent: #4fa8ff;
+  --color-accent-hover: #6cb8ff;
+  --color-accent-light: #4fa8ff1f;
+  --color-danger: #ff5c5c;
+  --color-danger-light: #ff5c5c1f;
+  --color-success: #4ade80;
+  --color-success-light: #4ade801f;
+  --color-card-bg: rgba(10, 10, 10, 0.8);
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.6);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.8);
+}
+
+/* === Mint (fresh teal light) === */
+[data-theme="mint"] {
+  --color-bg: #e6f5f1;
+  --color-bg-secondary: #f4fbf8;
+  --color-bg-tertiary: #d4ebe3;
+  --color-border: #b8d9cf;
+  --color-text: #0f3d36;
+  --color-text-secondary: #3d6b63;
+  --color-text-tertiary: #7a9b93;
+  --color-accent: #0b9488;
+  --color-accent-hover: #0a847a;
+  --color-accent-light: #0b94881f;
+  --color-danger: #e05d4a;
+  --color-danger-light: #e05d4a1f;
+  --color-success: #22a06e;
+  --color-success-light: #22a06e1f;
+  --shadow-xs: 0 1px 2px rgba(15, 61, 54, 0.05);
+  --shadow-sm: 0 1px 3px rgba(15, 61, 54, 0.07);
+  --shadow-md: 0 2px 8px rgba(15, 61, 54, 0.09);
+  --shadow-lg: 0 4px 16px rgba(15, 61, 54, 0.13);
+}
+
+/* === Mocha (warm coffee dark) === */
+.dark[data-theme="mocha"] {
+  --color-bg: #1e1612;
+  --color-bg-secondary: #2a1f18;
+  --color-bg-tertiary: #3a2a20;
+  --color-border: #4a352a;
+  --color-text: #f0e4d8;
+  --color-text-secondary: #c4a996;
+  --color-text-tertiary: #8a7565;
+  --color-accent: #d4925c;
+  --color-accent-hover: #e0a170;
+  --color-accent-light: #d4925c1f;
+  --color-danger: #e07a6a;
+  --color-danger-light: #e07a6a1f;
+  --color-success: #a3c085;
+  --color-success-light: #a3c0851f;
+  --color-card-bg: rgba(42, 31, 24, 0.7);
 }
 
 /* === Scrollbar === */
@@ -284,6 +430,45 @@ mark {
 .prose-chat td {
   border: 1px solid var(--color-border);
   padding: 4px 8px;
+}
+
+/* === Monochrome logo visibility across light/dark themes ==================
+   The new KnoYoo mark is black-on-transparent. It reads clearly on light
+   backgrounds but disappears on dark ones; `invert()` flips it to white-on-
+   transparent without touching any other assets.
+*/
+.knoyoo-logo {
+  transition: filter 0.2s ease;
+}
+.dark .knoyoo-logo {
+  filter: invert(1);
+}
+
+/* === Book Tile Cover Shadow (stronger hover lift) ==========================
+   Uses explicit rgba so the lift is clearly visible across all 9 themes,
+   where the semantic --shadow-* tokens are too subtle for 2:3 book covers.
+*/
+.book-tile-cover {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 2px 6px rgba(0, 0, 0, 0.06);
+}
+.group:hover .book-tile-cover {
+  box-shadow:
+    0 4px 10px rgba(0, 0, 0, 0.1),
+    0 10px 26px rgba(0, 0, 0, 0.18);
+  transform: translateY(-3px);
+}
+.dark .book-tile-cover {
+  box-shadow:
+    0 1px 2px rgba(0, 0, 0, 0.4),
+    0 2px 6px rgba(0, 0, 0, 0.35);
+}
+.dark .group:hover .book-tile-cover {
+  box-shadow:
+    0 4px 10px rgba(0, 0, 0, 0.55),
+    0 12px 30px rgba(0, 0, 0, 0.65);
+  transform: translateY(-3px);
 }
 
 /* === Micro-interaction Keyframes === */

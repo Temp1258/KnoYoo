@@ -83,6 +83,14 @@ fn validate_url_safe(url: &str) -> Result<(), String> {
 /// Fetch a URL and extract its main content.
 pub fn fetch_and_extract(url: &str) -> Result<ExtractedPage, String> {
     validate_url_safe(url)?;
+
+    // YouTube watch pages need specialized extraction: the article-style DOM
+    // scraping returns almost nothing useful (SPA-rendered), so we pull the
+    // embedded player metadata + full spoken transcript instead.
+    if crate::youtube::is_youtube_url(url) {
+        return extract_youtube(url);
+    }
+
     let html = fetch_html(url)?;
     let doc = Html::parse_document(&html);
 
@@ -100,6 +108,54 @@ pub fn fetch_and_extract(url: &str) -> Result<ExtractedPage, String> {
         content,
         favicon,
         og_image,
+    })
+}
+
+fn extract_youtube(url: &str) -> Result<ExtractedPage, String> {
+    let v = crate::youtube::fetch_video(url)?;
+
+    // Compose `content` so the user sees WHAT the video is about AND WHAT
+    // was said. Transcript is labeled so it's obvious where it came from.
+    let mut parts: Vec<String> = Vec::new();
+    if !v.channel.is_empty() {
+        parts.push(format!("频道：{}", v.channel));
+    }
+    if !v.description.trim().is_empty() {
+        parts.push(format!("## 视频简介\n\n{}", v.description.trim()));
+    }
+    match v.transcript_source {
+        "publisher" => parts.push(format!("## 字幕转录\n\n{}", v.transcript)),
+        "auto" => parts.push(format!(
+            "## 自动识别转录\n\n> 来源：YouTube 自动字幕\n\n{}",
+            v.transcript
+        )),
+        _ => {
+            // No captions available. We still have title + (maybe) description,
+            // which is better than nothing; the clip lands in the library and
+            // the user can decide whether to keep it.
+        }
+    }
+
+    let content = parts.join("\n\n");
+    // If we got literally nothing (no title, no description, no transcript),
+    // surface an error so the caller can fall back to article extraction.
+    if content.trim().is_empty() && v.title.trim().is_empty() {
+        return Err("无法从该 YouTube 链接提取任何内容".into());
+    }
+
+    Ok(ExtractedPage {
+        title: if v.title.is_empty() {
+            "YouTube 视频".to_string()
+        } else {
+            v.title
+        },
+        content: if content.trim().is_empty() {
+            "（该视频无字幕，也无可用简介）".to_string()
+        } else {
+            content
+        },
+        favicon: "https://www.youtube.com/s/desktop/favicon.ico".into(),
+        og_image: v.thumbnail,
     })
 }
 
@@ -191,7 +247,10 @@ fn extract_favicon(doc: &Html, page_url: &str) -> String {
         if let Ok(sel) = Selector::parse(sel_str) {
             if let Some(el) = doc.select(&sel).next() {
                 if let Some(href) = el.value().attr("href") {
-                    return resolve_url(href, page_url);
+                    let resolved = resolve_url(href, page_url);
+                    if is_safe_http_url(&resolved) {
+                        return resolved;
+                    }
                 }
             }
         }
@@ -199,10 +258,23 @@ fn extract_favicon(doc: &Html, page_url: &str) -> String {
 
     // Fallback: origin/favicon.ico
     if let Ok(parsed) = url::Url::parse(page_url) {
-        return format!("{}://{}/favicon.ico", parsed.scheme(), parsed.host_str().unwrap_or(""));
+        if matches!(parsed.scheme(), "http" | "https") {
+            if let Some(host) = parsed.host_str() {
+                return format!("{}://{}/favicon.ico", parsed.scheme(), host);
+            }
+        }
     }
 
     String::new()
+}
+
+/// Gate-keep URLs that will end up in `<img src>` / `<a href>` on the frontend.
+/// Only http/https pass; javascript:/data:/file:/vbscript: etc. are rejected.
+fn is_safe_http_url(s: &str) -> bool {
+    match url::Url::parse(s) {
+        Ok(u) => matches!(u.scheme(), "http" | "https"),
+        Err(_) => false,
+    }
 }
 
 fn resolve_url(href: &str, base: &str) -> String {
@@ -232,7 +304,10 @@ fn extract_og_image(doc: &Html, page_url: &str) -> String {
                 if let Some(content) = el.value().attr("content") {
                     let url = content.trim();
                     if !url.is_empty() {
-                        return resolve_url(url, page_url);
+                        let resolved = resolve_url(url, page_url);
+                        if is_safe_http_url(&resolved) {
+                            return resolved;
+                        }
                     }
                 }
             }

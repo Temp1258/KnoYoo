@@ -20,6 +20,20 @@ pub fn app_db_path() -> Result<PathBuf, String> {
     Ok(app_data_dir()?.join("notes.db"))
 }
 
+/// Directory for stored book files (EPUB/PDF).
+pub fn app_books_dir() -> Result<PathBuf, String> {
+    let dir = app_data_dir()?.join("books");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
+/// Directory for extracted book cover images.
+pub fn app_book_covers_dir() -> Result<PathBuf, String> {
+    let dir = app_data_dir()?.join("book_covers");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
 /// Run schema creation and migrations (only once per process).
 fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -133,15 +147,28 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .ok();
 
-    // Migration: fix FTS trigger to exclude soft-deleted clips from search index
+    // Migration: keep FTS index in PERFECT sync with web_clips, regardless of
+    // deleted_at. Earlier attempts filtered soft-deleted rows out of FTS, but
+    // that breaks hard-delete paths (empty trash / purge) because the AFTER
+    // DELETE trigger then tries to remove a rowid that isn't in FTS — SQLite
+    // reports an inconsistency error and rolls back the entire DELETE.
+    //
+    // Search queries filter soft-deleted rows via `WHERE deleted_at IS NULL`
+    // at query time, so leaving them in the FTS table is harmless (tiny index
+    // bloat, auto-purged with the 30-day trash cleanup).
     conn.execute_batch(
-        "DROP TRIGGER IF EXISTS web_clips_au;
+        "DROP TRIGGER IF EXISTS web_clips_ai;
+         CREATE TRIGGER web_clips_ai AFTER INSERT ON web_clips BEGIN
+           INSERT INTO web_clips_fts(rowid, title, content, summary, tags)
+             VALUES (new.id, new.title, new.content, new.summary, new.tags);
+         END;
+
+         DROP TRIGGER IF EXISTS web_clips_au;
          CREATE TRIGGER web_clips_au AFTER UPDATE ON web_clips BEGIN
            INSERT INTO web_clips_fts(web_clips_fts, rowid, title, content, summary, tags)
              VALUES('delete', old.id, old.title, old.content, old.summary, old.tags);
            INSERT INTO web_clips_fts(rowid, title, content, summary, tags)
-             SELECT new.id, new.title, new.content, new.summary, new.tags
-             WHERE new.deleted_at IS NULL;
+             VALUES (new.id, new.title, new.content, new.summary, new.tags);
          END;",
     )
     .ok();
@@ -165,6 +192,107 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .ok();
 
+    // Migration: books library ("图书角")
+    // NOTE: file_hash uses a PARTIAL unique index (below) rather than an inline UNIQUE,
+    // so soft-deleted rows never block re-upload of the same file.
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS books (
+          id               INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_hash        TEXT NOT NULL,
+          title            TEXT NOT NULL,
+          author           TEXT NOT NULL DEFAULT '',
+          publisher        TEXT NOT NULL DEFAULT '',
+          published_year   INTEGER,
+          description      TEXT NOT NULL DEFAULT '',
+          cover_path       TEXT NOT NULL DEFAULT '',
+          file_path        TEXT NOT NULL,
+          file_format      TEXT NOT NULL,
+          file_size        INTEGER NOT NULL,
+          page_count       INTEGER,
+          status           TEXT NOT NULL DEFAULT 'want',
+          progress_percent REAL NOT NULL DEFAULT 0,
+          rating           INTEGER,
+          notes            TEXT NOT NULL DEFAULT '',
+          tags             TEXT NOT NULL DEFAULT '[]',
+          added_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          started_at       TEXT,
+          finished_at      TEXT,
+          last_opened_at   TEXT,
+          updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          deleted_at       TEXT
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_books_file_hash_active
+          ON books(file_hash) WHERE deleted_at IS NULL;
+        CREATE INDEX IF NOT EXISTS idx_books_status ON books(status);
+        CREATE INDEX IF NOT EXISTS idx_books_deleted_at ON books(deleted_at);
+        CREATE INDEX IF NOT EXISTS idx_books_updated_at ON books(updated_at DESC);
+        "#,
+    )
+    .ok();
+
+    // Migration: if the books table was created by a prior version with an
+    // inline `UNIQUE` on file_hash, SQLite created `sqlite_autoindex_books_*`.
+    // That constraint blocks re-uploading a soft-deleted book, so rebuild the
+    // table without it. No-op on fresh installs.
+    let has_legacy_unique: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master
+             WHERE type='index' AND tbl_name='books' AND name LIKE 'sqlite_autoindex_%'
+             LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
+        .is_ok();
+    if has_legacy_unique {
+        tracing::info!("Migrating books table: removing legacy UNIQUE on file_hash");
+        let migration = conn.execute_batch(
+            r#"
+            BEGIN;
+            CREATE TABLE books_new (
+              id               INTEGER PRIMARY KEY AUTOINCREMENT,
+              file_hash        TEXT NOT NULL,
+              title            TEXT NOT NULL,
+              author           TEXT NOT NULL DEFAULT '',
+              publisher        TEXT NOT NULL DEFAULT '',
+              published_year   INTEGER,
+              description      TEXT NOT NULL DEFAULT '',
+              cover_path       TEXT NOT NULL DEFAULT '',
+              file_path        TEXT NOT NULL,
+              file_format      TEXT NOT NULL,
+              file_size        INTEGER NOT NULL,
+              page_count       INTEGER,
+              status           TEXT NOT NULL DEFAULT 'want',
+              progress_percent REAL NOT NULL DEFAULT 0,
+              rating           INTEGER,
+              notes            TEXT NOT NULL DEFAULT '',
+              tags             TEXT NOT NULL DEFAULT '[]',
+              added_at         TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+              started_at       TEXT,
+              finished_at      TEXT,
+              last_opened_at   TEXT,
+              updated_at       TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+              deleted_at       TEXT
+            );
+            INSERT INTO books_new SELECT * FROM books;
+            DROP TABLE books;
+            ALTER TABLE books_new RENAME TO books;
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_books_file_hash_active
+              ON books(file_hash) WHERE deleted_at IS NULL;
+            CREATE INDEX IF NOT EXISTS idx_books_status ON books(status);
+            CREATE INDEX IF NOT EXISTS idx_books_deleted_at ON books(deleted_at);
+            CREATE INDEX IF NOT EXISTS idx_books_updated_at ON books(updated_at DESC);
+            COMMIT;
+            "#,
+        );
+        if let Err(e) = migration {
+            tracing::error!("books table migration failed (rolling back): {}", e);
+            let _ = conn.execute_batch("ROLLBACK;");
+        } else {
+            tracing::info!("books table migration complete");
+        }
+    }
+
     // Purge trash clips older than 30 days on startup
     conn.execute(
         "DELETE FROM web_clips WHERE deleted_at IS NOT NULL
@@ -172,6 +300,18 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         [],
     )
     .ok();
+
+    // Rebuild FTS index once at startup to heal any historic inconsistencies
+    // (e.g. soft-deleted rows that were indexed before the triggers learned to
+    // skip them, duplicate rowids from older versions). This is idempotent and
+    // runs quickly — the contentless FTS table just replays from web_clips.
+    if let Err(e) =
+        conn.execute("INSERT INTO web_clips_fts(web_clips_fts) VALUES('rebuild')", [])
+    {
+        tracing::warn!("FTS rebuild skipped: {}", e);
+    } else {
+        tracing::info!("FTS index rebuilt");
+    }
 
     tracing::info!("Database schema initialized");
     Ok(())

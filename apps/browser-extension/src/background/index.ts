@@ -151,74 +151,43 @@ chrome.contextMenus.onClicked.addListener(async (info, _tab) => {
   if (!url) return;
 
   const isVideo = info.menuItemId === "import-video-to-knoyoo";
+  const hint = isVideo ? "video" : "article";
 
-  if (isVideo) {
-    // Video: open in background tab → content script extracts subtitles → send rich clip
-    await importVideoViaTab(url);
-  } else {
-    // Article: server-side fetch & extract
-    try {
-      await sendClipUrl(url, "article");
-      console.log(`[KnoYoo] Imported article: ${url}`);
-    } catch (err) {
-      console.warn(`[KnoYoo] Failed to import ${url}:`, err);
-      await enqueue({ url, title: url, content: "", source_type: "article" });
-    }
+  notify("KnoYoo", `正在抓取${isVideo ? "视频字幕" : "网页"}…`);
+
+  // Single code path: hand the URL to the Rust server, which fetches the
+  // page (and for YouTube, the full transcript) and saves the clip. This is
+  // more reliable than opening a hidden tab and relying on a content script —
+  // YouTube's ytInitialPlayerResponse lives in the initial HTML that the
+  // server can retrieve without running any JavaScript.
+  try {
+    await sendClipUrl(url, hint);
+    console.log(`[KnoYoo] Imported ${hint}: ${url}`);
+    notify("KnoYoo", isVideo ? "视频已导入（含字幕转录）" : "网页已收藏");
+  } catch (err) {
+    console.warn(`[KnoYoo] Failed to import ${hint} ${url}:`, err);
+    await enqueue({ url, title: url, content: "", source_type: hint });
+    notify(
+      "KnoYoo 导入失败",
+      `${String(err).slice(0, 200)}（已加入离线队列，稍后重试）`,
+    );
   }
 });
 
-/** Open URL in a hidden tab, extract content via content script, then save. */
-async function importVideoViaTab(url: string): Promise<void> {
-  let tabId: number | undefined;
+/** Show a native desktop notification. Silent when the user has denied the
+ *  permission — the console warning is still captured in the SW log. */
+function notify(title: string, message: string) {
   try {
-    const tab = await chrome.tabs.create({ url, active: false });
-    tabId = tab.id;
-    if (!tabId) throw new Error("Failed to create tab");
-
-    // Wait for page to fully load
-    await waitForTabLoad(tabId);
-
-    // Ask content script to extract (includes subtitle extraction)
-    const response = await chrome.tabs.sendMessage(tabId, { type: "EXTRACT_CONTENT" });
-    await chrome.tabs.remove(tabId);
-
-    if (response?.success && response.data) {
-      await sendClip({
-        url: response.data.url,
-        title: response.data.title,
-        content: response.data.content,
-        source_type: "video",
-        favicon: response.data.favicon,
-      });
-      console.log(`[KnoYoo] Imported video: ${url}`);
-    } else {
-      throw new Error(response?.error || "Content extraction failed");
-    }
-  } catch (err) {
-    // Clean up tab if still open
-    if (tabId) chrome.tabs.remove(tabId).catch(() => {});
-    console.warn(`[KnoYoo] Failed to import video ${url}:`, err);
-    await enqueue({ url, title: url, content: "", source_type: "video" });
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title,
+      message,
+      priority: 0,
+    });
+  } catch (e) {
+    console.warn("[KnoYoo] notification suppressed:", e);
   }
-}
-
-function waitForTabLoad(tabId: number): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const timeout = setTimeout(() => {
-      chrome.tabs.onUpdated.removeListener(listener);
-      reject(new Error("Tab load timeout"));
-    }, 30000);
-
-    function listener(id: number, changeInfo: chrome.tabs.TabChangeInfo) {
-      if (id === tabId && changeInfo.status === "complete") {
-        chrome.tabs.onUpdated.removeListener(listener);
-        clearTimeout(timeout);
-        // Give content script + SPA (YouTube) time to fully render
-        setTimeout(resolve, 4000);
-      }
-    }
-    chrome.tabs.onUpdated.addListener(listener);
-  });
 }
 
 // ── Periodic queue flush ─────────────────────────────────────────────────
