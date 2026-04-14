@@ -4,6 +4,8 @@ import { tauriInvoke } from "./useTauriInvoke";
 export type BookStatus = "want" | "reading" | "read" | "dropped";
 export type BookFormat = "epub" | "pdf";
 
+export type BookAiStatus = "pending" | "ok" | "failed";
+
 export interface Book {
   id: number;
   fileHash: string;
@@ -28,6 +30,10 @@ export interface Book {
   lastOpenedAt: string | null;
   updatedAt: string;
   deletedAt: string | null;
+  /** Background AI metadata extraction state (used for the tile's UI). */
+  aiStatus: BookAiStatus;
+  /** Last error message from the AI extractor when aiStatus === "failed". */
+  aiError: string;
 }
 
 // Rust side returns snake_case, serde's default; normalize to camelCase on read.
@@ -55,6 +61,8 @@ interface RawBook {
   last_opened_at: string | null;
   updated_at: string;
   deleted_at: string | null;
+  ai_status: BookAiStatus;
+  ai_error: string;
 }
 
 function normalize(r: RawBook): Book {
@@ -82,6 +90,8 @@ function normalize(r: RawBook): Book {
     lastOpenedAt: r.last_opened_at,
     updatedAt: r.updated_at,
     deletedAt: r.deleted_at,
+    aiStatus: r.ai_status ?? "pending",
+    aiError: r.ai_error ?? "",
   };
 }
 
@@ -161,15 +171,14 @@ export function useBooks() {
     }
   }, []);
 
-  const aiSummarize = useCallback(async (id: number): Promise<void> => {
-    await tauriInvoke("ai_summarize_book", { id });
-    try {
-      const raw = await tauriInvoke<RawBook>("get_book", { id });
-      const book = normalize(raw);
-      setBooks((prev) => prev.map((b) => (b.id === id ? book : b)));
-    } catch {
-      // non-fatal
-    }
+  // AI reads the book's actual content (first ~12K chars) and fills in
+  // title / author / publisher / year / description / tags. Only empty fields
+  // get filled — anything the user has edited is left alone.
+  const aiAnalyze = useCallback(async (id: number): Promise<Book> => {
+    const raw = await tauriInvoke<RawBook>("ai_extract_book_metadata", { id });
+    const book = normalize(raw);
+    setBooks((prev) => prev.map((b) => (b.id === id ? book : b)));
+    return book;
   }, []);
 
   return {
@@ -182,7 +191,7 @@ export function useBooks() {
     deleteBook,
     setBookCover,
     openExternally,
-    aiSummarize,
+    aiAnalyze,
   };
 }
 

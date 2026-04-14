@@ -21,7 +21,12 @@ export type WebClip = {
   id: number;
   url: string;
   title: string;
+  /** Readable version of the page — first-pass extract at insert time,
+   *  replaced by the AI-cleaned version once the background pipeline runs. */
   content: string;
+  /** Full-body text dump, preserved for the "查看原始" toggle. Empty for
+   *  clips imported before the 3-stage pipeline existed. */
+  raw_content: string;
   summary: string;
   tags: string[];
   source_type: string;

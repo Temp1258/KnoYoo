@@ -144,10 +144,28 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         return Ok(());
     }
 
-    // Route: GET /api/ping — extension uses this to check if desktop is running
+    // Route: GET /api/ping — extension uses this to check if desktop is running.
+    // Intentionally unauthenticated so the extension can distinguish "desktop
+    // is down" from "token is wrong" (handled by /api/auth-check below).
     if request_line.starts_with("GET /api/ping") {
         let body = r#"{"status":"ok","app":"knoyoo"}"#;
         send_json_response(&mut stream, 200, body)?;
+        return Ok(());
+    }
+
+    // Route: GET /api/auth-check — validate the extension's stored token.
+    // Returns 200 when the bearer matches, 401 otherwise. The extension polls
+    // this to show "auth failed" in the popup instead of silently dropping
+    // clips into the offline queue when the token is stale or wrong.
+    if request_line.starts_with("GET /api/auth-check") {
+        let token = get_or_create_token()?;
+        let auth = headers.get("authorization").cloned().unwrap_or_default();
+        let provided_token = auth.strip_prefix("Bearer ").unwrap_or(&auth);
+        if provided_token.is_empty() || !constant_time_eq(provided_token, &token) {
+            send_json_response(&mut stream, 401, r#"{"error":"unauthorized"}"#)?;
+        } else {
+            send_json_response(&mut stream, 200, r#"{"status":"ok","authenticated":true}"#)?;
+        }
         return Ok(());
     }
 
@@ -288,13 +306,22 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
             }
         };
 
+        // Strip site-specific tracking params so the same video opened from a
+        // share QR, the homepage, and the UP's space all dedupe to one clip.
+        let fetch_url = if crate::bilibili::is_bilibili_url(&req.url) {
+            crate::bilibili::clean_bilibili_url(&req.url)
+        } else {
+            req.url.clone()
+        };
+
         // Fetch and extract content from the URL
-        match html_extract::fetch_and_extract(&req.url) {
+        match html_extract::fetch_and_extract(&fetch_url) {
             Ok(page) => {
                 let clip = NewClip {
-                    url: req.url,
+                    url: fetch_url,
                     title: page.title,
                     content: page.content,
+                    raw_content: Some(page.raw_content),
                     source_type: Some(req.source_hint),
                     favicon: Some(page.favicon),
                     og_image: Some(page.og_image),

@@ -99,16 +99,82 @@ pub fn ai_smoketest() -> Result<String, String> {
 /// Extract JSON from AI response (allows ```json ... ``` wrapping).
 pub fn extract_json(s: &str) -> Option<String> {
     let t = s.trim();
+
+    // 1. Code-fenced JSON — the common shape for JSON-instructed models.
     if t.starts_with("```") {
         if let Some(start) = t.find('\n') {
             let body = &t[start + 1..];
             if let Some(end) = body.rfind("```") {
-                return Some(body[..end].trim().to_string());
+                let inner = body[..end].trim();
+                // Even inside a fence the model sometimes adds filler — try
+                // to pull out a balanced block if the raw inner doesn't parse.
+                if inner.starts_with('{') || inner.starts_with('[') {
+                    return Some(inner.to_string());
+                }
+                if let Some(found) = find_balanced_json(inner) {
+                    return Some(found);
+                }
             }
         }
     }
+
+    // 2. Raw JSON at the start of the reply.
     if t.starts_with('[') || t.starts_with('{') {
         return Some(t.to_string());
+    }
+
+    // 3. Preamble / postscript fallback: models often say
+    //    "Sure, here's the JSON: {...}" — find the first balanced {...} or
+    //    [...] block anywhere in the reply. This rescues responses that
+    //    previously fell through to the raw-reply path and failed parsing.
+    find_balanced_json(t)
+}
+
+/// Scan `s` for the first complete, top-level JSON object or array (matched
+/// braces / brackets, string-aware). Returns the slice if found.
+fn find_balanced_json(s: &str) -> Option<String> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'{' || b == b'[' {
+            let (open, close) = if b == b'{' { (b'{', b'}') } else { (b'[', b']') };
+            let mut depth = 0i32;
+            let mut in_str = false;
+            let mut escape = false;
+            let mut j = i;
+            while j < bytes.len() {
+                let c = bytes[j];
+                if escape {
+                    escape = false;
+                    j += 1;
+                    continue;
+                }
+                if in_str {
+                    if c == b'\\' {
+                        escape = true;
+                    } else if c == b'"' {
+                        in_str = false;
+                    }
+                } else if c == b'"' {
+                    in_str = true;
+                } else if c == open {
+                    depth += 1;
+                } else if c == close {
+                    depth -= 1;
+                    if depth == 0 {
+                        // Ensure the extracted slice lands on char boundaries
+                        // so non-ASCII reply bodies don't panic in slicing.
+                        if s.is_char_boundary(i) && s.is_char_boundary(j + 1) {
+                            return Some(s[i..=j].to_string());
+                        }
+                        break;
+                    }
+                }
+                j += 1;
+            }
+        }
+        i += 1;
     }
     None
 }
@@ -421,6 +487,30 @@ mod tests {
         let input = "This is just plain text with no JSON.";
         let result = extract_json(input);
         assert_eq!(result, None);
+    }
+
+    #[test]
+    fn extract_json_with_preamble() {
+        let input = "好的，这是分析结果：{\"title\":\"x\",\"tags\":[\"a\"]}";
+        let result = extract_json(input);
+        assert_eq!(result, Some(r#"{"title":"x","tags":["a"]}"#.to_string()));
+    }
+
+    #[test]
+    fn extract_json_with_preamble_and_postscript() {
+        let input = "Sure, here is the JSON:\n{\"k\":1}\n希望有帮助。";
+        let result = extract_json(input);
+        assert_eq!(result, Some(r#"{"k":1}"#.to_string()));
+    }
+
+    #[test]
+    fn extract_json_respects_braces_inside_strings() {
+        let input = r#"Reply: {"a":"hello {world}","b":[1,2]}  done."#;
+        let result = extract_json(input);
+        assert_eq!(
+            result,
+            Some(r#"{"a":"hello {world}","b":[1,2]}"#.to_string())
+        );
     }
 
     #[test]

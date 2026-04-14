@@ -29,7 +29,14 @@ pub struct WebClip {
     pub id: i64,
     pub url: String,
     pub title: String,
+    /// The user-facing readable content. For new clips this starts as the
+    /// first-pass scraper output and gets overwritten by the AI-cleaned
+    /// version in stage 2 of the ingestion pipeline.
     pub content: String,
+    /// The full HTML-stripped dump of the page, preserved as a fallback so
+    /// the UI can offer a "查看原始" toggle even after AI cleanup. Empty for
+    /// clips imported before the 3-stage pipeline existed.
+    pub raw_content: String,
     pub summary: String,
     pub tags: Vec<String>,
     pub source_type: String,
@@ -47,6 +54,8 @@ pub struct NewClip {
     pub url: String,
     pub title: String,
     pub content: String,
+    #[serde(default)]
+    pub raw_content: Option<String>,
     pub source_type: Option<String>,
     pub favicon: Option<String>,
     pub og_image: Option<String>,
@@ -57,11 +66,15 @@ pub struct NewClip {
 pub(crate) fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
     let tags_json: String = row.get("tags")?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    // raw_content was added in a migration; older rows read as empty string
+    // thanks to the column's DEFAULT ''.
+    let raw_content: String = row.get("raw_content").unwrap_or_default();
     Ok(WebClip {
         id: row.get("id")?,
         url: row.get("url")?,
         title: row.get("title")?,
         content: row.get("content")?,
+        raw_content,
         summary: row.get("summary")?,
         tags,
         source_type: row.get("source_type")?,
@@ -99,19 +112,37 @@ pub(crate) fn add_web_clip_no_autotag(clip: NewClip) -> Result<WebClip, String> 
     let source_type = clip.source_type.unwrap_or_else(|| "article".to_string());
     let favicon = clip.favicon.unwrap_or_default();
     let og_image = clip.og_image.unwrap_or_default();
+    // Clamp raw_content to the same byte budget as content so a single huge
+    // page can't balloon the DB. If the caller (typically the popup path via
+    // /api/clip) didn't provide a raw dump, fall back to the content itself —
+    // that way the UI's "原始" toggle always has something, and if stage-2 AI
+    // cleaning goes haywire we still have the unmodified first-pass text.
+    let raw_content = {
+        let provided = clip.raw_content.unwrap_or_default();
+        let mut r = if provided.is_empty() {
+            clip.content.clone()
+        } else {
+            provided
+        };
+        if r.len() > MAX_CONTENT_LEN {
+            r.truncate(MAX_CONTENT_LEN);
+        }
+        r
+    };
 
     conn.execute(
-        "INSERT INTO web_clips (url, title, content, source_type, favicon, og_image)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "INSERT INTO web_clips (url, title, content, raw_content, source_type, favicon, og_image)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
          ON CONFLICT(url) DO UPDATE SET
            title=excluded.title,
            content=excluded.content,
+           raw_content=CASE WHEN excluded.raw_content != '' THEN excluded.raw_content ELSE web_clips.raw_content END,
            source_type=excluded.source_type,
            favicon=excluded.favicon,
            og_image=CASE WHEN excluded.og_image != '' THEN excluded.og_image ELSE web_clips.og_image END,
            deleted_at=NULL,
            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-        rusqlite::params![clip.url, clip.title, clip.content, source_type, favicon, og_image],
+        rusqlite::params![clip.url, clip.title, clip.content, raw_content, source_type, favicon, og_image],
     )
     .map_err(|e| e.to_string())?;
 
@@ -128,15 +159,115 @@ pub(crate) fn add_web_clip_no_autotag(clip: NewClip) -> Result<WebClip, String> 
 pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
     let row = add_web_clip_no_autotag(clip)?;
 
-    // Trigger async AI tagging in background (best-effort)
+    // Kick off the background pipeline:
+    //   1a. If the pushed content is thin (SPA sites like spacex.com where
+    //       the content-script selectors miss), try a server-side fetch to
+    //       top up raw_content so AI has something real to work with.
+    //   1b. AI clean raw → readable content (stage 2).
+    //   2.  AI summarize + tag (stage 3).
+    // Each stage is independent — a failure at 1a still lets stages 2 and 3
+    // run on whatever we have.
     let clip_id = row.id;
     std::thread::spawn(move || {
+        if let Err(e) = enrich_raw_content_if_thin(clip_id) {
+            tracing::warn!("Enrich clip {} failed: {}", clip_id, e);
+        }
+        if let Err(e) = ai_clean_clip_inner(clip_id) {
+            tracing::warn!("AI clean clip {} failed: {}", clip_id, e);
+        }
         if let Err(e) = auto_tag_clip_inner(clip_id) {
             tracing::warn!("Auto-tag clip {} failed: {}", clip_id, e);
         }
     });
 
     Ok(row)
+}
+
+/// Threshold below which we consider a clip's content "too thin" and try a
+/// server-side scrape to supplement it. Set at 100 chars — that's roughly
+/// "title + one short phrase". Title-only SPA cases (SpaceX at 16 chars)
+/// still trigger. Legitimately short pages like paulgraham.com's homepage
+/// (116 chars of link text) no longer burn a server fetch they wouldn't
+/// benefit from.
+const THIN_CONTENT_THRESHOLD: usize = 100;
+
+/// Stage 1.5: when the browser content-script pushed an essentially empty
+/// clip (common on modern SPAs whose initial DOM doesn't match our article
+/// selectors), fetch the URL server-side via `html_extract` and use whichever
+/// side got more text. The two extraction paths have different failure
+/// modes, so this recovers many sites that previously saved as title-only.
+fn enrich_raw_content_if_thin(clip_id: i64) -> Result<(), String> {
+    let (url, current_content, current_raw): (String, String, String) = {
+        let conn = open_db()?;
+        conn.query_row(
+            "SELECT url, content, raw_content FROM web_clips WHERE id = ?1",
+            [clip_id],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+        )
+        .map_err(|e| e.to_string())?
+    };
+
+    let cur_content_len = current_content.chars().count();
+    let cur_raw_len = current_raw.chars().count();
+    if cur_content_len >= THIN_CONTENT_THRESHOLD || cur_raw_len >= THIN_CONTENT_THRESHOLD {
+        return Ok(());
+    }
+
+    tracing::info!(
+        "clip {} is thin (content={} raw={}), attempting server-side fetch of {}",
+        clip_id,
+        cur_content_len,
+        cur_raw_len,
+        url
+    );
+
+    let page = match crate::html_extract::fetch_and_extract(&url) {
+        Ok(p) => p,
+        Err(e) => {
+            // Not fatal — stages 2/3 still run on whatever the client sent us.
+            tracing::info!("clip {} server fetch failed: {}", clip_id, e);
+            return Ok(());
+        }
+    };
+
+    let fetched_content_len = page.content.chars().count();
+    let fetched_raw_len = page.raw_content.chars().count();
+
+    let new_content = if fetched_content_len > cur_content_len {
+        page.content.clone()
+    } else {
+        current_content
+    };
+    let new_raw = if fetched_raw_len > cur_raw_len {
+        page.raw_content.clone()
+    } else {
+        current_raw
+    };
+    let new_content_len = new_content.chars().count();
+    let new_raw_len = new_raw.chars().count();
+
+    let conn = open_db()?;
+    conn.execute(
+        "UPDATE web_clips
+            SET content = ?1,
+                raw_content = ?2,
+                og_image = CASE WHEN og_image = '' THEN ?3 ELSE og_image END,
+                favicon = CASE WHEN favicon = '' THEN ?4 ELSE favicon END,
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+          WHERE id = ?5",
+        rusqlite::params![new_content, new_raw, page.og_image, page.favicon, clip_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        "clip {} enriched: content {}→{} chars, raw {}→{} chars",
+        clip_id,
+        cur_content_len,
+        new_content_len,
+        cur_raw_len,
+        new_raw_len,
+    );
+    Ok(())
 }
 
 /// List web clips with pagination and filters.
@@ -393,6 +524,16 @@ pub fn update_web_clip(
     Ok(clip)
 }
 
+/// Fetch a single clip by id. Used by the detail view to poll for the
+/// staged AI pipeline's progress (raw → clean → summary + tags) without
+/// reloading the whole list.
+#[tauri::command]
+pub fn get_clip(id: i64) -> Result<WebClip, String> {
+    let conn = open_db()?;
+    conn.query_row("SELECT * FROM web_clips WHERE id = ?1", [id], row_to_clip)
+        .map_err(|e| e.to_string())
+}
+
 /// Count total active clips (for pagination).
 #[tauri::command]
 pub fn count_web_clips() -> Result<i64, String> {
@@ -452,6 +593,121 @@ fn gather_existing_tags(conn: &rusqlite::Connection) -> Vec<String> {
         Ok(rows.flatten().collect())
     })
     .unwrap_or_default()
+}
+
+/// Character budget for the AI cleaning prompt. Most articles fit well inside
+/// 24K chars; truncating here keeps LLM costs bounded and the round trip
+/// under a couple of seconds on a typical provider.
+const AI_CLEAN_INPUT_CHARS: usize = 24_000;
+
+/// Stage 2 of the web-clip pipeline: read `raw_content` and ask the AI to
+/// produce a cleaned, readable Markdown version. Writes the result back to
+/// `content`, overwriting the first-pass scraper output.
+///
+/// Deliberately asks the model **not** to summarize — we want size-preserving
+/// cleanup. Summarization happens in stage 3 (`auto_tag_clip_inner`).
+fn ai_clean_clip_inner(clip_id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+
+    let (raw, current): (String, String) = conn
+        .query_row(
+            "SELECT raw_content, content FROM web_clips WHERE id = ?1",
+            [clip_id],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .map_err(|e| e.to_string())?;
+
+    // Fall back to current content if raw is empty (old clip, or extension
+    // pushed a pre-extracted payload without a raw dump). AI still gets value
+    // from cleaning the first-pass scraper output.
+    let source = if raw.trim().is_empty() { &current } else { &raw };
+    if source.trim().is_empty() {
+        return Ok(());
+    }
+
+    let cfg = crate::db::read_ai_config(&conn)?;
+    let config = match AiClientConfig::from_map(&cfg) {
+        Ok(c) => c,
+        Err(_) => return Ok(()), // No AI configured, skip silently
+    };
+
+    let truncated: String = source.chars().take(AI_CLEAN_INPUT_CHARS).collect();
+    let source_chars = truncated.chars().count();
+
+    let system = r#"你是网页正文清洗助手。输入是一段从网页抓取的原始文本，可能包含导航、广告、推荐阅读、版权声明、脚注、乱码字符或重复换行。请输出清洗后的**完整可读正文 Markdown**。
+
+【核心要求 · 必须严格遵守】
+⚠️ 这是**清洗任务，不是摘要任务**。输出长度应与原文接近（至少保留 70% 的字符数）。**严禁概括、压缩、简化、翻译**。如果你把 3000 字的文章输出成 30 字，你就失败了。
+
+【允许去掉】
+- 导航栏、侧边栏、广告、推荐阅读、"猜你喜欢"、评论区、订阅弹窗
+- 登录/版权声明、分享按钮、面包屑、页脚
+- 明显重复的链接列表、乱码/控制字符
+
+【必须保留，逐字保留】
+- 所有段落正文、标题、列表项
+- 代码块、引用、图注、表格
+- 数据、引用、数字、名字、观点、论证
+- 如含中英双语混排，保持原文，不要翻译
+
+【输出格式】
+- 仅输出清洗后的正文 Markdown
+- 不要附加任何解释、前言、代码块包裹
+- 不要写"以下是清洗后的内容"之类的话"#;
+
+    let user = format!(
+        "原始网页文本（约 {source_chars} 字）：\n---\n{truncated}\n---\n\n请按照系统指令输出清洗后的完整正文 Markdown（长度应接近 {source_chars} 字）。",
+    );
+
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": system}),
+        serde_json::json!({"role": "user", "content": user}),
+    ];
+
+    let reply = ai_client::chat(&config, messages, 0.2).map_err(String::from)?;
+    let cleaned = reply.trim();
+    if cleaned.is_empty() {
+        return Err("AI 清洗返回空".into());
+    }
+
+    let cleaned_chars = cleaned.chars().count();
+
+    // Reject drastic compressions. The prompt forbids summarization, so if
+    // the model collapsed a 3000-char article to 30 chars it ignored us.
+    // Keeping the original content is always safer than overwriting with the
+    // hallucinated digest — we have the summary field for that use case.
+    // Threshold: for any source > 200 chars, cleaned must keep at least 1/3
+    // of the chars (i.e. reject >66% shrink). Short sources (< 200) are let
+    // through because for e.g. a tweet the "cleaned" version CAN legitimately
+    // be shorter after stripping boilerplate.
+    if source_chars > 200 && cleaned_chars * 3 < source_chars {
+        tracing::warn!(
+            "AI clean rejected for clip {}: {} chars → {} (>66% reduction). Keeping original.",
+            clip_id,
+            source_chars,
+            cleaned_chars
+        );
+        return Err(format!(
+            "AI 清洗输出过短（{cleaned_chars} / 原始 {source_chars}），已保留原文"
+        ));
+    }
+
+    let cleaned_capped: String = cleaned.chars().take(MAX_CONTENT_LEN).collect();
+
+    conn.execute(
+        "UPDATE web_clips SET content = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id = ?2",
+        rusqlite::params![cleaned_capped, clip_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        "AI cleaned clip {} (source: {} → cleaned: {} chars)",
+        clip_id,
+        source_chars,
+        cleaned_capped.chars().count()
+    );
+    Ok(())
 }
 
 fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {

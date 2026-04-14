@@ -8,7 +8,16 @@
 interface ExtractedContent {
   url: string;
   title: string;
+  /** Best-effort "clean" article content via selector + tree walk. */
   content: string;
+  /** Full visible text of the page via document.body.innerText.
+   *
+   *  This is the browser's layout-computed visible text — handles SPAs
+   *  (SpaceX, modern React sites), Shadow DOM, CSS-hidden nodes, etc. We
+   *  send it as a fallback so the backend can promote it to the main
+   *  content when the cleaner extraction returns only a title.
+   */
+  raw_content: string;
   source_type: string;
   favicon: string;
 }
@@ -161,6 +170,28 @@ function extractTweet(): string {
   return tweetEl?.textContent?.trim() || document.title;
 }
 
+/** Full visible-text dump of the page. `innerText` respects layout and
+ *  CSS visibility, so unlike textContent/tree-walks it gives us exactly
+ *  what the user currently sees — the best possible fallback for sites
+ *  where our selector-based extraction fails (SpaceX, many React SPAs).
+ *  Capped at 200KB (≈ the widest clip we'd ever want to send over IPC).
+ */
+function extractRawBodyText(): string {
+  try {
+    const raw = document.body?.innerText ?? "";
+    // Collapse >2 consecutive blank lines the way cleanText does.
+    const normalized = raw
+      .split("\n")
+      .map((line) => line.trimEnd())
+      .join("\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .trim();
+    return normalized.slice(0, 200_000);
+  } catch {
+    return "";
+  }
+}
+
 async function extractPageContent(): Promise<ExtractedContent> {
   const url = window.location.href;
   const title = document.title;
@@ -179,7 +210,17 @@ async function extractPageContent(): Promise<ExtractedContent> {
       content = extractArticleContent();
   }
 
-  return { url, title, content, source_type: sourceType, favicon };
+  const raw_content = extractRawBodyText();
+
+  // If the selector-based extraction came up mostly empty (SPA case where
+  // nothing matched our known containers), promote innerText to `content`
+  // too — it's always better to show the user the real article than a
+  // title-only clip, even if raw_content already has the same text.
+  if (content.length < 200 && raw_content.length > content.length) {
+    content = raw_content;
+  }
+
+  return { url, title, content, raw_content, source_type: sourceType, favicon };
 }
 
 // ── Message listener (for popup manual clip) ─────────────────────────────

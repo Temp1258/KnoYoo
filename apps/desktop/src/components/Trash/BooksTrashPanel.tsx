@@ -30,6 +30,8 @@ interface RawBook {
   last_opened_at: string | null;
   updated_at: string;
   deleted_at: string | null;
+  ai_status?: "pending" | "ok" | "failed";
+  ai_error?: string;
 }
 
 function normalize(r: RawBook): Book {
@@ -57,6 +59,8 @@ function normalize(r: RawBook): Book {
     lastOpenedAt: r.last_opened_at,
     updatedAt: r.updated_at,
     deletedAt: r.deleted_at,
+    aiStatus: r.ai_status ?? "pending",
+    aiError: r.ai_error ?? "",
   };
 }
 

@@ -141,6 +141,17 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         [],
     )
     .ok();
+
+    // Migration: store raw HTML-stripped dump alongside the cleaned content.
+    // Stage 1 of the 3-stage web-clip pipeline fills this with the full text
+    // of the page (before AI cleanup); stage 2 reads it to produce the
+    // readable version that overwrites `content`. Keeping the raw side lets
+    // the UI offer a "查看原始" toggle and survives bad AI outputs.
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN raw_content TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_web_clips_deleted_at ON web_clips(deleted_at)",
         [],
@@ -292,6 +303,48 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
             tracing::info!("books table migration complete");
         }
     }
+
+    // Migration: clear legacy bad book metadata so the AI extractor can refill.
+    // Books imported by an older build surfaced PDF /Title fields like
+    // "Microsoft Word - richdad.doc" as their title, with matching garbage
+    // authors and hallucinated AI tags keyed off those fake titles. Clearing
+    // the affected fields makes the "only fill empty" rule in
+    // ai_extract_book_metadata re-analyze them cleanly on the next run.
+    conn.execute(
+        "UPDATE books
+           SET title = '', author = '', publisher = '', description = '', tags = '[]',
+               updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE title LIKE 'Microsoft Word -%'
+            OR title LIKE '%.doc'
+            OR title LIKE '%.docx'
+            OR lower(title) LIKE '%.pdf'",
+        [],
+    )
+    .ok();
+
+    // Migration: track AI analysis status so the UI can distinguish
+    // "still processing" (pending) from "AI failed, click to retry" (failed)
+    // instead of showing a forever-spinner. Also records the error message
+    // so the failure surface isn't just a silent log line.
+    conn.execute(
+        "ALTER TABLE books ADD COLUMN ai_status TEXT NOT NULL DEFAULT 'pending'",
+        [],
+    )
+    .ok();
+    conn.execute(
+        "ALTER TABLE books ADD COLUMN ai_error TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
+    // Backfill: books that already have a title were either user-edited or
+    // analyzed by a previous build — mark them 'ok' so we don't re-spinner
+    // them. Rows with empty title stay 'pending' and will be picked up by
+    // the background extractor (or the drawer's 让 AI 分析 button).
+    conn.execute(
+        "UPDATE books SET ai_status = 'ok' WHERE ai_status = 'pending' AND title <> ''",
+        [],
+    )
+    .ok();
 
     // Purge trash clips older than 30 days on startup
     conn.execute(

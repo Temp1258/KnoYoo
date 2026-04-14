@@ -26,7 +26,7 @@ export default function BooksPage() {
     deleteBook,
     setBookCover,
     openExternally,
-    aiSummarize,
+    aiAnalyze,
   } = useBooks();
   const { showToast } = useToast();
   const [dragging, setDragging] = useState(false);
@@ -51,6 +51,24 @@ export default function BooksPage() {
   }, [books]);
 
   const empty = !loading && books.length === 0;
+
+  // After add_book, the AI metadata extraction runs in a Rust background
+  // thread. Poll while any book is in "pending" — independent of title,
+  // because we now seed title from the filename at insert time.
+  // Failed books flip to "failed" and surface a retry affordance — no
+  // point polling them.
+  useEffect(() => {
+    const hasPending = books.some((b) => b.aiStatus === "pending");
+    if (!hasPending) return;
+    const interval = setInterval(() => {
+      void refresh();
+    }, 4000);
+    const stop = setTimeout(() => clearInterval(interval), 120_000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(stop);
+    };
+  }, [books, refresh]);
 
   const uploadPaths = useCallback(
     async (paths: string[]) => {
@@ -151,7 +169,7 @@ export default function BooksPage() {
         onDelete={deleteBook}
         onSetCover={setBookCover}
         onOpenExternally={openExternally}
-        onAiSummarize={aiSummarize}
+        onAiAnalyze={aiAnalyze}
       />
 
       <header className="flex items-center justify-between mb-6">

@@ -48,5 +48,9 @@ getrandom = "0.2"
 sha2 = "0.10"
 epub = "2"
 lopdf = "0.34"
+# Secondary PDF text extractor. lopdf's built-in extract_text fails on PDFs
+# with non-trivial ToUnicode CMaps (common in books with subset fonts). We
+# fall back to pdf-extract when lopdf can't decode any page.
+pdf-extract = "0.9"
 base64 = "0.22"
 

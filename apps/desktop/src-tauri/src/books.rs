@@ -33,8 +33,20 @@ pub struct Book {
     pub last_opened_at: Option<String>,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    /// AI metadata extraction state: "pending" | "ok" | "failed".
+    /// The UI uses this (together with the title) to render "AI 分析中…",
+    /// "AI 分析失败", or a normal tile.
+    pub ai_status: String,
+    /// Human-readable last-error from the AI extractor. Only meaningful when
+    /// `ai_status == "failed"`. Empty otherwise.
+    pub ai_error: String,
 }
 
+// extract_epub / extract_pdf still populate the full metadata shape even
+// though the insert path currently only uses `cover` + `page_count`. Keeping
+// the rest around means we can cheaply opt back into embedded metadata as a
+// fallback if the AI extractor is unavailable.
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 struct BookMeta {
     title: String,
@@ -71,6 +83,12 @@ const ALLOWED_STATUSES: &[&str] = &["want", "reading", "read", "dropped"];
 fn row_to_book(row: &rusqlite::Row) -> rusqlite::Result<Book> {
     let tags_json: String = row.get("tags")?;
     let tags: Vec<String> = serde_json::from_str(&tags_json).unwrap_or_default();
+    // ai_status / ai_error arrive via migration on older DBs. Use defaults
+    // when the columns are missing rather than failing the whole row read.
+    let ai_status: String = row
+        .get::<_, String>("ai_status")
+        .unwrap_or_else(|_| "pending".to_string());
+    let ai_error: String = row.get::<_, String>("ai_error").unwrap_or_default();
     Ok(Book {
         id: row.get("id")?,
         file_hash: row.get("file_hash")?,
@@ -95,6 +113,8 @@ fn row_to_book(row: &rusqlite::Row) -> rusqlite::Result<Book> {
         last_opened_at: row.get("last_opened_at")?,
         updated_at: row.get("updated_at")?,
         deleted_at: row.get("deleted_at")?,
+        ai_status,
+        ai_error,
     })
 }
 
@@ -253,10 +273,11 @@ fn truncate_chars(s: &str, max: usize) -> String {
 
 // ── Full-text extraction (for AI summary) ────────────────────────────────
 
-/// Rough character budget to send to the LLM — ~8K chars ≈ 2-3K tokens for CN/EN
-/// mix. Small enough for cheap summarization, large enough to capture the core
-/// thesis of most non-fiction books (preface + intro + ch1).
-const MAX_AI_TEXT_CHARS: usize = 8000;
+/// Character budget for AI metadata extraction. ~12K chars covers the cover
+/// page, copyright page, TOC, preface, and ≈one chapter — enough for the LLM
+/// to reliably identify the title, author, publisher, and core subject even
+/// when the publisher's PDF metadata is garbage (e.g., "Microsoft Word - doc").
+const MAX_AI_TEXT_CHARS: usize = 12000;
 
 /// Strip HTML into plain text for AI consumption. We don't need perfect
 /// fidelity — paragraphs joined with newlines are enough for summarization.
@@ -350,18 +371,86 @@ fn extract_epub_text(path: &Path, budget: usize) -> Result<String, String> {
 }
 
 fn extract_pdf_text(path: &Path, budget: usize) -> Result<String, String> {
+    // Primary: pdf-extract. It has its own font-encoding layer on top of
+    // lopdf that handles the ToUnicode CMap edge cases (subset TrueType
+    // fonts, non-identity CMaps) that crash lopdf's per-page extractor on
+    // many Chinese / academic / typeset-with-Word PDFs. If it succeeds,
+    // we're done.
+    match try_pdf_extract(path, budget) {
+        Ok(Some(text)) => return Ok(text),
+        Ok(None) => {
+            tracing::info!(
+                "pdf-extract returned empty for {}, falling back to lopdf",
+                path.display()
+            );
+        }
+        Err(e) => {
+            tracing::warn!(
+                "pdf-extract failed for {}: {} — falling back to lopdf",
+                path.display(),
+                e
+            );
+        }
+    }
+
+    // Fallback: lopdf per-page with error + panic tolerance. Keep this as a
+    // backup because pdf-extract occasionally mangles certain glyph
+    // mappings in ways that lopdf handles correctly.
     let doc = lopdf::Document::load(path).map_err(|e| format!("PDF: {e}"))?;
     let pages = doc.get_pages();
-    // First N pages is usually enough for summary; cap to avoid slow scans.
     const MAX_PDF_PAGES: usize = 20;
     let page_numbers: Vec<u32> = pages.keys().copied().take(MAX_PDF_PAGES).collect();
     if page_numbers.is_empty() {
         return Ok(String::new());
     }
-    let raw = doc
-        .extract_text(&page_numbers)
-        .map_err(|e| format!("PDF text: {e}"))?;
-    Ok(raw.chars().take(budget).collect())
+
+    let mut buf = String::new();
+    let mut ok_pages = 0usize;
+    for p in page_numbers {
+        if buf.chars().count() >= budget {
+            break;
+        }
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            doc.extract_text(&[p])
+        }));
+        match result {
+            Ok(Ok(text)) => {
+                buf.push_str(&text);
+                buf.push('\n');
+                ok_pages += 1;
+            }
+            Ok(Err(e)) => tracing::warn!("PDF {} page {} extract failed: {}", path.display(), p, e),
+            Err(_) => tracing::warn!("PDF {} page {} extract panicked", path.display(), p),
+        }
+    }
+    if ok_pages == 0 {
+        return Err(
+            "PDF 文本抽取失败（pdf-extract 和 lopdf 均无法解析，可能是扫描/加密/非标准 PDF）"
+                .to_string(),
+        );
+    }
+    Ok(buf.chars().take(budget).collect())
+}
+
+/// Run pdf-extract wrapped in catch_unwind: the crate panics on a small set
+/// of malformed PDFs. Returns `Ok(None)` when pdf-extract ran cleanly but
+/// returned empty text (common for scanned image-only PDFs), so the caller
+/// can then try the lopdf fallback.
+fn try_pdf_extract(path: &Path, budget: usize) -> Result<Option<String>, String> {
+    let path_buf = path.to_path_buf();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
+        pdf_extract::extract_text(&path_buf)
+    }));
+    match result {
+        Ok(Ok(text)) => {
+            if text.trim().is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(text.chars().take(budget).collect()))
+        }
+        Ok(Err(e)) => Err(format!("{e}")),
+        Err(_) => Err("pdf-extract panicked".to_string()),
+    }
 }
 
 /// Return a plain-text slice of the book's contents (bounded by `budget`) for
@@ -442,6 +531,15 @@ pub fn add_book(file_path: String) -> Result<Book, String> {
         }
     }
 
+    // Remember the user's original filename stem. We use it as the initial
+    // title so:
+    //   - tiles show something meaningful immediately (instead of "未命名")
+    //   - books with no extractable text (scanned/image-only PDFs) still
+    //     end up with a usable title when AI analysis fails
+    // The AI extractor overrides this title on its first run (ai_status =
+    // 'pending'); user edits afterward are protected.
+    let display_title = filename_stem(&src);
+
     // Copy file into managed storage
     let dest_name = format!("{hash}.{ext}");
     let dest = app_books_dir()?.join(&dest_name);
@@ -451,7 +549,14 @@ pub fn add_book(file_path: String) -> Result<Book, String> {
     // Insert phase: anything that fails here must roll back the copied file
     // (and any cover we wrote). The inner fn returns Ok once the INSERT has
     // committed successfully.
-    if let Err(e) = add_book_insert(hash.clone(), file_rel, format, file_size as i64, &dest) {
+    if let Err(e) = add_book_insert(
+        hash.clone(),
+        file_rel,
+        format,
+        file_size as i64,
+        &dest,
+        &display_title,
+    ) {
         if dest.exists() {
             if let Err(rm) = fs::remove_file(&dest) {
                 tracing::warn!("rollback: remove book file failed: {}", rm);
@@ -473,13 +578,15 @@ pub fn add_book(file_path: String) -> Result<Book, String> {
         )
         .map_err(|e| e.to_string())?;
 
-    // Kick off AI summarization in the background so the drawer fills in on
-    // its own. Silent best-effort: if AI isn't configured or the call fails,
-    // the user still has a usable book record, and can retry manually.
+    // Kick off AI metadata extraction in the background. The row we just
+    // inserted has empty title/author/publisher/description; the AI reads the
+    // actual book contents (first ~12K chars) and fills those fields. Silent
+    // best-effort: if AI isn't configured or the call fails, the fields stay
+    // empty and the user can edit manually or retry via the drawer.
     let book_id = book.id;
     std::thread::spawn(move || {
-        if let Err(e) = ai_summarize_book(book_id) {
-            tracing::info!("auto AI summary for book {} skipped: {}", book_id, e);
+        if let Err(e) = ai_extract_book_metadata(book_id) {
+            tracing::info!("auto AI extraction for book {} skipped: {}", book_id, e);
         }
     });
 
@@ -492,29 +599,27 @@ fn add_book_insert(
     format: &'static str,
     file_size: i64,
     dest: &Path,
+    display_title: &str,
 ) -> Result<(), String> {
-    // Extract metadata + cover (fall back to filename on parse failure)
-    let meta = match format {
-        "epub" => extract_epub(dest).unwrap_or_else(|e| {
-            tracing::warn!("EPUB metadata failed: {}", e);
-            BookMeta {
-                title: filename_stem(dest),
-                ..BookMeta::default()
-            }
-        }),
-        "pdf" => extract_pdf(dest).unwrap_or_else(|e| {
-            tracing::warn!("PDF metadata failed: {}", e);
-            BookMeta {
-                title: filename_stem(dest),
-                ..BookMeta::default()
-            }
-        }),
+    // We deliberately IGNORE embedded PDF/EPUB metadata strings here — they
+    // are wrong more often than they're right (Word-exported PDFs surface
+    // "Microsoft Word - doc.doc" as /Title, EPUBs from e-book shops leave the
+    // /creator as a shop-internal ID, etc.). The AI extraction step reads the
+    // actual book text and derives the correct title/author/publisher/etc.
+    //
+    // We DO keep the cover image and page count — both are reliably structural,
+    // not text metadata, and don't benefit from AI.
+    let cover: Option<(Vec<u8>, &'static str)> = match format {
+        "epub" => extract_epub(dest).ok().and_then(|m| m.cover),
+        "pdf" => None,
         _ => unreachable!(),
     };
+    let page_count: Option<i64> = match format {
+        "pdf" => extract_pdf(dest).ok().and_then(|m| m.page_count),
+        _ => None,
+    };
 
-    // Persist cover bytes if any. Keep a handle so we can clean up if INSERT
-    // fails later.
-    let cover_rel = match meta.cover {
+    let cover_rel = match cover {
         Some((cover_bytes, cover_ext)) => {
             let cover_name = format!("{hash}.{cover_ext}");
             let covers_dir = app_book_covers_dir().map_err(|e| {
@@ -554,24 +659,16 @@ fn add_book_insert(
         }
     };
 
+    // Bound the filename length to match the `truncate_chars(500)` the AI
+    // path uses, so both paths produce titles of a similar shape.
+    let bounded_title = truncate_chars(display_title, 500);
+
     if let Err(e) = conn.execute(
         "INSERT INTO books (
             file_hash, title, author, publisher, published_year, description,
             cover_path, file_path, file_format, file_size, page_count
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-        rusqlite::params![
-            hash,
-            meta.title,
-            meta.author,
-            meta.publisher,
-            meta.published_year,
-            meta.description,
-            cover_rel,
-            file_rel,
-            format,
-            file_size,
-            meta.page_count,
-        ],
+         ) VALUES (?1, ?2, '', '', NULL, '', ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![hash, bounded_title, cover_rel, file_rel, format, file_size, page_count],
     ) {
         remove_cover();
         return Err(format!("写入数据库失败：{e}"));
@@ -964,23 +1061,108 @@ pub fn open_book_externally(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-// ── Command: ai_summarize_book ───────────────────────────────────────────
+// ── Startup: resume pending AI extraction ────────────────────────────────
 
-/// Use configured AI to generate a summary + tags for a book, based on its
-/// title / author / description. Writes to `description` and `tags`.
+/// Re-trigger AI metadata extraction for books that are still `pending`
+/// (empty title, no prior success or failure marker). Handles two realistic
+/// scenarios:
+///   1. The app crashed or was killed mid-extraction.
+///   2. A migration just cleared bogus metadata ("Microsoft Word - …") on
+///      books whose original background thread has long since exited.
+///
+/// Runs in a single background thread, sequentially, so a large pending
+/// queue can't thrash the LLM or user's CPU. Caps the batch at 10 to avoid
+/// surprising token spend on a fresh install with many stuck books.
+pub fn resume_pending_ai_extraction() {
+    std::thread::spawn(|| {
+        let ids: Vec<i64> = match open_db() {
+            Ok(conn) => match conn.prepare(
+                // Key off ai_status alone. Books dropped by the new code
+                // ship with title = <filename stem> from the start, so the
+                // old "empty title" predicate would miss them. Whatever is
+                // still 'pending' after a restart is genuinely unprocessed.
+                "SELECT id FROM books
+                   WHERE ai_status = 'pending'
+                     AND deleted_at IS NULL
+                   ORDER BY id
+                   LIMIT 10",
+            ) {
+                Ok(mut stmt) => stmt
+                    .query_map([], |r| r.get::<_, i64>(0))
+                    .ok()
+                    .map(|rows| rows.flatten().collect())
+                    .unwrap_or_default(),
+                Err(_) => return,
+            },
+            Err(_) => return,
+        };
+        if ids.is_empty() {
+            return;
+        }
+        tracing::info!("Resuming AI extraction for {} pending book(s)", ids.len());
+        for id in ids {
+            if let Err(e) = ai_extract_book_metadata(id) {
+                tracing::info!("resume AI extract book {}: {}", id, e);
+            }
+        }
+    });
+}
+
+// ── Command: ai_extract_book_metadata ────────────────────────────────────
+
+/// Write an `ai_status='failed'` marker so the UI can replace its forever-
+/// spinner with a clear failure state. Best-effort — if even this fails we
+/// just log; the book is still there, the user can retry via the drawer.
+fn mark_book_ai_failed(id: i64, err: &str) {
+    let msg: String = err.chars().take(500).collect();
+    if let Ok(conn) = open_db() {
+        let _ = conn.execute(
+            "UPDATE books
+                SET ai_status = 'failed',
+                    ai_error = ?1,
+                    updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+              WHERE id = ?2",
+            rusqlite::params![msg, id],
+        );
+    }
+    tracing::warn!("book {} AI analysis failed: {}", id, msg);
+}
+
+/// Read the book's actual contents and ask the AI to fill in metadata fields.
+///
+/// Policy: **only fill empty fields**. User edits win — if the user has typed
+/// a title, the AI won't clobber it on re-run. Tags are merged (AI's new tags
+/// appended, existing tags preserved). This makes the command safe to call
+/// both automatically after import AND manually via the drawer button.
+///
+/// Returns the updated `Book` so the caller can drop it straight into state.
 #[tauri::command]
-pub fn ai_summarize_book(id: i64) -> Result<(), String> {
-    let (title, author, description, existing_tags, file_path, file_format): (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    ) = {
+pub fn ai_extract_book_metadata(id: i64) -> Result<Book, String> {
+    match ai_extract_book_metadata_inner(id) {
+        Ok(book) => Ok(book),
+        Err(e) => {
+            mark_book_ai_failed(id, &e);
+            Err(e)
+        }
+    }
+}
+
+fn ai_extract_book_metadata_inner(id: i64) -> Result<Book, String> {
+    let (
+        cur_title,
+        cur_author,
+        cur_publisher,
+        cur_year,
+        cur_desc,
+        cur_tags_json,
+        file_path,
+        file_format,
+        cur_ai_status,
+    ): (String, String, String, Option<i64>, String, String, String, String, String) = {
         let conn = open_db()?;
         conn.query_row(
-            "SELECT title, author, description, tags, file_path, file_format
+            "SELECT title, author, publisher, published_year, description, tags,
+                    file_path, file_format, ai_status
              FROM books WHERE id = ?1 AND deleted_at IS NULL",
             [id],
             |r| {
@@ -991,11 +1173,20 @@ pub fn ai_summarize_book(id: i64) -> Result<(), String> {
                     r.get(3)?,
                     r.get(4)?,
                     r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get::<_, String>(8).unwrap_or_else(|_| "pending".to_string()),
                 ))
             },
         )
         .map_err(|e| e.to_string())?
     };
+
+    // On the FIRST AI run (ai_status = 'pending'), the current title is our
+    // filename-stem placeholder from add_book — always replace it with the
+    // AI's extracted real title. On later runs (ok/failed + manual retry),
+    // fall back to the "only fill empty" rule so user edits stick.
+    let first_ai_run = cur_ai_status == "pending";
 
     let cfg = {
         let conn = open_db()?;
@@ -1003,95 +1194,163 @@ pub fn ai_summarize_book(id: i64) -> Result<(), String> {
     };
     let config = AiClientConfig::from_map(&cfg).map_err(|e| format!("AI 未配置：{e}"))?;
 
-    let existing: Vec<String> = serde_json::from_str(&existing_tags).unwrap_or_default();
-    let existing_str = if existing.is_empty() {
-        "（无）".to_string()
-    } else {
-        existing.join("、")
-    };
-
-    // Pull the actual book contents so the AI has something to read. Falls
-    // back to empty string on any extraction failure — better a title-only
-    // summary than no summary at all.
     let book_text = extract_book_text(&file_path, &file_format, MAX_AI_TEXT_CHARS);
-    let desc_trim: String = description.chars().take(1500).collect();
-
-    let system = format!(
-        r#"你是一位专业的图书摘要助手。用户刚上传了一本书，请你**基于下面提供的正文节选**：
-
-1. 用中文生成 3-4 句话的精准摘要，总结本书的核心主题、作者观点和亮点；
-2. 提取 3-5 个关键词标签（主题、学科、适合读者等）。
-
-用户该书已有的标签：{existing}
-如与已有标签相关，优先复用以保持一致性。
-
-严格返回 JSON，不要输出其他内容：
-{{"summary":"...","tags":["..."]}}"#,
-        existing = existing_str,
-    );
-
-    let mut user_parts: Vec<String> = Vec::new();
-    user_parts.push(format!("书名：{title}"));
-    if !author.is_empty() {
-        user_parts.push(format!("作者：{author}"));
+    if book_text.trim().is_empty() {
+        return Err("无法读取图书正文，AI 分析跳过".to_string());
     }
-    if !desc_trim.is_empty() {
-        user_parts.push(format!("已有简介：{desc_trim}"));
-    }
-    if !book_text.trim().is_empty() {
-        user_parts.push(format!("正文节选（开头约 {} 字）：\n---\n{}\n---", book_text.chars().count(), book_text));
-    }
-    let user = user_parts.join("\n\n");
+
+    let existing_tags: Vec<String> = serde_json::from_str(&cur_tags_json).unwrap_or_default();
+
+    let system = r#"你是图书元数据提取助手。用户上传了一本电子书，以下是该书正文开头的文本节选（可能含封面页、版权页、目录、前言、第一章等）。请**仅依据节选内容**推断这本书的真实信息：
+
+- title: 书的真实标题。忽略 "Microsoft Word - xxx.doc"、"xxx.pdf" 这类文件系统/软件残留字段。
+- author: 作者姓名；如有多位用 "、" 连接。
+- publisher: 出版社（若正文未提及，返回空字符串）。
+- published_year: 出版年份（4 位整数）；不确定则返回 null。
+- description: 2-4 句话的中文简介，概括主题、作者核心观点、本书亮点。
+- tags: 3-5 个中文关键词标签（主题、学科、风格、适用读者）。
+
+严格仅输出 JSON，不要附带任何解释、前后缀或代码块：
+{"title":"...","author":"...","publisher":"...","published_year":null,"description":"...","tags":["..."]}"#;
+
+    let user = format!("正文节选（约 {} 字）：\n---\n{}\n---", book_text.chars().count(), book_text);
 
     let messages = vec![
         serde_json::json!({"role": "system", "content": system}),
         serde_json::json!({"role": "user", "content": user}),
     ];
 
-    let reply = ai_client::chat(&config, messages, 0.3).map_err(String::from)?;
-    let json_str = crate::ai::extract_json(&reply).unwrap_or(reply);
-    let parsed: serde_json::Value =
-        serde_json::from_str(&json_str).map_err(|e| format!("解析 AI 响应失败：{e}"))?;
+    // Retry once on either AI call failure or JSON parse failure — both are
+    // typical "transient weirdness" for LLM APIs (rate limit blips, the model
+    // forgetting the JSON-only instruction). Keeping max_attempts small
+    // avoids burning a lot of tokens when the provider is actually broken.
+    const MAX_ATTEMPTS: u32 = 2;
+    let mut parsed: Option<serde_json::Value> = None;
+    let mut last_err = String::new();
+    for attempt in 1..=MAX_ATTEMPTS {
+        match ai_client::chat(&config, messages.clone(), 0.2) {
+            Ok(reply) => {
+                let json_str = crate::ai::extract_json(&reply).unwrap_or_else(|| reply.clone());
+                match serde_json::from_str::<serde_json::Value>(&json_str) {
+                    Ok(v) => {
+                        parsed = Some(v);
+                        break;
+                    }
+                    Err(e) => {
+                        last_err = format!("解析 AI 响应失败：{e}（回复片段：{}）", reply.chars().take(120).collect::<String>());
+                        tracing::warn!(
+                            "book {} AI JSON parse failed (attempt {}/{}): {}",
+                            id,
+                            attempt,
+                            MAX_ATTEMPTS,
+                            last_err
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                last_err = format!("AI 调用失败：{e}");
+                tracing::warn!(
+                    "book {} AI chat failed (attempt {}/{}): {}",
+                    id,
+                    attempt,
+                    MAX_ATTEMPTS,
+                    last_err
+                );
+            }
+        }
+        if attempt < MAX_ATTEMPTS {
+            std::thread::sleep(std::time::Duration::from_secs(2));
+        }
+    }
+    let parsed = parsed.ok_or(last_err)?;
 
-    let summary = parsed["summary"].as_str().unwrap_or("").to_string();
+    let ai_title = parsed["title"].as_str().unwrap_or("").trim().to_string();
+    let ai_author = parsed["author"].as_str().unwrap_or("").trim().to_string();
+    let ai_publisher = parsed["publisher"].as_str().unwrap_or("").trim().to_string();
+    let ai_year = parsed["published_year"]
+        .as_i64()
+        .filter(|y| (0..=9999).contains(y));
+    let ai_description = parsed["description"].as_str().unwrap_or("").trim().to_string();
     let ai_tags: Vec<String> = parsed["tags"]
         .as_array()
         .map(|arr| {
             arr.iter()
-                .filter_map(|v| v.as_str().map(String::from))
+                .filter_map(|v| v.as_str().map(|s| s.trim().to_string()))
+                .filter(|s| !s.is_empty() && s.chars().count() <= 200)
                 .collect()
         })
         .unwrap_or_default();
 
-    // Merge with existing tags (preserve order, dedup). AI must never clobber
-    // tags the user deliberately set. Sanitize AI strings to match the limits
-    // update_book enforces, so AI hallucinations can't inject invalid tags.
-    let mut merged: Vec<String> = existing.clone();
-    for raw in ai_tags {
-        let t = raw.trim();
-        if t.is_empty() || t.chars().count() > 200 {
-            continue;
+    // Only fill fields that are currently empty. Preserves any value the user
+    // has manually edited (including via the drawer inputs, which debounce-
+    // save through update_book).
+    //
+    // Title is special: on the first AI run the current value is the filename
+    // stem placeholder, so we let AI overwrite it (filenames are often wrong
+    // encodings, missing subtitles, or abbreviated). Later runs respect edits.
+    let new_title = if !ai_title.is_empty() && (cur_title.is_empty() || first_ai_run) {
+        truncate_chars(&ai_title, 500)
+    } else {
+        cur_title
+    };
+    let new_author = if cur_author.is_empty() && !ai_author.is_empty() {
+        truncate_chars(&ai_author, 200)
+    } else {
+        cur_author
+    };
+    let new_publisher = if cur_publisher.is_empty() && !ai_publisher.is_empty() {
+        truncate_chars(&ai_publisher, 200)
+    } else {
+        cur_publisher
+    };
+    let new_year = cur_year.or(ai_year);
+    let new_description = if cur_desc.is_empty() && !ai_description.is_empty() {
+        truncate_chars(&ai_description, 5000)
+    } else {
+        cur_desc
+    };
+
+    // Merge tags (preserve order, dedup, hard cap at 100).
+    let mut merged_tags: Vec<String> = existing_tags.clone();
+    for t in ai_tags {
+        if merged_tags.len() >= 100 {
+            break;
         }
-        let owned = t.to_string();
-        if !merged.contains(&owned) {
-            merged.push(owned);
+        if !merged_tags.contains(&t) {
+            merged_tags.push(t);
         }
     }
-    merged.truncate(100);
-    let tags_json = serde_json::to_string(&merged).unwrap_or_else(|_| "[]".to_string());
+    let tags_json = serde_json::to_string(&merged_tags).unwrap_or_else(|_| "[]".to_string());
 
     let conn = open_db()?;
     conn.execute(
-        "UPDATE books SET description = CASE WHEN ?1 <> '' THEN ?1 ELSE description END,
-                          tags = ?2,
+        "UPDATE books SET title = ?1, author = ?2, publisher = ?3, published_year = ?4,
+                          description = ?5, tags = ?6,
+                          ai_status = 'ok', ai_error = '',
                           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id = ?3",
-        rusqlite::params![summary, tags_json, id],
+         WHERE id = ?7",
+        rusqlite::params![
+            new_title,
+            new_author,
+            new_publisher,
+            new_year,
+            new_description,
+            tags_json,
+            id,
+        ],
     )
     .map_err(|e| e.to_string())?;
 
-    tracing::info!("AI summarized book {} (tags: {} → {})", id, existing.len(), merged.len());
-    Ok(())
+    tracing::info!(
+        "AI metadata extracted for book {} (tags: {} → {})",
+        id,
+        existing_tags.len(),
+        merged_tags.len()
+    );
+
+    conn.query_row("SELECT * FROM books WHERE id = ?1", [id], row_to_book)
+        .map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

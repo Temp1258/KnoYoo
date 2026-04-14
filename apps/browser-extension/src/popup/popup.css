@@ -67,6 +67,7 @@ body {
 
 .status-dot.online { background: #2ed573; }
 .status-dot.offline { background: #ff4757; }
+.status-dot.warn { background: #ffa502; }
 
 /* Page info */
 .page-info {
@@ -219,6 +220,25 @@ body {
 }
 .verify-btn:hover { background: #5f4dd0; }
 .verify-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+
+/* Re-handshake button: wipes local token and re-auto-connects. */
+.rehandshake-btn {
+  width: 100%;
+  margin-top: 8px;
+  padding: 7px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(108, 92, 231, 0.4);
+  background: rgba(108, 92, 231, 0.12);
+  color: #bfb3ff;
+  font-size: 11px;
+  cursor: pointer;
+  transition: background 0.15s, border-color 0.15s;
+}
+.rehandshake-btn:hover {
+  background: rgba(108, 92, 231, 0.22);
+  border-color: rgba(108, 92, 231, 0.6);
+}
+.rehandshake-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
 /* Verify result message */
 .verify-result {

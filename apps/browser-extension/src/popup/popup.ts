@@ -2,12 +2,13 @@
  * Popup UI — vanilla TypeScript (no framework, keep it lightweight).
  */
 
-import { getToken, setToken, ping, autoHandshake } from "../utils/api";
+import { getToken, setToken, ping, authCheck, autoHandshake, reHandshake } from "../utils/api";
 
 interface PageInfo {
   url: string;
   title: string;
   content: string;
+  raw_content: string;
   source_type: string;
   favicon: string;
   charCount: number;
@@ -15,19 +16,29 @@ interface PageInfo {
 
 interface Status {
   online: boolean;
+  authenticated: boolean;
   queueSize: number;
 }
 
 let pageInfo: PageInfo | null = null;
-let status: Status = { online: false, queueSize: 0 };
+let status: Status = { online: false, authenticated: false, queueSize: 0 };
 let showTokenInput = false;
 let authError = false;
+let rehandshaking = false;
 
 const app = document.getElementById("app")!;
 
 function render() {
-  const statusClass = status.online ? "online" : "offline";
-  const statusText = status.online ? "桌面端已连接" : "桌面端离线";
+  // Three-state indicator: offline, auth-failed, fully connected.
+  // Queueing against a mismatched token silently loses work, so we make the
+  // distinction loud in the UI and offer a one-click re-handshake.
+  const isUsable = status.online && status.authenticated;
+  const statusClass = !status.online ? "offline" : isUsable ? "online" : "warn";
+  const statusText = !status.online
+    ? "桌面端离线"
+    : isUsable
+      ? "桌面端已连接"
+      : "Token 不匹配，点击下方重新握手";
 
   const pageSection = pageInfo
     ? `<div class="page-info">
@@ -42,20 +53,24 @@ function render() {
       ? `<div class="queue-info">有 ${status.queueSize} 条待同步，桌面端上线后自动发送</div>`
       : "";
 
+  const authFailed = status.online && !status.authenticated;
   const tokenSection = showTokenInput
     ? `<div class="settings">
         <div class="settings-header" id="toggleSettings">
           <span>连接设置</span>
           <span class="settings-arrow">&#x25B4;</span>
         </div>
-        ${authError ? '<div class="auth-error">Token 验证失败，请输入正确的 Token</div>' : ""}
+        ${authError || authFailed ? '<div class="auth-error">Token 不匹配，可输入正确 Token 或重新握手</div>' : ""}
         <div class="settings-row">
           <input type="text" id="tokenInput" placeholder="从桌面端复制 Token" />
           <button class="verify-btn" id="verifyBtn">验证</button>
         </div>
+        <button class="rehandshake-btn" id="rehandshakeBtn" ${rehandshaking ? "disabled" : ""}>
+          ${rehandshaking ? "重新握手中…" : "🔄 一键重新握手（清除旧 Token 并重新连接）"}
+        </button>
         <div class="verify-result" id="verifyResult"></div>
       </div>`
-    : `<div class="settings-toggle" id="toggleSettings">连接设置 <span class="settings-arrow">&#x25BE;</span></div>`;
+    : `<div class="settings-toggle" id="toggleSettings">${authFailed ? "⚠️ 连接设置" : "连接设置"} <span class="settings-arrow">&#x25BE;</span></div>`;
 
   app.innerHTML = `
     <div class="header">
@@ -96,6 +111,7 @@ function render() {
     render();
   });
   document.getElementById("verifyBtn")?.addEventListener("click", handleVerifyToken);
+  document.getElementById("rehandshakeBtn")?.addEventListener("click", handleRehandshake);
   const tokenInput = document.getElementById("tokenInput") as HTMLInputElement;
   if (tokenInput) {
     getToken().then((t) => {
@@ -130,30 +146,69 @@ async function handleVerifyToken() {
     return;
   }
 
-  // Save the token first
   await setToken(tokenInput.value.trim());
   btn.disabled = true;
   btn.textContent = "...";
   resultEl.textContent = "";
 
-  // Test connection by trying to save (ping doesn't check token)
-  // We'll just verify ping + token is saved, actual auth test happens on save
-  const isOnline = await ping();
+  // Actually hit the authenticated endpoint — ping alone tells us nothing
+  // about whether THIS token is accepted. Distinguish the three outcomes.
+  const [isOnline, isAuth] = await Promise.all([ping(), authCheck()]);
   btn.disabled = false;
   btn.textContent = "验证";
 
-  if (isOnline) {
-    resultEl.className = "verify-result success";
-    resultEl.textContent = "Token 已保存，桌面端已连接";
+  if (!isOnline) {
+    resultEl.className = "verify-result error";
+    resultEl.textContent = "桌面端未运行，请先启动 KnoYoo";
+    return;
+  }
+  if (!isAuth) {
+    resultEl.className = "verify-result error";
+    resultEl.textContent = "Token 不匹配，请检查是否从桌面端复制的最新值";
+    authError = true;
+    return;
+  }
+  resultEl.className = "verify-result success";
+  resultEl.textContent = "Token 已保存，桌面端已连接";
+  authError = false;
+  status = { ...status, online: true, authenticated: true };
+  setTimeout(() => {
+    showTokenInput = false;
+    render();
+  }, 1500);
+}
+
+async function handleRehandshake() {
+  const resultEl = document.getElementById("verifyResult")!;
+  rehandshaking = true;
+  render();
+  const ok = await reHandshake();
+  rehandshaking = false;
+  if (ok) {
+    const resp = await chrome.runtime.sendMessage({ type: "CHECK_STATUS" });
+    if (resp) status = resp;
     authError = false;
-    // Auto-collapse after 1.5s
+    render();
+    const latest = document.getElementById("verifyResult");
+    if (latest) {
+      latest.className = "verify-result success";
+      latest.textContent = "重新握手成功，已自动保存新 Token";
+    }
     setTimeout(() => {
       showTokenInput = false;
       render();
-    }, 1500);
+    }, 1800);
   } else {
-    resultEl.className = "verify-result error";
-    resultEl.textContent = "桌面端未运行，请先启动 KnoYoo";
+    render();
+    const latest = document.getElementById("verifyResult");
+    if (latest) {
+      latest.className = "verify-result error";
+      latest.textContent = "重新握手失败：请确认桌面端正在运行";
+    }
+    // re-bind resultEl var (we just re-rendered)
+    if (resultEl) {
+      /* noop: kept for reference; latest is the live node after render */
+    }
   }
 }
 
@@ -170,6 +225,7 @@ async function handleSave() {
       url: pageInfo.url,
       title: pageInfo.title,
       content: pageInfo.content,
+      raw_content: pageInfo.raw_content,
       source_type: pageInfo.source_type,
       favicon: pageInfo.favicon,
     },
@@ -178,20 +234,25 @@ async function handleSave() {
   if (response?.success) {
     if (response.queued) {
       btn.className = "save-btn queued";
-      btn.innerHTML = "📦 已暂存，等待桌面端上线";
+      btn.innerHTML =
+        response.reason === "offline"
+          ? "📦 已暂存，等待桌面端上线"
+          : "📦 已暂存，等待连接恢复";
     } else {
       btn.className = "save-btn success";
       btn.innerHTML = "✓ 已收藏";
     }
   } else {
-    // Check if it's an auth error (401)
-    const isAuthErr = response?.error?.includes("401") || response?.error?.includes("unauthorized");
+    const isAuthErr =
+      response?.reason === "auth" ||
+      response?.error?.includes("401") ||
+      response?.error?.includes("unauthorized");
     if (isAuthErr) {
       authError = true;
       showTokenInput = true;
     }
     btn.className = "save-btn primary";
-    btn.textContent = isAuthErr ? "Token 错误，请配置后重试" : "收藏失败，点击重试";
+    btn.textContent = isAuthErr ? "Token 不匹配，请重新握手" : "收藏失败，点击重试";
     btn.disabled = false;
     if (isAuthErr) render();
   }
@@ -232,6 +293,7 @@ async function init() {
         url: tab.url || "",
         title: tab.title || "",
         content: "",
+        raw_content: "",
         source_type: "article",
         favicon: tab.favIconUrl || "",
         charCount: 0,

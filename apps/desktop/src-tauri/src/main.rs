@@ -2,6 +2,7 @@
 
 mod ai;
 mod ai_client;
+mod bilibili;
 mod books;
 mod clip_server;
 mod clips;
@@ -34,6 +35,11 @@ fn main() {
 
     // Start local HTTP server for browser extension communication
     clip_server::start_server();
+
+    // Nudge any books that are stuck in "pending" AI analysis (crashed during
+    // a prior run, or just had their legacy bad metadata cleared by a
+    // migration) so the user doesn't have to manually retry each one.
+    books::resume_pending_ai_extraction();
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
@@ -106,6 +112,7 @@ fn main() {
             clips::mark_clip_read,
             clips::toggle_read_clip,
             clips::add_web_clip,
+            clips::get_clip,
             clips::list_web_clips,
             clips::search_web_clips,
             clips::delete_web_clip,
@@ -177,7 +184,7 @@ fn main() {
             books::set_book_cover,
             books::read_book_cover,
             books::open_book_externally,
-            books::ai_summarize_book,
+            books::ai_extract_book_metadata,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

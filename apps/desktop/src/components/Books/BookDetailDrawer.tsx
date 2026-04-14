@@ -13,7 +13,7 @@ interface Props {
   onDelete: (id: number) => Promise<void>;
   onSetCover: (id: number, imagePath: string) => Promise<Book>;
   onOpenExternally?: (id: number) => Promise<void>;
-  onAiSummarize?: (id: number) => Promise<void>;
+  onAiAnalyze?: (id: number) => Promise<Book>;
 }
 
 const STATUS_OPTIONS: { value: BookStatus; label: string }[] = [
@@ -90,7 +90,7 @@ export default function BookDetailDrawer({
   onDelete,
   onSetCover,
   onOpenExternally,
-  onAiSummarize,
+  onAiAnalyze,
 }: Props) {
   const { showToast } = useToast();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
@@ -249,6 +249,30 @@ export default function BookDetailDrawer({
 
         {/* Scrollable body */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
+          {/* AI status banner: show whenever analysis is running or failed.
+              Title may already be populated from the filename stem — the
+              banner is what tells the user AI is still working (or has
+              given up), so we don't gate it on emptiness. */}
+          {book.aiStatus === "pending" && (
+            <div className="flex items-center gap-2 px-3 py-2 rounded-lg bg-accent/5 border border-accent/15 text-[12px] text-accent-hover">
+              <Sparkles size={12} className="animate-pulse shrink-0" />
+              <span>AI 正在阅读并分析这本书…</span>
+            </div>
+          )}
+          {book.aiStatus === "failed" && (
+            <div className="flex items-start gap-2 px-3 py-2 rounded-lg bg-danger-light border border-danger/20 text-[12px] text-danger">
+              <div className="flex-1">
+                <div className="font-medium">AI 分析失败</div>
+                {book.aiError && (
+                  <div className="text-text-tertiary mt-0.5 line-clamp-3">{book.aiError}</div>
+                )}
+                <div className="text-text-tertiary mt-1">
+                  可点击右下的「让 AI 分析」按钮重试，或手动编辑元数据。
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Cover */}
           <div className="flex gap-4">
             <div className="w-[112px] h-[168px] shrink-0">
@@ -377,21 +401,21 @@ export default function BookDetailDrawer({
             </div>
           </div>
 
-          {/* Description (from metadata or AI) */}
+          {/* Description (AI-generated from the book's own contents) */}
           <div>
             <div className="flex items-center justify-between mb-2">
               <div className="text-[11px] text-text-tertiary">简介</div>
-              {onAiSummarize && (
+              {onAiAnalyze && (
                 <button
                   type="button"
                   disabled={aiBusy}
                   onClick={async () => {
                     setAiBusy(true);
                     try {
-                      await onAiSummarize(book.id);
-                      showToast("AI 摘要已生成", "success");
+                      await onAiAnalyze(book.id);
+                      showToast("AI 已分析图书", "success");
                     } catch (e) {
-                      showToast(`AI 摘要失败：${e}`, "error");
+                      showToast(`AI 分析失败：${e}`, "error");
                     } finally {
                       setAiBusy(false);
                     }
@@ -399,7 +423,7 @@ export default function BookDetailDrawer({
                   className="flex items-center gap-1 text-[11px] text-accent hover:text-accent-hover disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer transition-colors"
                 >
                   <Sparkles size={11} />
-                  {aiBusy ? "生成中…" : "让 AI 生成摘要"}
+                  {aiBusy ? "分析中…" : "让 AI 分析"}
                 </button>
               )}
             </div>
@@ -409,7 +433,7 @@ export default function BookDetailDrawer({
               </p>
             ) : (
               <p className="text-[12px] text-text-tertiary italic">
-                暂无简介{onAiSummarize && "，点击上方按钮让 AI 生成"}
+                暂无简介{onAiAnalyze && "，点击上方按钮让 AI 分析"}
               </p>
             )}
           </div>

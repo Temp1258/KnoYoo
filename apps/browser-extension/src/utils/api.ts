@@ -8,6 +8,10 @@ export interface ClipPayload {
   url: string;
   title: string;
   content: string;
+  /** Full document.body.innerText — serves as the "原始" view on the
+   *  desktop side AND as the fallback when AI cleaning goes wrong or the
+   *  cleaner-selectors picked only a title. */
+  raw_content?: string;
   source_type?: string;
   favicon?: string;
 }
@@ -27,7 +31,7 @@ export async function setToken(token: string): Promise<void> {
   await chrome.storage.local.set({ knoyoo_token: token });
 }
 
-/** Check if desktop app is running. */
+/** Check if desktop app is running (unauthenticated — service up, nothing more). */
 export async function ping(): Promise<boolean> {
   try {
     const resp = await fetch(`${BASE_URL}/api/ping`, {
@@ -38,6 +42,32 @@ export async function ping(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Verify the stored token is accepted by the desktop. Used so the popup can
+ * distinguish "offline" from "connected but token mismatch" — without this
+ * an out-of-sync token silently quotes clips into the offline queue forever.
+ */
+export async function authCheck(): Promise<boolean> {
+  const token = await getToken();
+  if (!token) return false;
+  try {
+    const resp = await fetch(`${BASE_URL}/api/auth-check`, {
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(2000),
+    });
+    return resp.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Force a fresh token handshake: clear local token, then run autoHandshake. */
+export async function reHandshake(): Promise<boolean> {
+  await setToken("");
+  return autoHandshake();
 }
 
 /**

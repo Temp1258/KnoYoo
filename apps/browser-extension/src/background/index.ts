@@ -4,7 +4,7 @@
  * Manages offline queue for clips when desktop is not running.
  */
 
-import { ping, sendClip, sendClipUrl, type ClipPayload } from "../utils/api";
+import { ping, authCheck, sendClip, sendClipUrl, type ClipPayload } from "../utils/api";
 
 // ── Offline queue ────────────────────────────────────────────────────────
 
@@ -48,8 +48,11 @@ async function flushQueue(): Promise<number> {
     const queue = await getQueue();
     if (queue.length === 0) return 0;
 
-    const isOnline = await ping();
-    if (!isOnline) return 0;
+    // Queue drains only when the desktop is both reachable AND our token is
+    // accepted. Without the auth check, a bad token would send 401 on every
+    // item and we'd clear the queue without persisting anything.
+    const [isOnline, isAuth] = await Promise.all([ping(), authCheck()]);
+    if (!isOnline || !isAuth) return 0;
 
     let sent = 0;
     const remaining: QueuedClip[] = [];
@@ -92,33 +95,45 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 });
 
-async function handleSaveClip(clip: ClipPayload): Promise<{ success: boolean; error?: string; queued?: boolean }> {
-  const isOnline = await ping();
+async function handleSaveClip(
+  clip: ClipPayload,
+): Promise<{ success: boolean; error?: string; queued?: boolean; reason?: "offline" | "auth" }> {
+  const [isOnline, isAuth] = await Promise.all([ping(), authCheck()]);
 
   if (!isOnline) {
     await enqueue(clip);
-    return { success: true, queued: true };
+    return { success: true, queued: true, reason: "offline" };
+  }
+  if (!isAuth) {
+    // Don't queue — queued items silently drain once a token arrives, which
+    // is *not* what you want when the token is actively wrong. Surface the
+    // error to the popup so the user can re-handshake.
+    return { success: false, error: "unauthorized", reason: "auth" };
   }
 
   try {
     await sendClip(clip);
     return { success: true };
   } catch (err) {
-    // If send fails, queue it
+    // Transient send failure: queue for later retry.
     await enqueue(clip);
     return { success: true, queued: true, error: String(err) };
   }
 }
 
-async function handleCheckStatus(): Promise<{ online: boolean; queueSize: number }> {
-  const [isOnline, queue] = await Promise.all([ping(), getQueue()]);
+async function handleCheckStatus(): Promise<{
+  online: boolean;
+  authenticated: boolean;
+  queueSize: number;
+}> {
+  const [isOnline, isAuth, queue] = await Promise.all([ping(), authCheck(), getQueue()]);
 
-  // Auto-flush queue when desktop comes online
-  if (isOnline && queue.length > 0) {
-    flushQueue(); // fire and forget
+  // Auto-flush queue only when we can actually deliver items.
+  if (isOnline && isAuth && queue.length > 0) {
+    flushQueue();
   }
 
-  return { online: isOnline, queueSize: queue.length };
+  return { online: isOnline, authenticated: isAuth, queueSize: queue.length };
 }
 
 // ── Context menu (right-click) ───────────────────────────────────────────
@@ -166,11 +181,23 @@ chrome.contextMenus.onClicked.addListener(async (info, _tab) => {
     notify("KnoYoo", isVideo ? "视频已导入（含字幕转录）" : "网页已收藏");
   } catch (err) {
     console.warn(`[KnoYoo] Failed to import ${hint} ${url}:`, err);
-    await enqueue({ url, title: url, content: "", source_type: hint });
-    notify(
-      "KnoYoo 导入失败",
-      `${String(err).slice(0, 200)}（已加入离线队列，稍后重试）`,
-    );
+    const msg = String(err);
+    const isOfflineOrAuth = msg.includes("Failed to fetch") || msg.includes("401");
+    if (isOfflineOrAuth) {
+      // Queue makes sense only when the desktop is unreachable/unauthed —
+      // the same URL will work once it comes back. For 422/5xx from a
+      // successful hit, the server already tried html_extract and failed
+      // (typical for modern SPAs where the initial HTML has no article
+      // content); re-queueing with empty payload would just spam the DB
+      // with title-only clips.
+      await enqueue({ url, title: url, content: "", source_type: hint });
+      notify("KnoYoo 已暂存", "桌面端暂不可用，已加入离线队列");
+    } else {
+      notify(
+        "KnoYoo 导入失败",
+        `服务端无法抓取此页面（多为 SPA/登录墙站点）。请打开页面后使用一键收藏`,
+      );
+    }
   }
 });
 

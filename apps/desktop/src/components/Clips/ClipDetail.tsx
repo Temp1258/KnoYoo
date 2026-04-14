@@ -64,9 +64,13 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
   const [newTag, setNewTag] = useState("");
   const [saving, setSaving] = useState(false);
 
-  // Reading progress
-  const [progress, setProgress] = useState(0);
+  // Reading progress. We write the bar's width directly via ref + rAF
+  // instead of setState to avoid re-rendering the whole detail view (which
+  // includes a potentially huge ReactMarkdown tree) on every scroll event.
+  // Scroll handlers that setState cause noticeable jank on long articles.
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const progressBarRef = useRef<HTMLDivElement | null>(null);
+  const rafIdRef = useRef<number | null>(null);
 
   // Font size
   const [fontSize, setFontSize] = useState(() => {
@@ -74,9 +78,15 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
     return saved ? Number(saved) : DEFAULT_FONT_SIZE;
   });
 
+  // Content view toggle: readable (AI-cleaned content) vs. raw dump. Raw is
+  // hidden for clips that predate the 3-stage pipeline (empty raw_content).
+  const [viewMode, setViewMode] = useState<"readable" | "raw">("readable");
+  const hasRaw = !!clip.raw_content;
+  const displayedContent = viewMode === "raw" && hasRaw ? clip.raw_content : clip.content;
+
   // TOC
   const [tocExpanded, setTocExpanded] = useState(false);
-  const headings = useMemo(() => extractHeadings(clip.content), [clip.content]);
+  const headings = useMemo(() => extractHeadings(displayedContent), [displayedContent]);
 
   // Export
   const { exportClip } = useExport();
@@ -92,7 +102,8 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
   const [editingNote, setEditingNote] = useState(false);
   const [noteDraft, setNoteDraft] = useState("");
 
-  // Find nearest scrollable ancestor and track progress
+  // Find nearest scrollable ancestor and drive progress bar directly via
+  // ref/rAF — no React state, no re-render on scroll.
   useEffect(() => {
     const findScrollParent = (el: HTMLElement | null): HTMLElement | null => {
       if (!el) return null;
@@ -109,13 +120,30 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
     };
     const container = findScrollParent(scrollRef.current);
     if (!container) return;
-    const onScroll = () => {
+
+    const update = () => {
+      rafIdRef.current = null;
+      const bar = progressBarRef.current;
+      if (!bar) return;
       const scrollable = container.scrollHeight - container.clientHeight;
-      setProgress(scrollable > 0 ? (container.scrollTop / scrollable) * 100 : 0);
+      const pct = scrollable > 0 ? (container.scrollTop / scrollable) * 100 : 0;
+      bar.style.width = `${pct}%`;
     };
+    const onScroll = () => {
+      // Coalesce scroll events into one rAF-aligned DOM write.
+      if (rafIdRef.current != null) return;
+      rafIdRef.current = requestAnimationFrame(update);
+    };
+
     container.addEventListener("scroll", onScroll, { passive: true });
-    onScroll(); // initial calculation
-    return () => container.removeEventListener("scroll", onScroll);
+    update(); // initial paint
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      if (rafIdRef.current != null) {
+        cancelAnimationFrame(rafIdRef.current);
+        rafIdRef.current = null;
+      }
+    };
   }, [clip.id]);
 
   useEffect(() => {
@@ -148,6 +176,31 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
       stale = true;
     };
   }, [clip.id]);
+
+  // Poll while the AI pipeline is still working on this clip. We detect
+  // "in-flight" as "summary is empty" — the last stage sets it. Capped at
+  // 60s so a failed AI run doesn't keep us polling forever.
+  useEffect(() => {
+    if (clip.summary) return;
+    let cancelled = false;
+    const interval = setInterval(async () => {
+      if (cancelled) return;
+      try {
+        const fresh = await tauriInvoke<WebClip>("get_clip", { id: clip.id });
+        if (!cancelled && fresh.summary) {
+          onUpdate?.(fresh);
+        }
+      } catch {
+        // transient — next tick retries
+      }
+    }, 4000);
+    const stopTimer = setTimeout(() => clearInterval(interval), 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      clearTimeout(stopTimer);
+    };
+  }, [clip.id, clip.summary, onUpdate]);
 
   const domain = (() => {
     try {
@@ -213,10 +266,12 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
 
   return (
     <div ref={scrollRef}>
-      {/* Reading progress bar */}
+      {/* Reading progress bar — width set imperatively via ref to avoid
+          re-rendering ReactMarkdown on every scroll tick. */}
       <div
-        className="sticky top-0 left-0 h-0.5 bg-accent z-20 transition-all duration-75"
-        style={{ width: `${progress}%` }}
+        ref={progressBarRef}
+        className="sticky top-0 left-0 h-0.5 bg-accent z-20"
+        style={{ width: "0%" }}
       />
 
       {/* Sticky back button bar */}
@@ -560,40 +615,78 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
         </div>
       )}
 
+      {/* Content view toggle (only visible when we have a raw dump) */}
+      {hasRaw && (
+        <div className="flex items-center gap-1 mb-3 text-[12px]">
+          <button
+            onClick={() => setViewMode("readable")}
+            className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+              viewMode === "readable"
+                ? "bg-accent/10 text-accent font-medium"
+                : "text-text-tertiary hover:text-text"
+            }`}
+          >
+            可读版
+          </button>
+          <button
+            onClick={() => setViewMode("raw")}
+            className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+              viewMode === "raw"
+                ? "bg-accent/10 text-accent font-medium"
+                : "text-text-tertiary hover:text-text"
+            }`}
+            title="未经 AI 清洗的原始抓取文本"
+          >
+            原始
+          </button>
+          {!clip.summary && (
+            <span className="ml-2 text-[11px] text-text-tertiary italic">AI 正在清洗和总结…</span>
+          )}
+        </div>
+      )}
+
       {/* Content (Markdown) */}
       <div className="prose-clip" style={{ fontSize: `${fontSize}px` }}>
-        {clip.content ? (
-          <ReactMarkdown
-            remarkPlugins={[remarkGfm]}
-            components={{
-              h1: ({ children }) => {
-                const text = String(children);
-                const id = text
-                  .toLowerCase()
-                  .replace(/[^\w\u4e00-\u9fff]+/g, "-")
-                  .replace(/^-|-$/g, "");
-                return <h1 id={id}>{children}</h1>;
-              },
-              h2: ({ children }) => {
-                const text = String(children);
-                const id = text
-                  .toLowerCase()
-                  .replace(/[^\w\u4e00-\u9fff]+/g, "-")
-                  .replace(/^-|-$/g, "");
-                return <h2 id={id}>{children}</h2>;
-              },
-              h3: ({ children }) => {
-                const text = String(children);
-                const id = text
-                  .toLowerCase()
-                  .replace(/[^\w\u4e00-\u9fff]+/g, "-")
-                  .replace(/^-|-$/g, "");
-                return <h3 id={id}>{children}</h3>;
-              },
-            }}
-          >
-            {clip.content}
-          </ReactMarkdown>
+        {displayedContent ? (
+          viewMode === "raw" ? (
+            // Raw dump is plain text — render as <pre> to preserve all
+            // whitespace and avoid Markdown misinterpreting stray symbols.
+            <pre className="whitespace-pre-wrap break-words text-text-secondary font-sans leading-relaxed">
+              {displayedContent}
+            </pre>
+          ) : (
+            <ReactMarkdown
+              remarkPlugins={[remarkGfm]}
+              components={{
+                h1: ({ children }) => {
+                  const text = String(children);
+                  const id = text
+                    .toLowerCase()
+                    .replace(/[^\w\u4e00-\u9fff]+/g, "-")
+                    .replace(/^-|-$/g, "");
+                  return <h1 id={id}>{children}</h1>;
+                },
+                h2: ({ children }) => {
+                  const text = String(children);
+                  const id = text
+                    .toLowerCase()
+                    .replace(/[^\w\u4e00-\u9fff]+/g, "-")
+                    .replace(/^-|-$/g, "");
+                  return <h2 id={id}>{children}</h2>;
+                },
+                h3: ({ children }) => {
+                  const text = String(children);
+                  const id = text
+                    .toLowerCase()
+                    .replace(/[^\w\u4e00-\u9fff]+/g, "-")
+                    .replace(/^-|-$/g, "");
+                  return <h3 id={id}>{children}</h3>;
+                },
+              }}
+            >
+              {displayedContent}
+            </ReactMarkdown>
+          )
         ) : (
           <p className="text-text-tertiary">（无正文内容）</p>
         )}

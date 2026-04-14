@@ -20,7 +20,14 @@ const MAX_CONTENT_CHARS: usize = 50_000;
 /// Extracted page data.
 pub struct ExtractedPage {
     pub title: String,
+    /// First-pass scraped content (selector-based extraction). Gets replaced
+    /// by the AI-cleaned version once stage 2 of the pipeline runs.
     pub content: String,
+    /// Full-body dump with only script/style/noscript/svg stripped. Preserved
+    /// so the UI can offer a "原始" toggle and AI has a complete input to
+    /// clean from. For YouTube/Bilibili this equals `content` because the
+    /// API-sourced payload is already the cleanest version available.
+    pub raw_content: String,
     pub favicon: String,
     pub og_image: String,
 }
@@ -91,6 +98,12 @@ pub fn fetch_and_extract(url: &str) -> Result<ExtractedPage, String> {
         return extract_youtube(url);
     }
 
+    // Bilibili has the same problem as YouTube — homepage share links carry
+    // only SPA boilerplate. We hit the public `view` API by BV id instead.
+    if crate::bilibili::is_bilibili_url(url) {
+        return extract_bilibili(url);
+    }
+
     let html = fetch_html(url)?;
     let doc = Html::parse_document(&html);
 
@@ -98,16 +111,54 @@ pub fn fetch_and_extract(url: &str) -> Result<ExtractedPage, String> {
     let favicon = extract_favicon(&doc, url);
     let og_image = extract_og_image(&doc, url);
     let content = extract_main_content(&doc);
+    let raw_content = extract_all_body_text(&doc);
 
-    if content.len() < 50 {
+    if content.len() < 50 && raw_content.len() < 50 {
         return Err("Extracted content too short, page may require JavaScript rendering".into());
     }
 
     Ok(ExtractedPage {
         title,
         content,
+        raw_content,
         favicon,
         og_image,
+    })
+}
+
+fn extract_bilibili(url: &str) -> Result<ExtractedPage, String> {
+    let v = crate::bilibili::fetch_video(url)?;
+
+    let mut parts: Vec<String> = Vec::new();
+    if !v.uploader.is_empty() {
+        parts.push(format!("UP主：{}", v.uploader));
+    }
+    if let Some(sec) = v.duration_sec {
+        // Render as `MM:SS` / `H:MM:SS` so the clip header reads naturally.
+        let (h, m, s) = (sec / 3600, (sec % 3600) / 60, sec % 60);
+        let dur = if h > 0 {
+            format!("{h}:{m:02}:{s:02}")
+        } else {
+            format!("{m}:{s:02}")
+        };
+        parts.push(format!("时长：{dur}"));
+    }
+    parts.push(format!("BV号：{}", v.bvid));
+    if !v.description.trim().is_empty() {
+        parts.push(format!("## 视频简介\n\n{}", v.description.trim()));
+    } else {
+        parts.push(
+            "## 视频简介\n\n（该视频无简介。未来版本将补充自动字幕转录。）".to_string(),
+        );
+    }
+
+    let content = parts.join("\n\n");
+    Ok(ExtractedPage {
+        title: v.title,
+        raw_content: content.clone(),
+        content,
+        favicon: "https://www.bilibili.com/favicon.ico".into(),
+        og_image: v.thumbnail,
     })
 }
 
@@ -143,17 +194,19 @@ fn extract_youtube(url: &str) -> Result<ExtractedPage, String> {
         return Err("无法从该 YouTube 链接提取任何内容".into());
     }
 
+    let final_content = if content.trim().is_empty() {
+        "（该视频无字幕，也无可用简介）".to_string()
+    } else {
+        content
+    };
     Ok(ExtractedPage {
         title: if v.title.is_empty() {
             "YouTube 视频".to_string()
         } else {
             v.title
         },
-        content: if content.trim().is_empty() {
-            "（该视频无字幕，也无可用简介）".to_string()
-        } else {
-            content
-        },
+        raw_content: final_content.clone(),
+        content: final_content,
         favicon: "https://www.youtube.com/s/desktop/favicon.ico".into(),
         og_image: v.thumbnail,
     })
@@ -351,6 +404,72 @@ fn extract_main_content(doc: &Html) -> String {
     }
 
     String::new()
+}
+
+/// Full-body text dump used as the "raw" stage of the clip pipeline.
+///
+/// Unlike `extract_main_content` (which tries to pick the article container),
+/// this walks the entire body, strips only script/style/noscript/svg, and
+/// inserts newlines at block-element boundaries so paragraphs stay separate.
+/// Noisy output is fine — the AI cleaning stage is designed to strip nav,
+/// ads, and comments.
+fn extract_all_body_text(doc: &Html) -> String {
+    let body_sel = match Selector::parse("body") {
+        Ok(s) => s,
+        Err(_) => return String::new(),
+    };
+    let Some(body) = doc.select(&body_sel).next() else {
+        return String::new();
+    };
+    let mut buf = String::new();
+    walk_all_text(&body, &mut buf);
+    collapse_blank_lines(&truncate_content(&buf))
+}
+
+fn walk_all_text(el: &scraper::ElementRef, out: &mut String) {
+    const NOISE: &[&str] = &["script", "style", "noscript", "svg", "template"];
+    const BLOCK: &[&str] = &[
+        "p", "div", "br", "h1", "h2", "h3", "h4", "h5", "h6", "li", "tr",
+        "blockquote", "pre", "article", "section", "header", "footer",
+    ];
+    for child in el.children() {
+        if let Some(e) = child.value().as_element() {
+            let tag = e.name().to_lowercase();
+            if NOISE.contains(&tag.as_str()) {
+                continue;
+            }
+            if let Some(er) = scraper::ElementRef::wrap(child) {
+                walk_all_text(&er, out);
+                if BLOCK.contains(&tag.as_str()) && !out.ends_with('\n') {
+                    out.push('\n');
+                }
+            }
+        } else if let Some(text) = child.value().as_text() {
+            out.push_str(text);
+        }
+    }
+}
+
+/// Collapse runs of 3+ blank lines into 2, and trim trailing whitespace per
+/// line. Keeps the raw dump roughly the same size as the source while letting
+/// Markdown viewers show paragraph boundaries.
+fn collapse_blank_lines(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut blanks = 0usize;
+    for line in s.lines() {
+        let t = line.trim_end();
+        if t.is_empty() {
+            blanks += 1;
+            if blanks <= 1 {
+                out.push('\n');
+            }
+        } else {
+            blanks = 0;
+            out.push_str(t);
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Collect text from an element, joining with newlines for block elements.
