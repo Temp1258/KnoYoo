@@ -5,6 +5,7 @@
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
+use std::sync::Mutex;
 
 use crate::clips::NewClip;
 use crate::db::open_db;
@@ -12,6 +13,36 @@ use crate::html_extract;
 
 const BIND_ADDR: &str = "127.0.0.1:19836";
 const MAX_BODY_SIZE: usize = 2 * 1024 * 1024; // 2 MB
+const HANDSHAKE_COOLDOWN_SECS: u64 = 3;
+
+/// Thread-safe rate limiter for handshake endpoint.
+static LAST_HANDSHAKE: Mutex<u64> = Mutex::new(0);
+
+/// Generate a cryptographically secure random token via OS entropy (cross-platform).
+fn generate_secure_token() -> Result<String, String> {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).map_err(|e| format!("随机数生成失败: {e}"))?;
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let token: String = bytes
+        .iter()
+        .flat_map(|b| [HEX[(b >> 4) as usize] as char, HEX[(b & 0xf) as usize] as char])
+        .collect();
+    Ok(token)
+}
+
+/// Constant-time string comparison to prevent timing attacks.
+/// Always iterates through the full max length; uses u32 accumulator
+/// to avoid truncation for strings longer than 255 bytes.
+fn constant_time_eq(a: &str, b: &str) -> bool {
+    let max_len = a.len().max(b.len());
+    let mut diff: u32 = if a.len() != b.len() { 1 } else { 0 };
+    for i in 0..max_len {
+        let x = a.as_bytes().get(i).copied().unwrap_or(0);
+        let y = b.as_bytes().get(i).copied().unwrap_or(0);
+        diff |= (x ^ y) as u32;
+    }
+    diff == 0
+}
 
 /// Get or generate the local auth token.
 pub fn get_or_create_token() -> Result<String, String> {
@@ -19,18 +50,8 @@ pub fn get_or_create_token() -> Result<String, String> {
     if let Some(token) = crate::db::kv_get(&conn, "clip_server_token")? {
         return Ok(token);
     }
-    // Generate a cryptographically random token
-    let token: String = {
-        use std::collections::hash_map::RandomState;
-        use std::hash::{BuildHasher, Hasher};
-        const CHARSET: &[u8] = b"abcdefghijklmnopqrstuvwxyz0123456789";
-        (0..32)
-            .map(|_| {
-                let idx = RandomState::new().build_hasher().finish() as usize % CHARSET.len();
-                CHARSET[idx] as char
-            })
-            .collect()
-    };
+
+    let token = generate_secure_token()?;
 
     conn.execute(
         "INSERT INTO app_kv(key, val) VALUES('clip_server_token', ?1)
@@ -130,6 +151,43 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         return Ok(());
     }
 
+    // Route: POST /api/handshake — auto-connect browser extension (no auth required)
+    // Rate-limited with Mutex to prevent brute-force from malicious local processes.
+    if request_line.starts_with("POST /api/handshake") {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        {
+            let mut last = LAST_HANDSHAKE.lock().unwrap_or_else(|e| e.into_inner());
+            if now.saturating_sub(*last) < HANDSHAKE_COOLDOWN_SECS {
+                send_json_response(&mut stream, 429, r#"{"error":"too many requests"}"#)?;
+                return Ok(());
+            }
+            *last = now;
+        }
+
+        let content_length: usize = headers
+            .get("content-length")
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if content_length > 0 && content_length <= 1024 {
+            let mut body = vec![0u8; content_length];
+            reader.read_exact(&mut body).ok();
+        }
+
+        let token = get_or_create_token()?;
+        let resp = serde_json::json!({
+            "status": "ok",
+            "token": token,
+            "port": 19836
+        })
+        .to_string();
+        send_json_response(&mut stream, 200, &resp)?;
+        tracing::info!("Browser extension handshake completed");
+        return Ok(());
+    }
+
     // Route: POST /api/clip (exact — must not match /api/clip-url)
     if request_line.starts_with("POST /api/clip ")
         || request_line.starts_with("POST /api/clip?")
@@ -138,7 +196,7 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         let token = get_or_create_token()?;
         let auth = headers.get("authorization").cloned().unwrap_or_default();
         let provided_token = auth.strip_prefix("Bearer ").unwrap_or(&auth);
-        if provided_token != token {
+        if !constant_time_eq(provided_token, &token) {
             send_json_response(&mut stream, 401, r#"{"error":"unauthorized"}"#)?;
             return Ok(());
         }
@@ -161,8 +219,13 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body).map_err(|e| e.to_string())?;
 
-        let clip: NewClip =
-            serde_json::from_slice(&body).map_err(|e| format!("invalid JSON: {e}"))?;
+        let clip: NewClip = match serde_json::from_slice(&body) {
+            Ok(c) => c,
+            Err(_) => {
+                send_json_response(&mut stream, 400, r#"{"error":"invalid JSON"}"#)?;
+                return Ok(());
+            }
+        };
 
         match crate::clips::add_web_clip(clip) {
             Ok(saved) => {
@@ -171,8 +234,8 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
                 send_json_response(&mut stream, 200, &resp)?;
             }
             Err(e) => {
-                let err_body = serde_json::json!({"error": e}).to_string();
-                send_json_response(&mut stream, 500, &err_body)?;
+                tracing::error!("Clip save failed: {}", e);
+                send_json_response(&mut stream, 500, r#"{"error":"save failed"}"#)?;
             }
         }
         return Ok(());
@@ -184,7 +247,7 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         let token = get_or_create_token()?;
         let auth = headers.get("authorization").cloned().unwrap_or_default();
         let provided_token = auth.strip_prefix("Bearer ").unwrap_or(&auth);
-        if provided_token != token {
+        if !constant_time_eq(provided_token, &token) {
             send_json_response(&mut stream, 401, r#"{"error":"unauthorized"}"#)?;
             return Ok(());
         }
@@ -217,8 +280,13 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
             "article".to_string()
         }
 
-        let req: ClipUrlRequest =
-            serde_json::from_slice(&body).map_err(|e| format!("invalid JSON: {e}"))?;
+        let req: ClipUrlRequest = match serde_json::from_slice(&body) {
+            Ok(r) => r,
+            Err(_) => {
+                send_json_response(&mut stream, 400, r#"{"error":"invalid JSON"}"#)?;
+                return Ok(());
+            }
+        };
 
         // Fetch and extract content from the URL
         match html_extract::fetch_and_extract(&req.url) {
@@ -238,14 +306,14 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
                         send_json_response(&mut stream, 200, &resp)?;
                     }
                     Err(e) => {
-                        let err_body = serde_json::json!({"error": e}).to_string();
-                        send_json_response(&mut stream, 500, &err_body)?;
+                        tracing::error!("Clip-url save failed: {}", e);
+                        send_json_response(&mut stream, 500, r#"{"error":"save failed"}"#)?;
                     }
                 }
             }
             Err(e) => {
-                let err_body = serde_json::json!({"error": e}).to_string();
-                send_json_response(&mut stream, 422, &err_body)?;
+                tracing::error!("Clip-url fetch failed: {}", e);
+                send_json_response(&mut stream, 422, r#"{"error":"fetch failed"}"#)?;
             }
         }
         return Ok(());
@@ -264,6 +332,7 @@ fn send_json_response(
     let status_text = match status {
         200 => "OK",
         204 => "No Content",
+        400 => "Bad Request",
         401 => "Unauthorized",
         404 => "Not Found",
         413 => "Payload Too Large",

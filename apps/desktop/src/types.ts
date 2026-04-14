@@ -8,6 +8,13 @@ export type AIConfig = {
 export type ChatMessage = {
   role: "user" | "assistant";
   content: string;
+  timestamp?: string;
+  error?: boolean;
+};
+
+export type AiChatResponse = {
+  content: string;
+  referenced_clip_ids: number[];
 };
 
 export type WebClip = {
@@ -24,6 +31,7 @@ export type WebClip = {
   is_starred: boolean;
   created_at: string;
   updated_at: string;
+  deleted_at: string | null;
 };
 
 export type Collection = {
@@ -32,6 +40,7 @@ export type Collection = {
   description: string;
   icon: string;
   color: string;
+  filter_rule: string;
   clip_count: number;
   created_at: string;
   updated_at: string;
@@ -41,6 +50,14 @@ export type ClipNote = {
   id: number;
   clip_id: number;
   content: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ChatSession = {
+  id: number;
+  title: string;
+  messages: ChatMessage[];
   created_at: string;
   updated_at: string;
 };

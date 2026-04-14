@@ -141,8 +141,29 @@ export default function ClipsPage() {
     try {
       let results: WebClip[];
       if (f.query.trim()) {
-        results = await tauriInvoke<WebClip[]>("search_web_clips", { q: f.query });
+        results = await tauriInvoke<WebClip[]>("search_web_clips", {
+          q: f.query,
+          page: 1,
+          pageSize: 20,
+        });
         if (f.starredOnly) results = results.filter((c) => c.is_starred);
+        // Auto-fallback to AI search when FTS returns empty
+        if (results.length === 0 && !aiSearchMode) {
+          if (currentRequestId !== requestIdRef.current) return;
+          setFuzzyLoading(true);
+          try {
+            const aiResults = await tauriInvoke<WebClip[]>("ai_fuzzy_search_clips", {
+              description: f.query,
+            });
+            if (currentRequestId !== requestIdRef.current) return;
+            if (aiResults.length > 0) {
+              setFuzzyResults(aiResults);
+            }
+          } catch {
+            // AI search failed silently — show empty FTS results
+          }
+          setFuzzyLoading(false);
+        }
       } else {
         const dateFrom = getDateFrom(f.timeRange);
         results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
@@ -158,7 +179,7 @@ export default function ClipsPage() {
       // Discard stale response if a newer request was started
       if (currentRequestId !== requestIdRef.current) return;
       setClips(results);
-      setHasMore(!f.query.trim() && results.length >= 20);
+      setHasMore(results.length >= 20);
       const count = await tauriInvoke<number>("count_web_clips");
       if (currentRequestId !== requestIdRef.current) return;
       setTotal(count);
@@ -174,23 +195,31 @@ export default function ClipsPage() {
   clipsLengthRef.current = clips.length;
 
   const loadMore = useCallback(async () => {
-    if (loadingMore || !hasMore || filtersRef.current.query.trim()) return;
-    const snapshotId = requestIdRef.current; // snapshot to detect filter changes
+    if (loadingMore || !hasMore) return;
+    const snapshotId = requestIdRef.current;
     setLoadingMore(true);
     try {
       const f = filtersRef.current;
       const nextPage = Math.floor(clipsLengthRef.current / 20) + 1;
-      const dateFrom = getDateFrom(f.timeRange);
-      const results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
-        page: nextPage,
-        pageSize: 20,
-        tag: f.selectedTag,
-        starred: f.starredOnly || undefined,
-        unread: f.unreadOnly || undefined,
-        domain: f.selectedDomain,
-        dateFrom,
-      });
-      // Discard if filters changed while loading
+      let results: WebClip[];
+      if (f.query.trim()) {
+        results = await tauriInvoke<WebClip[]>("search_web_clips", {
+          q: f.query,
+          page: nextPage,
+          pageSize: 20,
+        });
+      } else {
+        const dateFrom = getDateFrom(f.timeRange);
+        results = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
+          page: nextPage,
+          pageSize: 20,
+          tag: f.selectedTag,
+          starred: f.starredOnly || undefined,
+          unread: f.unreadOnly || undefined,
+          domain: f.selectedDomain,
+          dateFrom,
+        });
+      }
       if (snapshotId !== requestIdRef.current) return;
       if (results.length < 20) setHasMore(false);
       if (results.length > 0) {
@@ -361,7 +390,7 @@ export default function ClipsPage() {
     if (selectedClip?.id === id) setSelectedClip(null);
     // Start slide-out animation
     setSlidingOutIds((prev) => new Set(prev).add(id));
-    // After animation, remove from list and schedule actual delete
+    // After animation, remove from list and schedule actual soft-delete
     const animTimer = setTimeout(() => {
       animationTimersRef.current.delete(id);
       setSlidingOutIds((prev) => {
@@ -373,9 +402,9 @@ export default function ClipsPage() {
       const timer = setTimeout(() => {
         pendingDeletesRef.current.delete(id);
         tauriInvoke("delete_web_clip", { id }).then(() => loadMeta());
-      }, 5000);
+      }, 15000);
       pendingDeletesRef.current.set(id, { timer, clip });
-      showToast("已删除", "info", {
+      showToast("已移至回收站（可在回收站中恢复）", "info", {
         label: "撤销",
         onClick: () => {
           const pending = pendingDeletesRef.current.get(id);
@@ -847,20 +876,15 @@ export default function ClipsPage() {
               ) : query.trim() ? (
                 <div className="flex flex-col items-center justify-center py-16 text-text-tertiary">
                   <Library size={48} strokeWidth={1} className="mb-4 opacity-40" />
-                  <p className="text-[14px] mb-1">没有找到精确匹配的结果</p>
-                  <button
-                    onClick={() => handleAISearch(query)}
-                    disabled={fuzzyLoading}
-                    className="text-[13px] text-accent hover:underline cursor-pointer mt-2 flex items-center gap-1.5"
-                  >
-                    <Sparkles size={13} />
-                    {fuzzyLoading ? "AI 搜索中..." : "试试 AI 搜索？"}
-                  </button>
+                  <p className="text-[14px] mb-1">
+                    {fuzzyLoading ? "AI 正在搜索中..." : "没有找到匹配的结果"}
+                  </p>
+                  {fuzzyLoading && <Loader2 size={16} className="animate-spin text-accent mt-2" />}
+                  {!fuzzyLoading && <p className="text-[12px]">试试换个关键词或描述方式</p>}
                 </div>
               ) : total === 0 ? (
                 showOnboarding ? (
                   <OnboardingFlow
-                    serverToken={serverToken}
                     onComplete={() => {
                       setShowOnboarding(false);
                       loadClips();
@@ -910,6 +934,13 @@ export default function ClipsPage() {
                   <SkeletonCard />
                 </div>
               )}
+            </div>
+          )}
+
+          {/* End of results indicator */}
+          {!loading && !hasMore && displayClips.length > 0 && !fuzzyResults && (
+            <div className="flex items-center justify-center py-6 text-text-tertiary text-[12px]">
+              已显示全部 {displayClips.length} 条结果
             </div>
           )}
         </div>

@@ -385,5 +385,9 @@ function escapeHtml(str: string): string {
   return div.innerHTML;
 }
 
-// Show the toast when page loads
-showClipToast();
+// Show toast by default; user can disable in extension popup settings
+chrome.storage.local.get("auto_popup_enabled", (result) => {
+  if (result.auto_popup_enabled !== false) {
+    showClipToast();
+  }
+});

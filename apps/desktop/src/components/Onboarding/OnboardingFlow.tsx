@@ -1,23 +1,14 @@
 import { useState } from "react";
-import { Copy, Check, Sparkles, ArrowRight, X } from "lucide-react";
+import { Chrome, ArrowRight, X, Sparkles, Shield } from "lucide-react";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import Button from "../ui/Button";
-import AISettingsPanel from "../AI/AISettingsPanel";
 
 type Props = {
-  serverToken: string;
   onComplete: () => void;
 };
 
-export default function OnboardingFlow({ serverToken, onComplete }: Props) {
+export default function OnboardingFlow({ onComplete }: Props) {
   const [step, setStep] = useState(0);
-  const [tokenCopied, setTokenCopied] = useState(false);
-
-  const handleCopyToken = async () => {
-    await navigator.clipboard.writeText(serverToken);
-    setTokenCopied(true);
-    setTimeout(() => setTokenCopied(false), 2000);
-  };
 
   const handleSkip = async () => {
     await tauriInvoke("set_onboarding_complete").catch(console.error);
@@ -32,78 +23,59 @@ export default function OnboardingFlow({ serverToken, onComplete }: Props) {
   const steps = [
     {
       title: "欢迎使用 KnoYoo",
-      description: "你的个人知识库，一键收藏、AI 自动整理、智能检索",
+      description: "你的本地优先个人知识库",
       content: (
-        <div className="flex flex-col items-center py-8">
+        <div className="flex flex-col items-center py-6">
           <img src="/logo.png" alt="KnoYoo" className="w-20 h-20 rounded-2xl mb-4" />
-          <p className="text-[14px] text-text-secondary text-center max-w-sm">
-            KnoYoo 帮你将浏览器中有价值的内容变成可搜索、可关联的个人知识库。
+          <p className="text-[14px] text-text-secondary text-center max-w-sm leading-relaxed">
+            KnoYoo 帮你将浏览器中有价值的内容变成可搜索、可关联的个人知识库。 AI
+            自动整理摘要和标签，让你快速找到需要的知识。
           </p>
-        </div>
-      ),
-    },
-    {
-      title: "安装浏览器插件",
-      description: "从项目目录加载 Chrome 插件",
-      content: (
-        <div className="space-y-3 py-4">
-          <div className="p-4 rounded-xl bg-bg-tertiary text-[13px] text-text-secondary leading-relaxed">
-            <ol className="list-decimal pl-4 space-y-2 m-0">
-              <li>
-                打开 Chrome，访问{" "}
-                <code className="bg-bg-secondary px-1.5 py-0.5 rounded text-[12px]">
-                  chrome://extensions
-                </code>
-              </li>
-              <li>开启右上角的"开发者模式"</li>
-              <li>点击"加载已解压的扩展程序"</li>
-              <li>
-                选择项目中的{" "}
-                <code className="bg-bg-secondary px-1.5 py-0.5 rounded text-[12px]">
-                  apps/browser-extension/dist
-                </code>{" "}
-                目录
-              </li>
-            </ol>
+          <div className="flex items-center gap-2 mt-6 px-4 py-2.5 rounded-xl bg-green-500/5 border border-green-500/15">
+            <Shield size={14} className="text-green-600 shrink-0" />
+            <span className="text-[12px] text-green-700">
+              所有数据 100% 存储在本地设备，永远不会上传到云端
+            </span>
           </div>
         </div>
       ),
     },
     {
-      title: "配置连接 Token",
-      description: "复制 Token 到插件设置中建立连接",
+      title: "安装浏览器扩展",
+      description: "一键保存任何网页到知识库",
       content: (
-        <div className="flex flex-col items-center py-6 gap-4">
-          <div className="px-4 py-3 rounded-xl bg-bg-tertiary text-[13px] font-mono text-text break-all max-w-sm text-center">
-            {serverToken || "加载中..."}
+        <div className="space-y-4 py-4">
+          <div className="flex items-start gap-3 p-4 rounded-xl bg-bg-tertiary">
+            <Chrome size={20} className="text-accent shrink-0 mt-0.5" />
+            <div>
+              <p className="text-[13px] text-text font-medium m-0">Chrome / Edge 扩展</p>
+              <p className="text-[12px] text-text-secondary mt-1 m-0 leading-relaxed">
+                安装扩展后，浏览任何网页时点击扩展图标即可一键保存。
+                扩展会自动连接桌面端，无需手动配置。
+              </p>
+              <div className="mt-3 p-3 rounded-lg bg-bg-secondary text-[12px] text-text-secondary leading-relaxed">
+                <p className="m-0 font-medium text-text mb-1.5">安装步骤：</p>
+                <ol className="list-decimal pl-4 space-y-1 m-0">
+                  <li>
+                    打开{" "}
+                    <code className="bg-bg-tertiary px-1 py-0.5 rounded text-[11px]">
+                      chrome://extensions
+                    </code>
+                  </li>
+                  <li>开启"开发者模式"</li>
+                  <li>点击"加载已解压的扩展程序"</li>
+                  <li>
+                    选择{" "}
+                    <code className="bg-bg-tertiary px-1 py-0.5 rounded text-[11px]">
+                      apps/browser-extension/dist
+                    </code>
+                  </li>
+                </ol>
+              </div>
+            </div>
           </div>
-          <Button variant="primary" size="sm" onClick={handleCopyToken}>
-            {tokenCopied ? <Check size={14} /> : <Copy size={14} />}
-            {tokenCopied ? "已复制" : "复制 Token"}
-          </Button>
-          <p className="text-[12px] text-text-tertiary text-center">
-            在浏览器插件弹窗中展开"连接设置"，粘贴此 Token
-          </p>
-        </div>
-      ),
-    },
-    {
-      title: "配置 AI（可选）",
-      description: "配置 AI 后收藏内容会自动生成摘要和标签",
-      content: (
-        <div className="max-h-64 overflow-y-auto">
-          <AISettingsPanel />
-        </div>
-      ),
-    },
-    {
-      title: "准备就绪",
-      description: "现在开始收藏你的第一个网页吧",
-      content: (
-        <div className="flex flex-col items-center py-8">
-          <Sparkles size={48} className="text-accent mb-4" />
-          <p className="text-[14px] text-text-secondary text-center max-w-sm">
-            浏览网页时，点击浏览器插件图标或页面右上角的浮窗即可一键收藏。收藏的内容会自动出现在你的知识库中。
+          <p className="text-[11px] text-text-tertiary text-center">
+            正式版本将发布到 Chrome Web Store，届时可一键安装
           </p>
         </div>
       ),
@@ -157,6 +129,7 @@ export default function OnboardingFlow({ serverToken, onComplete }: Props) {
         </Button>
         {isLast ? (
           <Button variant="primary" onClick={handleFinish}>
+            <Sparkles size={14} />
             开始使用
           </Button>
         ) : (

@@ -127,26 +127,36 @@ pub fn ai_chat(messages: Vec<ChatMessage>) -> Result<String, String> {
     ai_client::chat(&config, msg_values, 0.2).map_err(String::from)
 }
 
+/// AI chat response with referenced clip IDs for attribution.
+#[derive(Debug, Serialize)]
+pub struct AiChatResponse {
+    pub content: String,
+    pub referenced_clip_ids: Vec<i64>,
+}
+
 /// AI chat with automatic context: gathers recent clips for context.
 #[tauri::command]
-pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<String, String> {
+pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse, String> {
     let conn = open_db()?;
 
-    // Gather recent web clips (title + summary + tags)
+    // Gather recent web clips with IDs for reference tracking
+    let mut clip_ids: Vec<i64> = Vec::new();
     let clips_ctx: String = {
         let mut stmt = conn
             .prepare(
-                "SELECT title, summary, tags, url FROM web_clips
+                "SELECT id, title, summary, tags, url FROM web_clips
+                 WHERE deleted_at IS NULL
                  ORDER BY datetime(created_at) DESC LIMIT 20",
             )
             .map_err(|e| e.to_string())?;
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
         let mut buf = String::new();
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let title: String = row.get(0).map_err(|e| e.to_string())?;
-            let summary: String = row.get(1).map_err(|e| e.to_string())?;
-            let tags: String = row.get(2).map_err(|e| e.to_string())?;
-            let url: String = row.get(3).map_err(|e| e.to_string())?;
+            let id: i64 = row.get(0).map_err(|e| e.to_string())?;
+            let title: String = row.get(1).map_err(|e| e.to_string())?;
+            let summary: String = row.get(2).map_err(|e| e.to_string())?;
+            let tags: String = row.get(3).map_err(|e| e.to_string())?;
+            let url: String = row.get(4).map_err(|e| e.to_string())?;
             let domain = url
                 .split("//")
                 .nth(1)
@@ -157,7 +167,8 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<String, String
             } else {
                 format!("{}: {}", title, summary)
             };
-            buf.push_str(&format!("- [{}] {} (标签:{})\n", domain, desc, tags));
+            buf.push_str(&format!("- [ID:{}][{}] {} (标签:{})\n", id, domain, desc, tags));
+            clip_ids.push(id);
         }
         buf
     };
@@ -185,6 +196,7 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<String, String
             .prepare(
                 "SELECT cn.content, wc.title FROM clip_notes cn
                  JOIN web_clips wc ON cn.clip_id = wc.id
+                 WHERE wc.deleted_at IS NULL
                  ORDER BY cn.updated_at DESC LIMIT 5",
             )
             .map_err(|e| e.to_string())?;
@@ -205,7 +217,7 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<String, String
     let system_prompt = format!(
         "你是 KnoYoo AI 知识助手。用户有一个个人知识库，以下是知识库中的内容。\n\n\
         **重要规则：回答问题时必须优先基于知识库中的内容。**\n\
-        - 如果知识库中有相关信息，直接引用并回答，注明来源\n\
+        - 如果知识库中有相关信息，直接引用并回答，使用 [ID:数字] 格式标注来源\n\
         - 如果知识库中没有相关信息，再用你自己的知识补充，并说明这不是来自用户的知识库\n\n\
         ## 用户知识库\n{}{}{}",
         if clips_ctx.is_empty() {
@@ -225,7 +237,22 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<String, String
 
     let cfg = read_raw_config()?;
     let config = AiClientConfig::from_map(&cfg).map_err(String::from)?;
-    ai_client::chat(&config, full_messages, 0.3).map_err(String::from)
+    let content = ai_client::chat(&config, full_messages, 0.3).map_err(String::from)?;
+
+    // Extract referenced clip IDs from the AI response (looks for [ID:123] patterns)
+    let referenced: Vec<i64> = content
+        .split("[ID:")
+        .skip(1)
+        .filter_map(|s| s.split(']').next()?.parse::<i64>().ok())
+        .filter(|id| clip_ids.contains(id))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    Ok(AiChatResponse {
+        content,
+        referenced_clip_ids: referenced,
+    })
 }
 
 // ── Ollama Detection ─────────────────────────────────────────────────────
@@ -311,7 +338,7 @@ pub fn ai_suggest_actions() -> Result<Vec<AiSuggestion>, String> {
 
     // Check unread pile-up
     let unread_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM web_clips WHERE is_read = 0", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM web_clips WHERE is_read = 0 AND deleted_at IS NULL", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     if unread_count >= 10 {
         suggestions.push(AiSuggestion {
@@ -323,7 +350,7 @@ pub fn ai_suggest_actions() -> Result<Vec<AiSuggestion>, String> {
 
     // Check tag clusters that could become collections
     let mut stmt = conn
-        .prepare("SELECT tags FROM web_clips WHERE tags != '[]'")
+        .prepare("SELECT tags FROM web_clips WHERE tags != '[]' AND deleted_at IS NULL")
         .map_err(|e| e.to_string())?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
     let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();

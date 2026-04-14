@@ -99,6 +99,7 @@ fn main() {
             ai::auto_configure_ollama,
             // Database
             db::check_db_health,
+            db::get_database_info,
             // Web Clips
             clips::mark_clip_read,
             clips::toggle_read_clip,
@@ -127,6 +128,17 @@ fn main() {
             clips::save_clip_note,
             clips::get_clip_note,
             clips::delete_clip_note,
+            // Trash / Recycle bin
+            clips::list_trash,
+            clips::restore_clip,
+            clips::purge_clip,
+            clips::empty_trash,
+            clips::count_trash,
+            // Chat sessions
+            clips::create_chat_session,
+            clips::list_chat_sessions,
+            clips::update_chat_session,
+            clips::delete_chat_session,
             // Collections
             collections::create_collection,
             collections::update_collection,
@@ -137,9 +149,11 @@ fn main() {
             collections::remove_clip_from_collection,
             collections::list_collection_clips,
             collections::list_clip_collections,
-            // Export
+            // Export / Backup
             export::export_clip_to_file,
             export::export_collection_to_dir,
+            export::export_full_database,
+            export::import_full_database,
             // Import
             import::parse_bookmark_file,
             import::import_bookmarks,

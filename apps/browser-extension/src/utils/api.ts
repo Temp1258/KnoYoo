@@ -40,6 +40,38 @@ export async function ping(): Promise<boolean> {
   }
 }
 
+/**
+ * Auto-handshake: attempt to get a token from the desktop app automatically.
+ * Returns true if handshake succeeded and token was saved.
+ */
+export async function autoHandshake(): Promise<boolean> {
+  try {
+    const existing = await getToken();
+    if (existing) return true; // already configured
+
+    const isOnline = await ping();
+    if (!isOnline) return false;
+
+    const resp = await fetch(`${BASE_URL}/api/handshake`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ nonce: Date.now().toString() }),
+      signal: AbortSignal.timeout(5000),
+    });
+
+    if (!resp.ok) return false;
+
+    const data = await resp.json();
+    if (data.token) {
+      await setToken(data.token);
+      return true;
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /** Send a URL for server-side fetching and extraction. */
 export async function sendClipUrl(
   url: string,

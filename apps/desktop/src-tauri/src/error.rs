@@ -80,7 +80,29 @@ impl From<std::io::Error> for AppError {
 
 impl From<ureq::Error> for AppError {
     fn from(e: ureq::Error) -> Self {
-        Self::ai(format!("HTTP error: {e}"))
+        match &e {
+            ureq::Error::Status(401, _) => Self::ai("API Key 无效或已过期"),
+            ureq::Error::Status(402, _) => Self::ai("API 额度不足，请检查账户余额"),
+            ureq::Error::Status(429, _) => Self::ai("请求频率过高，请稍后再试"),
+            ureq::Error::Status(code, _) => Self::ai(format!("API 请求失败 (HTTP {})", code)),
+            ureq::Error::Transport(t) => {
+                let msg = match t.kind() {
+                    ureq::ErrorKind::Dns => "DNS 解析失败，请检查网络连接",
+                    ureq::ErrorKind::ConnectionFailed => "连接失败，请检查网络或 API 地址",
+                    ureq::ErrorKind::Io => {
+                        // Check if it's a timeout via the error message
+                        let s = t.to_string();
+                        if s.contains("timed out") || s.contains("Timeout") {
+                            "AI 响应超时，请稍后再试"
+                        } else {
+                            return Self::ai(format!("网络错误: {}", e));
+                        }
+                    }
+                    _ => return Self::ai(format!("网络错误: {}", e)),
+                };
+                Self::ai(msg)
+            }
+        }
     }
 }
 

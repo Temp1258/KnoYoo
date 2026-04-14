@@ -8,6 +8,7 @@ const DiscoverPage = lazy(() => import("./pages/DiscoverPage"));
 const CollectionsPage = lazy(() => import("./pages/CollectionsPage"));
 const CollectionDetailPage = lazy(() => import("./pages/CollectionDetailPage"));
 const SettingsPage = lazy(() => import("./pages/SettingsPage"));
+const TrashPage = lazy(() => import("./pages/TrashPage"));
 
 const fallback = (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -54,6 +55,14 @@ export default createBrowserRouter([
         element: (
           <Suspense fallback={fallback}>
             <SettingsPage />
+          </Suspense>
+        ),
+      },
+      {
+        path: "trash",
+        element: (
+          <Suspense fallback={fallback}>
+            <TrashPage />
           </Suspense>
         ),
       },

@@ -29,6 +29,7 @@ pub struct WebClip {
     pub is_starred: bool,
     pub created_at: String,
     pub updated_at: String,
+    pub deleted_at: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -60,13 +61,27 @@ pub(crate) fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
         is_starred: row.get::<_, i64>("is_starred")? != 0,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
+        deleted_at: row.get("deleted_at")?,
     })
 }
 
 // ── Commands ──────────────────────────────────────────────────────────────
 
+/// Maximum allowed size for clip content (500 KB) to prevent DoS via oversized payloads.
+const MAX_CONTENT_LEN: usize = 512_000;
+
 /// Internal: insert a clip without triggering auto-tag. Used by import paths.
 pub(crate) fn add_web_clip_no_autotag(clip: NewClip) -> Result<WebClip, String> {
+    if clip.url.is_empty() || clip.url.len() > 4096 {
+        return Err("无效的 URL".to_string());
+    }
+    if clip.title.len() > 2048 {
+        return Err("标题过长".to_string());
+    }
+    if clip.content.len() > MAX_CONTENT_LEN {
+        return Err("内容过长".to_string());
+    }
+
     let conn = open_db()?;
     let source_type = clip.source_type.unwrap_or_else(|| "article".to_string());
     let favicon = clip.favicon.unwrap_or_default();
@@ -81,6 +96,7 @@ pub(crate) fn add_web_clip_no_autotag(clip: NewClip) -> Result<WebClip, String> 
            source_type=excluded.source_type,
            favicon=excluded.favicon,
            og_image=CASE WHEN excluded.og_image != '' THEN excluded.og_image ELSE web_clips.og_image END,
+           deleted_at=NULL,
            updated_at=strftime('%Y-%m-%dT%H:%M:%fZ','now')",
         rusqlite::params![clip.url, clip.title, clip.content, source_type, favicon, og_image],
     )
@@ -125,7 +141,7 @@ pub fn list_web_clips(
     let size = pageSize.unwrap_or(20).min(100);
     let offset = (page - 1) * size;
 
-    let mut conditions = vec!["1=1".to_string()];
+    let mut conditions = vec!["deleted_at IS NULL".to_string()];
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(ref t) = tag {
@@ -163,13 +179,23 @@ pub fn list_web_clips(
     Ok(out)
 }
 
-/// Full-text search web clips.
+/// Full-text search web clips with pagination support.
 #[tauri::command]
-pub fn search_web_clips(q: String) -> Result<Vec<WebClip>, String> {
+#[allow(non_snake_case)]
+pub fn search_web_clips(
+    q: String,
+    page: Option<u32>,
+    pageSize: Option<u32>,
+) -> Result<Vec<WebClip>, String> {
     if q.trim().is_empty() {
-        return list_web_clips(Some(1), Some(20), None, None, None);
+        return list_web_clips(Some(page.unwrap_or(1)), Some(pageSize.unwrap_or(20)), None, None, None);
+    }
+    if q.len() > 1000 {
+        return Err("搜索关键词过长".to_string());
     }
     let conn = open_db()?;
+    let size = pageSize.unwrap_or(20).min(100);
+    let offset = (page.unwrap_or(1).max(1) - 1) * size;
 
     // FTS5 query: wrap each token with *
     let fts_q: String = q
@@ -182,14 +208,14 @@ pub fn search_web_clips(q: String) -> Result<Vec<WebClip>, String> {
         .prepare(
             "SELECT c.* FROM web_clips c
              JOIN web_clips_fts f ON c.id = f.rowid
-             WHERE web_clips_fts MATCH ?1
+             WHERE web_clips_fts MATCH ?1 AND c.deleted_at IS NULL
              ORDER BY rank
-             LIMIT 50",
+             LIMIT ?2 OFFSET ?3",
         )
         .map_err(|e| e.to_string())?;
 
     let rows = stmt
-        .query_map([&fts_q], row_to_clip)
+        .query_map(rusqlite::params![fts_q, size, offset], row_to_clip)
         .map_err(|e| e.to_string())?;
 
     let mut out = Vec::new();
@@ -199,13 +225,91 @@ pub fn search_web_clips(q: String) -> Result<Vec<WebClip>, String> {
     Ok(out)
 }
 
-/// Delete a web clip by ID.
+/// Soft-delete a web clip by ID (moves to trash).
 #[tauri::command]
 pub fn delete_web_clip(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute(
+        "UPDATE web_clips SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// List clips in trash (soft-deleted).
+#[tauri::command]
+#[allow(non_snake_case)]
+pub fn list_trash(page: Option<u32>, pageSize: Option<u32>) -> Result<Vec<WebClip>, String> {
+    let conn = open_db()?;
+    let page = page.unwrap_or(1).max(1);
+    let size = pageSize.unwrap_or(20).min(100);
+    let offset = (page - 1) * size;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT * FROM web_clips WHERE deleted_at IS NOT NULL
+             ORDER BY datetime(deleted_at) DESC LIMIT ?1 OFFSET ?2",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map(rusqlite::params![size, offset], row_to_clip)
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+/// Restore a clip from trash.
+#[tauri::command]
+pub fn restore_clip(id: i64) -> Result<WebClip, String> {
+    let conn = open_db()?;
+    conn.execute(
+        "UPDATE web_clips SET deleted_at = NULL, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?1",
+        [id],
+    )
+    .map_err(|e| e.to_string())?;
+    conn.query_row("SELECT * FROM web_clips WHERE id = ?1", [id], row_to_clip)
+        .map_err(|e| e.to_string())
+}
+
+/// Permanently delete a clip (bypass trash).
+#[tauri::command]
+pub fn purge_clip(id: i64) -> Result<(), String> {
     let conn = open_db()?;
     conn.execute("DELETE FROM web_clips WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(())
+}
+
+/// Empty all trash permanently.
+#[tauri::command]
+pub fn empty_trash() -> Result<i64, String> {
+    let conn = open_db()?;
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM web_clips WHERE deleted_at IS NOT NULL",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    conn.execute("DELETE FROM web_clips WHERE deleted_at IS NOT NULL", [])
+        .map_err(|e| e.to_string())?;
+    Ok(count)
+}
+
+/// Count clips in trash.
+#[tauri::command]
+pub fn count_trash() -> Result<i64, String> {
+    let conn = open_db()?;
+    conn.query_row(
+        "SELECT COUNT(*) FROM web_clips WHERE deleted_at IS NOT NULL",
+        [],
+        |r| r.get(0),
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// Toggle star on a web clip.
@@ -235,6 +339,19 @@ pub fn update_web_clip(
     summary: Option<String>,
     tags: Option<Vec<String>>,
 ) -> Result<WebClip, String> {
+    if let Some(ref s) = summary {
+        if s.len() > 10_000 {
+            return Err("摘要过长".to_string());
+        }
+    }
+    if let Some(ref t) = tags {
+        if t.len() > 100 {
+            return Err("标签过多".to_string());
+        }
+        if t.iter().any(|tag| tag.len() > 200) {
+            return Err("单个标签过长".to_string());
+        }
+    }
     let mut conn = open_db()?;
     let tx = conn.transaction().map_err(|e| e.to_string())?;
     if let Some(ref s) = summary {
@@ -263,11 +380,11 @@ pub fn update_web_clip(
     Ok(clip)
 }
 
-/// Count total clips (for pagination).
+/// Count total active clips (for pagination).
 #[tauri::command]
 pub fn count_web_clips() -> Result<i64, String> {
     let conn = open_db()?;
-    conn.query_row("SELECT COUNT(*) FROM web_clips", [], |r| r.get(0))
+    conn.query_row("SELECT COUNT(*) FROM web_clips WHERE deleted_at IS NULL", [], |r| r.get(0))
         .map_err(|e| e.to_string())
 }
 
@@ -284,7 +401,7 @@ pub fn count_pending_clips() -> Result<i64, String> {
     }
 
     conn.query_row(
-        "SELECT COUNT(*) FROM web_clips WHERE summary = ''",
+        "SELECT COUNT(*) FROM web_clips WHERE summary = '' AND deleted_at IS NULL",
         [],
         |r| r.get(0),
     )
@@ -298,7 +415,7 @@ pub fn list_clip_tags() -> Result<Vec<String>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT DISTINCT je.value FROM web_clips, json_each(web_clips.tags) je
-             WHERE web_clips.tags != '[]'
+             WHERE web_clips.tags != '[]' AND web_clips.deleted_at IS NULL
              ORDER BY je.value",
         )
         .map_err(|e| e.to_string())?;
@@ -314,7 +431,7 @@ pub fn list_clip_tags() -> Result<Vec<String>, String> {
 fn gather_existing_tags(conn: &rusqlite::Connection) -> Vec<String> {
     conn.prepare(
         "SELECT DISTINCT je.value FROM web_clips, json_each(web_clips.tags) je
-         WHERE web_clips.tags != '[]'
+         WHERE web_clips.tags != '[]' AND web_clips.deleted_at IS NULL
          ORDER BY je.value",
     )
     .and_then(|mut stmt| {
@@ -422,7 +539,7 @@ pub fn ai_batch_retag_clips() -> Result<i64, String> {
     let conn = open_db()?;
     let ids: Vec<i64> = {
         let mut stmt = conn
-            .prepare("SELECT id FROM web_clips WHERE summary = '' ORDER BY id")
+            .prepare("SELECT id FROM web_clips WHERE summary = '' AND deleted_at IS NULL ORDER BY id")
             .map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map([], |r| r.get::<_, i64>(0))
@@ -452,7 +569,7 @@ pub fn ai_batch_retag_clips() -> Result<i64, String> {
 pub fn check_clip_exists(url: String) -> Result<Option<WebClip>, String> {
     let conn = open_db()?;
     let result = conn.query_row(
-        "SELECT * FROM web_clips WHERE url = ?1",
+        "SELECT * FROM web_clips WHERE url = ?1 AND deleted_at IS NULL",
         [&url],
         row_to_clip,
     );
@@ -492,7 +609,7 @@ pub fn find_similar_clips(title: String, exclude_id: Option<i64>) -> Result<Vec<
         .prepare(
             "SELECT c.* FROM web_clips c
              JOIN web_clips_fts f ON c.id = f.rowid
-             WHERE web_clips_fts MATCH ?1 AND c.id != ?2
+             WHERE web_clips_fts MATCH ?1 AND c.id != ?2 AND c.deleted_at IS NULL
              ORDER BY rank LIMIT 5",
         )
         .map_err(|e| e.to_string())?;
@@ -513,12 +630,16 @@ pub fn find_similar_clips(title: String, exclude_id: Option<i64>) -> Result<Vec<
 /// AI fuzzy search: user describes what they remember, AI finds matching clips.
 #[tauri::command]
 pub fn ai_fuzzy_search_clips(description: String) -> Result<Vec<WebClip>, String> {
+    if description.len() > 1000 {
+        return Err("搜索描述过长".to_string());
+    }
     let conn = open_db()?;
 
     // Gather all clip summaries for AI context
     let mut stmt = conn
         .prepare(
             "SELECT id, title, summary, tags, url FROM web_clips
+             WHERE deleted_at IS NULL
              ORDER BY datetime(created_at) DESC LIMIT 200",
         )
         .map_err(|e| e.to_string())?;
@@ -674,7 +795,7 @@ pub fn list_web_clips_advanced(
     let size = pageSize.unwrap_or(20).min(100);
     let offset = (page - 1) * size;
 
-    let mut conditions = vec!["1=1".to_string()];
+    let mut conditions = vec!["deleted_at IS NULL".to_string()];
     let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
 
     if let Some(ref t) = tag {
@@ -746,7 +867,7 @@ pub fn list_clip_domains() -> Result<Vec<String>, String> {
                  'www.', ''
                ) AS domain
              FROM web_clips
-             WHERE INSTR(url, '://') > 0
+             WHERE INSTR(url, '://') > 0 AND deleted_at IS NULL
              ORDER BY domain",
         )
         .map_err(|e| e.to_string())?;
@@ -764,7 +885,7 @@ pub fn forgotten_clips(limit: Option<u32>) -> Result<Vec<WebClip>, String> {
     let mut stmt = conn
         .prepare(
             "SELECT * FROM web_clips
-             WHERE created_at < datetime('now', '-30 days')
+             WHERE created_at < datetime('now', '-30 days') AND deleted_at IS NULL
              ORDER BY RANDOM()
              LIMIT ?1",
         )
@@ -788,7 +909,7 @@ pub fn ai_weekly_clip_summary() -> Result<String, String> {
     let mut stmt = conn
         .prepare(
             "SELECT title, summary, tags FROM web_clips
-             WHERE created_at >= datetime('now', '-7 days')
+             WHERE created_at >= datetime('now', '-7 days') AND deleted_at IS NULL
              ORDER BY datetime(created_at) DESC",
         )
         .map_err(|e| e.to_string())?;
@@ -852,7 +973,7 @@ pub struct AppStatus {
 pub fn get_app_status() -> Result<AppStatus, String> {
     let conn = open_db()?;
     let clip_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM web_clips", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM web_clips WHERE deleted_at IS NULL", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let ai_configured = crate::db::read_ai_config(&conn)
         .map(|cfg| AiClientConfig::from_map(&cfg).is_ok())
@@ -934,6 +1055,7 @@ pub fn find_related_clips(clipId: i64, limit: Option<u32>) -> Result<Vec<WebClip
              WHERE je.value IN ({tag_placeholders})
                AND wc.id != ?1
                AND wc.tags != '[]'
+               AND wc.deleted_at IS NULL
              GROUP BY wc.id
              ORDER BY tag_score DESC
              LIMIT ?{}",
@@ -965,7 +1087,7 @@ pub fn find_related_clips(clipId: i64, limit: Option<u32>) -> Result<Vec<WebClip
     let mut stmt = conn
         .prepare(
             "SELECT * FROM web_clips
-             WHERE id != ?1 AND url LIKE ?2 ESCAPE '\\'
+             WHERE id != ?1 AND url LIKE ?2 ESCAPE '\\' AND deleted_at IS NULL
              ORDER BY datetime(created_at) DESC
              LIMIT ?3",
         )
@@ -1069,7 +1191,7 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
         .prepare(
             "SELECT date(created_at) AS day, COUNT(*) AS cnt
              FROM web_clips
-             WHERE created_at >= datetime('now', '-28 days')
+             WHERE created_at >= datetime('now', '-28 days') AND deleted_at IS NULL
              GROUP BY day ORDER BY day ASC",
         )
         .map_err(|e| e.to_string())?;
@@ -1084,7 +1206,7 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
         .prepare(
             "SELECT je.value AS tag, COUNT(*) AS cnt
              FROM web_clips, json_each(web_clips.tags) je
-             WHERE web_clips.tags != '[]'
+             WHERE web_clips.tags != '[]' AND web_clips.deleted_at IS NULL
              GROUP BY je.value
              ORDER BY cnt DESC
              LIMIT 10",
@@ -1113,7 +1235,7 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
                ) AS domain,
                COUNT(*) AS cnt
              FROM web_clips
-             WHERE INSTR(url, '://') > 0
+             WHERE INSTR(url, '://') > 0 AND deleted_at IS NULL
              GROUP BY domain
              ORDER BY cnt DESC
              LIMIT 10",
@@ -1126,7 +1248,7 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
         .collect();
 
     let total_clips: i64 = conn
-        .query_row("SELECT COUNT(*) FROM web_clips", [], |r| r.get(0))
+        .query_row("SELECT COUNT(*) FROM web_clips WHERE deleted_at IS NULL", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let total_notes: i64 = conn
         .query_row("SELECT COUNT(*) FROM clip_notes", [], |r| r.get(0))
@@ -1151,6 +1273,111 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
 pub fn delete_clip_note(clipId: i64) -> Result<(), String> {
     let conn = open_db()?;
     conn.execute("DELETE FROM clip_notes WHERE clip_id = ?1", [clipId])
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+// ── Chat Sessions ───────────────────────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ChatSession {
+    pub id: i64,
+    pub title: String,
+    pub messages: Vec<serde_json::Value>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+#[tauri::command]
+pub fn create_chat_session(title: Option<String>) -> Result<ChatSession, String> {
+    let conn = open_db()?;
+    let title = title.unwrap_or_else(|| "新对话".to_string());
+    conn.execute(
+        "INSERT INTO chat_sessions (title) VALUES (?1)",
+        [&title],
+    )
+    .map_err(|e| e.to_string())?;
+    let id = conn.last_insert_rowid();
+    conn.query_row(
+        "SELECT id, title, messages, created_at, updated_at FROM chat_sessions WHERE id = ?1",
+        [id],
+        |r| {
+            let msgs_json: String = r.get(2)?;
+            Ok(ChatSession {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                messages: serde_json::from_str(&msgs_json).unwrap_or_default(),
+                created_at: r.get(3)?,
+                updated_at: r.get(4)?,
+            })
+        },
+    )
+    .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn list_chat_sessions() -> Result<Vec<ChatSession>, String> {
+    let conn = open_db()?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, title, messages, created_at, updated_at FROM chat_sessions
+             ORDER BY datetime(updated_at) DESC LIMIT 50",
+        )
+        .map_err(|e| e.to_string())?;
+    let rows = stmt
+        .query_map([], |r| {
+            let msgs_json: String = r.get(2)?;
+            Ok(ChatSession {
+                id: r.get(0)?,
+                title: r.get(1)?,
+                messages: serde_json::from_str(&msgs_json).unwrap_or_default(),
+                created_at: r.get(3)?,
+                updated_at: r.get(4)?,
+            })
+        })
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+#[tauri::command]
+pub fn update_chat_session(
+    id: i64,
+    title: Option<String>,
+    messages: Option<Vec<serde_json::Value>>,
+) -> Result<(), String> {
+    let conn = open_db()?;
+    if let Some(ref t) = title {
+        if t.len() > 500 {
+            return Err("会话标题过长".to_string());
+        }
+        conn.execute(
+            "UPDATE chat_sessions SET title = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
+            rusqlite::params![t, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    if let Some(ref m) = messages {
+        let json = serde_json::to_string(m).unwrap_or_else(|_| "[]".to_string());
+        if json.len() > 5_000_000 {
+            return Err("会话消息数据过大".to_string());
+        }
+        conn.execute(
+            "UPDATE chat_sessions SET messages = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?2",
+            rusqlite::params![json, id],
+        )
+        .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn delete_chat_session(id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    conn.execute("DELETE FROM chat_sessions WHERE id = ?1", [id])
         .map_err(|e| e.to_string())?;
     Ok(())
 }

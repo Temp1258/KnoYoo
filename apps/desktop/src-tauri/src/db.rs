@@ -121,6 +121,58 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .ok();
 
+    // Migration: soft delete support
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN deleted_at TEXT",
+        [],
+    )
+    .ok();
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_web_clips_deleted_at ON web_clips(deleted_at)",
+        [],
+    )
+    .ok();
+
+    // Migration: fix FTS trigger to exclude soft-deleted clips from search index
+    conn.execute_batch(
+        "DROP TRIGGER IF EXISTS web_clips_au;
+         CREATE TRIGGER web_clips_au AFTER UPDATE ON web_clips BEGIN
+           INSERT INTO web_clips_fts(web_clips_fts, rowid, title, content, summary, tags)
+             VALUES('delete', old.id, old.title, old.content, old.summary, old.tags);
+           INSERT INTO web_clips_fts(rowid, title, content, summary, tags)
+             SELECT new.id, new.title, new.content, new.summary, new.tags
+             WHERE new.deleted_at IS NULL;
+         END;",
+    )
+    .ok();
+
+    // Migration: chat sessions for AI assistant persistence
+    conn.execute_batch(
+        "CREATE TABLE IF NOT EXISTS chat_sessions (
+          id          INTEGER PRIMARY KEY AUTOINCREMENT,
+          title       TEXT NOT NULL DEFAULT '',
+          messages    TEXT NOT NULL DEFAULT '[]',
+          created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+        );",
+    )
+    .ok();
+
+    // Migration: smart collection filter rules
+    conn.execute(
+        "ALTER TABLE collections ADD COLUMN filter_rule TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
+
+    // Purge trash clips older than 30 days on startup
+    conn.execute(
+        "DELETE FROM web_clips WHERE deleted_at IS NOT NULL
+         AND deleted_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-30 days')",
+        [],
+    )
+    .ok();
+
     tracing::info!("Database schema initialized");
     Ok(())
 }
@@ -180,6 +232,16 @@ pub fn check_db_health() -> Result<String, String> {
         tracing::info!("Database integrity check: ok");
     }
     Ok(result)
+}
+
+/// Get database file path and size for display in settings.
+#[tauri::command]
+pub fn get_database_info() -> Result<(String, u64), String> {
+    let path = app_db_path()?;
+    let size = std::fs::metadata(&path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+    Ok((path.to_string_lossy().to_string(), size))
 }
 
 #[cfg(test)]

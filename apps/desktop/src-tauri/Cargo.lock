@@ -742,9 +742,10 @@ dependencies = [
 
 [[package]]
 name = "desktop"
-version = "0.3.0"
+version = "2.0.0"
 dependencies = [
  "directories",
+ "getrandom 0.2.16",
  "rusqlite",
  "scraper",
  "serde",

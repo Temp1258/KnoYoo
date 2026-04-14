@@ -2,7 +2,7 @@
  * Popup UI — vanilla TypeScript (no framework, keep it lightweight).
  */
 
-import { getToken, setToken, ping } from "../utils/api";
+import { getToken, setToken, ping, autoHandshake } from "../utils/api";
 
 interface PageInfo {
   url: string;
@@ -79,6 +79,13 @@ function render() {
 
     ${queueInfo}
     ${tokenSection}
+
+    <div class="settings-toggle" style="margin-top: 6px; display: flex; align-items: center; gap: 8px;">
+      <label style="display: flex; align-items: center; gap: 6px; cursor: pointer; font-size: 12px; color: #8888a0;">
+        <input type="checkbox" id="autoPopupToggle" style="cursor: pointer;" />
+        自动弹窗提示收藏
+      </label>
+    </div>
   `;
 
   // Bind events
@@ -97,6 +104,17 @@ function render() {
     tokenInput.addEventListener("change", () => {
       setToken(tokenInput.value.trim());
       authError = false;
+    });
+  }
+
+  // Auto-popup toggle
+  const autoPopupToggle = document.getElementById("autoPopupToggle") as HTMLInputElement;
+  if (autoPopupToggle) {
+    chrome.storage.local.get("auto_popup_enabled", (result) => {
+      autoPopupToggle.checked = result.auto_popup_enabled !== false;
+    });
+    autoPopupToggle.addEventListener("change", () => {
+      chrome.storage.local.set({ auto_popup_enabled: autoPopupToggle.checked });
     });
   }
 }
@@ -181,6 +199,15 @@ async function handleSave() {
 
 async function init() {
   render();
+
+  // Try auto-handshake if no token configured
+  const token = await getToken();
+  if (!token) {
+    const handshakeOk = await autoHandshake();
+    if (handshakeOk) {
+      status.online = true;
+    }
+  }
 
   // Check desktop status
   const statusResp = await chrome.runtime.sendMessage({ type: "CHECK_STATUS" });

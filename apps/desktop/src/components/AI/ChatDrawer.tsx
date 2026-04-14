@@ -1,15 +1,43 @@
-import { useState, useEffect } from "react";
-import { MessageCircle, X, Send, Lightbulb } from "lucide-react";
+import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  MessageCircle,
+  X,
+  Send,
+  Lightbulb,
+  RotateCcw,
+  Plus,
+  ChevronDown,
+  Trash2,
+  FileText,
+} from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
-import type { ChatMessage } from "../../types";
+import type { ChatMessage, AiChatResponse, ChatSession, WebClip } from "../../types";
 
 type Suggestion = {
   suggestion_type: string;
   title: string;
   description: string;
 };
+
+type ReferencedClips = Record<number, { id: number; title: string }>;
+
+function formatRelativeTime(date: Date): string {
+  const now = Date.now();
+  const diff = now - date.getTime();
+  const seconds = Math.floor(diff / 1000);
+  if (seconds < 60) return "刚刚";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}分钟前`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}小时前`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}天前`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months}个月前`;
+  return `${Math.floor(months / 12)}年前`;
+}
 
 export default function ChatDrawer() {
   const [chatOpen, setChatOpen] = useState(false);
@@ -18,32 +46,200 @@ export default function ChatDrawer() {
   const [sending, setSending] = useState(false);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
+  // Chat session state
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [currentSessionId, setCurrentSessionId] = useState<number | null>(null);
+  const [showSessionList, setShowSessionList] = useState(false);
+
+  // Referenced clips per assistant message index
+  const [referencedClips, setReferencedClips] = useState<Record<number, number[]>>({});
+  const [clipDetails, setClipDetails] = useState<ReferencedClips>({});
+
+  const messagesEndRef = useRef<HTMLDivElement>(null);
+  const sessionListRef = useRef<HTMLDivElement>(null);
+
+  // Scroll to bottom on new messages
   useEffect(() => {
-    if (chatOpen && chatMsgs.length === 0) {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [chatMsgs, sending]);
+
+  // Close session dropdown on outside click
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (sessionListRef.current && !sessionListRef.current.contains(e.target as Node)) {
+        setShowSessionList(false);
+      }
+    }
+    if (showSessionList) document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [showSessionList]);
+
+  // Load sessions and suggestions on drawer open
+  useEffect(() => {
+    if (!chatOpen) return;
+    tauriInvoke<ChatSession[]>("list_chat_sessions").then(setSessions).catch(console.error);
+    if (chatMsgs.length === 0) {
       tauriInvoke<Suggestion[]>("ai_suggest_actions").then(setSuggestions).catch(console.error);
     }
   }, [chatOpen, chatMsgs.length]);
 
-  async function sendChat() {
-    const text = chatInput.trim();
+  // Fetch clip details for referenced IDs
+  const fetchClipDetails = useCallback(
+    async (ids: number[]) => {
+      const missing = ids.filter((id) => !clipDetails[id]);
+      if (missing.length === 0) return;
+      try {
+        const clips = await tauriInvoke<WebClip[]>("list_web_clips", {
+          page: 1,
+          pageSize: 100,
+        });
+        const map: ReferencedClips = { ...clipDetails };
+        for (const clip of clips) {
+          if (missing.includes(clip.id)) {
+            map[clip.id] = { id: clip.id, title: clip.title };
+          }
+        }
+        // Fill any still-missing IDs with fallback
+        for (const id of missing) {
+          if (!map[id]) {
+            map[id] = { id, title: `知识片段 #${id}` };
+          }
+        }
+        setClipDetails(map);
+      } catch {
+        const map: ReferencedClips = { ...clipDetails };
+        for (const id of missing) {
+          map[id] = { id, title: `知识片段 #${id}` };
+        }
+        setClipDetails(map);
+      }
+    },
+    [clipDetails],
+  );
+
+  // Persist messages to current session
+  const saveToSession = useCallback(async (sessionId: number, messages: ChatMessage[]) => {
+    try {
+      await tauriInvoke("update_chat_session", {
+        id: sessionId,
+        messages,
+      });
+    } catch (e) {
+      console.error("Failed to save session:", e);
+    }
+  }, []);
+
+  function startNewSession() {
+    setChatMsgs([]);
+    setCurrentSessionId(null);
+    setReferencedClips({});
+    setShowSessionList(false);
+  }
+
+  function loadSession(session: ChatSession) {
+    setChatMsgs(session.messages);
+    setCurrentSessionId(session.id);
+    setReferencedClips({});
+    setShowSessionList(false);
+  }
+
+  async function deleteSession(id: number, e: React.MouseEvent) {
+    e.stopPropagation();
+    try {
+      await tauriInvoke("delete_chat_session", { id });
+      setSessions((s) => s.filter((sess) => sess.id !== id));
+      if (currentSessionId === id) startNewSession();
+    } catch (err) {
+      console.error("Failed to delete session:", err);
+    }
+  }
+
+  async function sendChat(retryContent?: string) {
+    const text = retryContent || chatInput.trim();
     if (!text || sending) return;
 
-    const allMessages: ChatMessage[] = [...chatMsgs, { role: "user", content: text }];
+    // Build message list — for retry, replace the last error message
+    let allMessages: ChatMessage[];
+    if (retryContent) {
+      // Remove the trailing error assistant message, keep the user message
+      const trimmed = chatMsgs.filter((m, i) => !(i === chatMsgs.length - 1 && m.error));
+      allMessages = trimmed;
+    } else {
+      allMessages = [
+        ...chatMsgs,
+        { role: "user" as const, content: text, timestamp: new Date().toISOString() },
+      ];
+    }
 
     setChatMsgs(allMessages);
-    setChatInput("");
+    if (!retryContent) setChatInput("");
     setSending(true);
 
+    // Create session on first message if needed
+    let sessionId = currentSessionId;
+    if (!sessionId) {
+      try {
+        const title = text.length > 30 ? text.slice(0, 30) + "…" : text;
+        const session = await tauriInvoke<ChatSession>("create_chat_session", { title });
+        sessionId = session.id;
+        setCurrentSessionId(session.id);
+        setSessions((s) => [session, ...s]);
+      } catch (e) {
+        console.error("Failed to create session:", e);
+      }
+    }
+
     try {
-      const reply = await tauriInvoke<string>("ai_chat_with_context", {
+      const reply = await tauriInvoke<AiChatResponse>("ai_chat_with_context", {
         messages: allMessages,
       });
-      setChatMsgs((m) => [...m, { role: "assistant", content: reply || "（空）" }]);
-    } catch (_e) {
-      setChatMsgs((m) => [...m, { role: "assistant", content: "请求失败，请检查 AI 设置。" }]);
+
+      const assistantMsg: ChatMessage = {
+        role: "assistant",
+        content: reply.content || "（空）",
+        timestamp: new Date().toISOString(),
+      };
+
+      const newMsgs = [...allMessages, assistantMsg];
+      setChatMsgs(newMsgs);
+
+      // Track referenced clips
+      if (reply.referenced_clip_ids?.length > 0) {
+        const msgIdx = newMsgs.length - 1;
+        setReferencedClips((prev) => ({ ...prev, [msgIdx]: reply.referenced_clip_ids }));
+        fetchClipDetails(reply.referenced_clip_ids);
+      }
+
+      // Persist to session
+      if (sessionId) saveToSession(sessionId, newMsgs);
+    } catch (err: unknown) {
+      const errorMessage =
+        typeof err === "string"
+          ? err
+          : err instanceof Error
+            ? err.message
+            : "请求失败，请检查 AI 设置。";
+
+      const errorMsg: ChatMessage = {
+        role: "assistant",
+        content: errorMessage,
+        timestamp: new Date().toISOString(),
+        error: true,
+      };
+
+      const newMsgs = [...allMessages, errorMsg];
+      setChatMsgs(newMsgs);
+
+      if (sessionId) saveToSession(sessionId, newMsgs);
     } finally {
       setSending(false);
     }
+  }
+
+  function handleRetry() {
+    // Find the last user message to retry
+    const lastUserMsg = [...chatMsgs].reverse().find((m) => m.role === "user");
+    if (lastUserMsg) sendChat(lastUserMsg.content);
   }
 
   return (
@@ -58,7 +254,7 @@ export default function ChatDrawer() {
         </button>
       )}
 
-      {/* Backdrop — click anywhere outside drawer to close */}
+      {/* Backdrop */}
       {chatOpen && (
         <div className="fixed inset-0 z-40 bg-black/20" onClick={() => setChatOpen(false)} />
       )}
@@ -71,13 +267,67 @@ export default function ChatDrawer() {
       >
         {/* Header */}
         <div className="flex items-center justify-between px-4 py-3 border-b border-border shrink-0">
-          <span className="text-[14px] font-semibold text-text">AI 知识助手</span>
-          <button
-            className="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-bg-tertiary transition-colors cursor-pointer"
-            onClick={() => setChatOpen(false)}
-          >
-            <X size={16} />
-          </button>
+          <div className="flex items-center gap-2">
+            <span className="text-[14px] font-semibold text-text">AI 知识助手</span>
+            {/* Session selector */}
+            <div className="relative" ref={sessionListRef}>
+              <button
+                className="flex items-center gap-0.5 px-1.5 py-0.5 rounded text-[11px] text-text-tertiary hover:text-text hover:bg-bg-tertiary transition-colors cursor-pointer"
+                onClick={() => setShowSessionList((v) => !v)}
+              >
+                <ChevronDown size={12} />
+              </button>
+              {showSessionList && (
+                <div className="absolute top-full left-0 mt-1 w-56 bg-bg-secondary border border-border rounded-lg shadow-lg overflow-hidden z-10">
+                  <button
+                    className="w-full flex items-center gap-2 px-3 py-2 text-[12px] text-accent hover:bg-bg-tertiary transition-colors cursor-pointer"
+                    onClick={startNewSession}
+                  >
+                    <Plus size={12} />
+                    新对话
+                  </button>
+                  {sessions.length > 0 && (
+                    <div className="border-t border-border max-h-60 overflow-y-auto">
+                      {sessions.map((s) => (
+                        <div
+                          key={s.id}
+                          className={`flex items-center justify-between px-3 py-2 text-[12px] hover:bg-bg-tertiary transition-colors cursor-pointer group ${
+                            s.id === currentSessionId
+                              ? "bg-bg-tertiary text-text"
+                              : "text-text-secondary"
+                          }`}
+                          onClick={() => loadSession(s)}
+                        >
+                          <span className="truncate flex-1 mr-2">{s.title}</span>
+                          <button
+                            className="opacity-0 group-hover:opacity-100 p-0.5 rounded text-text-tertiary hover:text-red-500 transition-all cursor-pointer"
+                            onClick={(e) => deleteSession(s.id, e)}
+                          >
+                            <Trash2 size={11} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-center gap-1">
+            <button
+              className="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-bg-tertiary transition-colors cursor-pointer"
+              onClick={startNewSession}
+              title="新对话"
+            >
+              <Plus size={16} />
+            </button>
+            <button
+              className="p-1 rounded-md text-text-tertiary hover:text-text hover:bg-bg-tertiary transition-colors cursor-pointer"
+              onClick={() => setChatOpen(false)}
+            >
+              <X size={16} />
+            </button>
+          </div>
         </div>
 
         {/* Messages */}
@@ -92,9 +342,7 @@ export default function ChatDrawer() {
                   {suggestions.map((s, i) => (
                     <button
                       key={i}
-                      onClick={() => {
-                        setChatInput(s.title);
-                      }}
+                      onClick={() => setChatInput(s.title)}
                       className="w-full text-left p-2.5 rounded-lg bg-yellow-500/5 border border-yellow-500/10 hover:border-yellow-500/20 transition-colors cursor-pointer"
                     >
                       <div className="flex items-center gap-1.5 text-[12px] font-medium text-yellow-600">
@@ -110,22 +358,65 @@ export default function ChatDrawer() {
           )}
 
           {chatMsgs.map((m, i) => (
-            <div key={i} className={`flex ${m.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div
+              key={i}
+              className={`flex flex-col ${m.role === "user" ? "items-end" : "items-start"}`}
+            >
               <div
                 className={`max-w-[85%] px-3 py-2 rounded-xl text-[13px] leading-relaxed ${
                   m.role === "user"
                     ? "bg-accent text-white rounded-br-sm"
-                    : "bg-bg-tertiary text-text rounded-bl-sm"
+                    : m.error
+                      ? "bg-red-500/10 text-red-600 border border-red-500/20 rounded-bl-sm"
+                      : "bg-bg-tertiary text-text rounded-bl-sm"
                 }`}
               >
                 {m.role === "assistant" ? (
-                  <div className="prose-chat">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
-                  </div>
+                  m.error ? (
+                    <div className="flex items-start gap-2">
+                      <span className="flex-1">{m.content}</span>
+                      <button
+                        onClick={handleRetry}
+                        disabled={sending}
+                        className="shrink-0 flex items-center gap-1 px-2 py-1 rounded-md text-[11px] font-medium text-red-600 hover:bg-red-500/10 transition-colors cursor-pointer disabled:opacity-50"
+                      >
+                        <RotateCcw size={11} />
+                        重试
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="prose-chat">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>{m.content}</ReactMarkdown>
+                    </div>
+                  )
                 ) : (
                   m.content
                 )}
               </div>
+
+              {/* Referenced clips */}
+              {m.role === "assistant" && !m.error && referencedClips[i]?.length > 0 && (
+                <div className="max-w-[85%] mt-1.5 px-2 py-1.5 rounded-lg bg-bg-tertiary/60 border border-border/50">
+                  <div className="flex items-center gap-1 text-[11px] text-text-tertiary mb-1">
+                    <FileText size={10} />
+                    引用来源
+                  </div>
+                  <div className="space-y-0.5">
+                    {referencedClips[i].map((clipId) => (
+                      <div key={clipId} className="text-[11px] text-text-secondary truncate pl-3">
+                        {clipDetails[clipId]?.title || `知识片段 #${clipId}`}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Timestamp */}
+              {m.timestamp && (
+                <span className="text-[10px] text-text-tertiary mt-1 px-1">
+                  {formatRelativeTime(new Date(m.timestamp))}
+                </span>
+              )}
             </div>
           ))}
 
@@ -136,6 +427,7 @@ export default function ChatDrawer() {
               </div>
             </div>
           )}
+          <div ref={messagesEndRef} />
         </div>
 
         {/* Input area */}
@@ -156,7 +448,7 @@ export default function ChatDrawer() {
             />
             <button
               className="w-8 h-8 rounded-lg bg-accent text-white flex items-center justify-center cursor-pointer hover:bg-accent-hover transition-colors disabled:opacity-50 shrink-0"
-              onClick={sendChat}
+              onClick={() => sendChat()}
               disabled={sending || !chatInput.trim()}
             >
               <Send size={14} />

@@ -19,10 +19,17 @@ pub struct ImportResult {
     pub failed: usize,
 }
 
+/// Maximum bookmark file size (50 MB).
+const MAX_BOOKMARK_FILE_SIZE: u64 = 50 * 1024 * 1024;
+
 /// Parse a Netscape Bookmark File (Chrome/Firefox/Edge export format).
 #[tauri::command]
 pub fn parse_bookmark_file(path: String) -> Result<Vec<BookmarkEntry>, String> {
-    let content = std::fs::read_to_string(&path).map_err(|e| format!("Failed to read file: {e}"))?;
+    let meta = std::fs::metadata(&path).map_err(|_| "无法读取文件".to_string())?;
+    if meta.len() > MAX_BOOKMARK_FILE_SIZE {
+        return Err("书签文件过大（最大 50 MB）".to_string());
+    }
+    let content = std::fs::read_to_string(&path).map_err(|_| "无法读取文件内容".to_string())?;
     let doc = Html::parse_document(&content);
 
     let a_sel = Selector::parse("a").map_err(|e| format!("Selector error: {e:?}"))?;

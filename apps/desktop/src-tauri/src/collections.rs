@@ -10,6 +10,7 @@ pub struct Collection {
     pub description: String,
     pub icon: String,
     pub color: String,
+    pub filter_rule: String,
     pub clip_count: i64,
     pub created_at: String,
     pub updated_at: String,
@@ -22,6 +23,7 @@ fn row_to_collection(row: &rusqlite::Row) -> rusqlite::Result<Collection> {
         description: row.get("description")?,
         icon: row.get("icon")?,
         color: row.get("color")?,
+        filter_rule: row.get("filter_rule")?,
         clip_count: row.get("clip_count")?,
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
@@ -193,7 +195,7 @@ pub fn list_collection_clips(
         .prepare(
             "SELECT w.* FROM web_clips w
              JOIN collection_clips cc ON w.id = cc.clip_id
-             WHERE cc.collection_id = ?1
+             WHERE cc.collection_id = ?1 AND w.deleted_at IS NULL
              ORDER BY cc.sort_order ASC, cc.added_at DESC
              LIMIT ?2 OFFSET ?3",
         )
