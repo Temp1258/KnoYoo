@@ -3,7 +3,7 @@ import { BookOpen, Plus } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
 import { useBooks, type Book } from "../hooks/useBooks";
-import { useToast } from "../components/common/Toast";
+import { useToast } from "../components/common/toast-context";
 import BookShelf from "../components/Books/BookShelf";
 import BookDropOverlay from "../components/Books/BookDropOverlay";
 import BookDetailDrawer from "../components/Books/BookDetailDrawer";

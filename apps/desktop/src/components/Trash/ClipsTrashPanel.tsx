@@ -5,7 +5,7 @@ import type { WebClip } from "../../types";
 import Button from "../ui/Button";
 import Badge from "../ui/Badge";
 import { SkeletonCard } from "../ui/Skeleton";
-import { useToast } from "../common/Toast";
+import { useToast } from "../common/toast-context";
 
 function formatDeletedDate(dateStr: string | null): string {
   if (!dateStr) return "";

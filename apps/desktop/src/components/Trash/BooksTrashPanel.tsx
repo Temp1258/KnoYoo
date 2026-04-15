@@ -3,7 +3,7 @@ import { Trash2, RotateCcw, AlertTriangle } from "lucide-react";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import type { Book } from "../../hooks/useBooks";
 import Button from "../ui/Button";
-import { useToast } from "../common/Toast";
+import { useToast } from "../common/toast-context";
 import BookCover from "../Books/BookCover";
 
 interface RawBook {

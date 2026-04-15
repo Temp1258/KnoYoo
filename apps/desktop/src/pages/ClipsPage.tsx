@@ -24,7 +24,7 @@ import EmptyState from "../components/Clips/EmptyState";
 import OnboardingFlow from "../components/Onboarding/OnboardingFlow";
 import Button from "../components/ui/Button";
 import { SkeletonCard } from "../components/ui/Skeleton";
-import { useToast } from "../components/common/Toast";
+import { useToast } from "../components/common/toast-context";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 import Combobox from "../components/ui/Combobox";
 import FilterChip from "../components/ui/FilterChip";

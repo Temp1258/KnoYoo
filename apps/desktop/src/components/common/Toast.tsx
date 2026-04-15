@@ -1,35 +1,8 @@
-import { useState, useCallback, createContext, useContext } from "react";
+import { useState, useCallback } from "react";
 import { X } from "lucide-react";
 import Button from "../ui/Button";
 import Input from "../ui/Input";
-
-type ToastType = "success" | "error" | "info";
-
-interface ToastAction {
-  label: string;
-  onClick: () => void;
-}
-
-interface ToastItem {
-  id: number;
-  message: string;
-  type: ToastType;
-  action?: ToastAction;
-}
-
-interface ToastContextValue {
-  showToast: (message: string, type?: ToastType, action?: ToastAction) => void;
-  showConfirm: (message: string) => Promise<boolean>;
-  showPrompt: (message: string, defaultValue?: string) => Promise<string | null>;
-}
-
-const ToastContext = createContext<ToastContextValue>({
-  showToast: () => {},
-  showConfirm: () => Promise.resolve(false),
-  showPrompt: () => Promise.resolve(null),
-});
-
-export const useToast = () => useContext(ToastContext);
+import { ToastContext, type ToastAction, type ToastItem, type ToastType } from "./toast-context";
 
 let nextId = 0;
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { X, ExternalLink, ImagePlus, Trash2, Sparkles } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import SegmentedControl from "../ui/SegmentedControl";
-import { useToast } from "../common/Toast";
+import { useToast } from "../common/toast-context";
 import type { Book, BookStatus, BookPatch } from "../../hooks/useBooks";
 import BookCover from "./BookCover";
 
