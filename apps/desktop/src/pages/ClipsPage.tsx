@@ -16,7 +16,7 @@ import {
   Video,
 } from "lucide-react";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
-import type { WebClip } from "../types";
+import type { WebClip, AiFullConfig } from "../types";
 import ClipCard from "../components/Clips/ClipCard";
 import ClipDetail from "../components/Clips/ClipDetail";
 import VideoImportDialog from "../components/Clips/VideoImportDialog";
@@ -288,10 +288,16 @@ export default function ClipsPage() {
     }
   }, [loading, total]);
 
-  // Check AI config — lightweight: only check if config keys exist, no API call
+  // Check AI config — lightweight: reads the mirrored `configured` flag out
+  // of the per-provider state so we avoid a keychain probe. The raw api_key
+  // is deliberately never returned by the backend (keys live only in the
+  // OS keychain), so we must look at providers[provider].configured instead.
   const checkAiConfig = useCallback(() => {
-    tauriInvoke<Record<string, string>>("get_ai_config")
-      .then((cfg) => setAiConfigured(Boolean(cfg.provider && cfg.api_key)))
+    tauriInvoke<AiFullConfig>("get_ai_config")
+      .then((cfg) => {
+        const active = cfg.providers?.[cfg.provider];
+        setAiConfigured(Boolean(cfg.provider && active?.configured));
+      })
       .catch(() => setAiConfigured(false));
   }, []);
 
