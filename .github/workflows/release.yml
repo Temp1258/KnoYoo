@@ -9,6 +9,11 @@ on:
         description: 'Existing tag to rebuild (e.g. v2.0.1)'
         required: true
 
+# softprops/action-gh-release needs write access to create/update the release
+# and attach build artifacts. Default GITHUB_TOKEN is read-only.
+permissions:
+  contents: write
+
 jobs:
   build:
     strategy:
@@ -49,9 +54,9 @@ jobs:
         with:
           ref: ${{ steps.ref.outputs.ref }}
 
-      # pnpm version is driven by the "packageManager" field in package.json
-      # (pnpm/action-setup@v4 rejects both being set simultaneously).
       - uses: pnpm/action-setup@v4
+        with:
+          version: 10
 
       - uses: actions/setup-node@v4
         with:
