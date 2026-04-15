@@ -432,16 +432,17 @@ mark {
   padding: 4px 8px;
 }
 
-/* === Monochrome logo visibility across light/dark themes ==================
-   The new KnoYoo mark is black-on-transparent. It reads clearly on light
-   backgrounds but disappears on dark ones; `invert()` flips it to white-on-
-   transparent without touching any other assets.
+/* === KnoYoo logo — theme-responsive ========================================
+   The mark is an inline SVG colored via CSS vars (--color-accent / --color-bg),
+   so it recolors automatically across every theme. A subtle hover lift gives
+   the nav logo some polish without drawing focus.
 */
 .knoyoo-logo {
-  transition: filter 0.2s ease;
+  display: inline-block;
+  transition: transform 0.15s ease;
 }
-.dark .knoyoo-logo {
-  filter: invert(1);
+.knoyoo-logo:hover {
+  transform: translateY(-1px);
 }
 
 /* === Book Tile Cover Shadow (stronger hover lift) ==========================

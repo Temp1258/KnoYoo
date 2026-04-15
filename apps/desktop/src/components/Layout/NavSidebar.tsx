@@ -1,12 +1,13 @@
 import { Library, Compass, Settings, FolderOpen, Trash2, BookMarked } from "lucide-react";
 import { NavLink, useLocation } from "react-router";
+import KnoYooLogo from "./KnoYooLogo";
 
 const navItems = [
-  { to: "/", icon: Library, label: "知识库", exact: true },
-  { to: "/books", icon: BookMarked, label: "图书角", exact: false },
+  { to: "/", icon: Library, label: "智库", exact: true },
+  { to: "/books", icon: BookMarked, label: "书籍", exact: false },
   { to: "/collections", icon: FolderOpen, label: "集合", exact: false },
   { to: "/discover", icon: Compass, label: "发现", exact: false },
-  { to: "/trash", icon: Trash2, label: "回收站", exact: false },
+  { to: "/trash", icon: Trash2, label: "乐色", exact: false },
   { to: "/settings", icon: Settings, label: "设置", exact: false },
 ];
 
@@ -48,10 +49,15 @@ export default function NavSidebar() {
       role="navigation"
       aria-label="主导航"
     >
-      {/* Logo — the black monochrome mark is inverted under the .dark class so
-          it stays visible against dark surfaces. */}
-      <NavLink to="/" className="cursor-pointer mb-2" title="回到主页" aria-label="KnoYoo 首页">
-        <img src="/logo.png" alt="KnoYoo" className="w-10 h-10 rounded-xl knoyoo-logo" />
+      {/* Logo — inline SVG; colors driven by theme CSS vars so the mark
+          recolors naturally across every theme. */}
+      <NavLink
+        to="/"
+        className="cursor-pointer mb-2 knoyoo-logo"
+        title="回到主页"
+        aria-label="KnoYoo 首页"
+      >
+        <KnoYooLogo size={40} className="rounded-xl" />
       </NavLink>
 
       {/* Nav Items */}

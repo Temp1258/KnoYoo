@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Chrome, ArrowRight, X, Sparkles, Shield } from "lucide-react";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import Button from "../ui/Button";
+import KnoYooLogo from "../Layout/KnoYooLogo";
 
 type Props = {
   onComplete: () => void;
@@ -23,12 +24,12 @@ export default function OnboardingFlow({ onComplete }: Props) {
   const steps = [
     {
       title: "欢迎使用 KnoYoo",
-      description: "你的本地优先个人知识库",
+      description: "你的本地优先个人智库",
       content: (
         <div className="flex flex-col items-center py-6">
-          <img src="/logo.png" alt="KnoYoo" className="w-20 h-20 rounded-2xl mb-4" />
+          <KnoYooLogo size={80} className="rounded-2xl mb-4" />
           <p className="text-[14px] text-text-secondary text-center max-w-sm leading-relaxed">
-            KnoYoo 帮你将浏览器中有价值的内容变成可搜索、可关联的个人知识库。 AI
+            KnoYoo 帮你将浏览器中有价值的内容变成可搜索、可关联的个人智库。 AI
             自动整理摘要和标签，让你快速找到需要的知识。
           </p>
           <div className="flex items-center gap-2 mt-6 px-4 py-2.5 rounded-xl bg-green-500/5 border border-green-500/15">
@@ -42,7 +43,7 @@ export default function OnboardingFlow({ onComplete }: Props) {
     },
     {
       title: "安装浏览器扩展",
-      description: "一键保存任何网页到知识库",
+      description: "一键保存任何网页到智库",
       content: (
         <div className="space-y-4 py-4">
           <div className="flex items-start gap-3 p-4 rounded-xl bg-bg-tertiary">
