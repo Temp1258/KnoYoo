@@ -58,4 +58,7 @@ base64 = "0.22"
 # Manager). `apple-native` on macOS and `windows-native` on Windows avoid
 # pulling in DBus/secret-service bindings we don't ship.
 keyring = { version = "3", default-features = false, features = ["apple-native", "windows-native"] }
+# Audited constant-time comparison. Replaces a hand-rolled loop whose
+# branching on length technically leaked a bit of timing info.
+subtle = "2.5"
 

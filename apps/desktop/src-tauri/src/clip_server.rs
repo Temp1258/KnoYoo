@@ -7,6 +7,8 @@ use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
 use std::sync::Mutex;
 
+use subtle::ConstantTimeEq;
+
 use crate::clips::NewClip;
 use crate::db::open_db;
 use crate::html_extract;
@@ -31,17 +33,10 @@ fn generate_secure_token() -> Result<String, String> {
 }
 
 /// Constant-time string comparison to prevent timing attacks.
-/// Always iterates through the full max length; uses u32 accumulator
-/// to avoid truncation for strings longer than 255 bytes.
+/// Delegates to `subtle::ConstantTimeEq`, which is audited and guards
+/// against compiler optimizations reintroducing short-circuit behavior.
 fn constant_time_eq(a: &str, b: &str) -> bool {
-    let max_len = a.len().max(b.len());
-    let mut diff: u32 = if a.len() != b.len() { 1 } else { 0 };
-    for i in 0..max_len {
-        let x = a.as_bytes().get(i).copied().unwrap_or(0);
-        let y = b.as_bytes().get(i).copied().unwrap_or(0);
-        diff |= (x ^ y) as u32;
-    }
-    diff == 0
+    a.as_bytes().ct_eq(b.as_bytes()).into()
 }
 
 /// Get or generate the local auth token.
