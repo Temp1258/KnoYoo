@@ -1,9 +1,35 @@
-export type AIConfig = {
+/** Per-provider AI state surfaced by `get_ai_config`. Keys live in the OS
+ *  keychain and never reach the frontend; `key_hint` is the last 4 chars,
+ *  computed live on each read so backups never carry it. */
+export type AiProviderState = {
+  configured: boolean;
+  api_base: string;
+  model: string;
+  /** Last 4 chars of the stored key. Empty when not configured. */
+  key_hint: string;
+};
+
+/** Full shape returned by `get_ai_config`. Top-level `api_base` / `model`
+ *  mirror the currently selected provider's stored values. */
+export type AiFullConfig = {
+  provider: string;
+  api_base: string;
+  model: string;
+  providers: Record<string, AiProviderState>;
+};
+
+/** Partial update accepted by `set_ai_config`. `api_key` semantics:
+ *  `undefined` don't touch, `""` delete, `"sk-…"` write to keychain. */
+export type AiSetConfig = {
   provider?: string;
   api_base?: string;
-  api_key?: string;
   model?: string;
+  api_key?: string;
 };
+
+/** @deprecated — use {@link AiFullConfig}. Kept as an alias for any
+ *  external consumer; the shape is now keychain-aware. */
+export type AIConfig = AiFullConfig;
 
 export type ChatMessage = {
   role: "user" | "assistant";
@@ -16,6 +42,15 @@ export type AiChatResponse = {
   content: string;
   referenced_clip_ids: number[];
 };
+
+export type TranscriptionStatus =
+  | ""
+  | "pending"
+  | "downloading"
+  | "transcribing"
+  | "cleaning"
+  | "completed"
+  | "failed";
 
 export type WebClip = {
   id: number;
@@ -37,6 +72,69 @@ export type WebClip = {
   created_at: string;
   updated_at: string;
   deleted_at: string | null;
+  /** Empty string for non-video clips. Video pipeline state machine. */
+  transcription_status?: TranscriptionStatus;
+  /** Human-readable error when `transcription_status === "failed"`. */
+  transcription_error?: string;
+  /** Provenance: `subtitle` / `asr:openai` / `asr:deepgram` / `asr:siliconflow`. */
+  transcription_source?: string;
+  /** Video duration in seconds; 0 for non-video clips. */
+  audio_duration_sec?: number;
+};
+
+// ── Video transcription ────────────────────────────────────────────────────
+
+export type AsrProvider = "openai" | "deepgram" | "siliconflow";
+
+/** Mirrors `transcribe::Stage` in Rust. Keep in sync with snake_case serde. */
+export type TranscribeStage =
+  | "metadata"
+  | "subtitle_probe"
+  | "download"
+  | "split"
+  | "asr"
+  | "clean"
+  | "summarize";
+
+export type TranscribeProgress = {
+  clip_id: number;
+  stage: TranscribeStage;
+  /** 0-100 overall progress. NOT per-stage. */
+  percent: number;
+  detail?: string;
+};
+
+/** Per-provider state surfaced by `get_asr_config`. API keys live in the
+ *  OS keychain; `key_hint` is the last 4 chars, recomputed on each read. */
+export type AsrProviderState = {
+  configured: boolean;
+  api_base: string;
+  model: string;
+  /** Last 4 chars of the stored key. Empty when not configured. */
+  key_hint: string;
+};
+
+/** Full config shape returned by `get_asr_config`. The top-level
+ *  `asr_api_base` / `asr_model` mirror the currently selected provider's
+ *  non-secret stored state so the edit form can bind directly. */
+export type AsrFullConfig = {
+  asr_provider: string;
+  asr_language: string;
+  asr_api_base: string;
+  asr_model: string;
+  providers: Record<string, AsrProviderState>;
+};
+
+/** Partial config accepted by `set_asr_config`. Any field omitted leaves
+ *  the stored value untouched. `asr_api_key = ""` is an explicit delete
+ *  (keychain entry removed); `asr_api_key = undefined` means "don't
+ *  touch the stored key". */
+export type AsrSetConfig = {
+  asr_provider?: AsrProvider | string;
+  asr_language?: string;
+  asr_api_key?: string;
+  asr_api_base?: string;
+  asr_model?: string;
 };
 
 export type Collection = {

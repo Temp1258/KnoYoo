@@ -34,6 +34,14 @@ pub fn app_book_covers_dir() -> Result<PathBuf, String> {
     Ok(dir)
 }
 
+/// Scratch directory for in-flight video → ASR artifacts (downloaded audio,
+/// ffmpeg splits). Safe to purge on startup — nothing in here is durable.
+pub fn app_temp_media_dir() -> Result<PathBuf, String> {
+    let dir = app_data_dir()?.join("temp_media");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir)
+}
+
 /// Run schema creation and migrations (only once per process).
 fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
@@ -154,6 +162,46 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     .ok();
     conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_web_clips_deleted_at ON web_clips(deleted_at)",
+        [],
+    )
+    .ok();
+
+    // Migration: video → ASR transcription pipeline.
+    //
+    // transcription_status drives the same state machine books.ai_status uses:
+    //   '' (non-video clip) | pending | downloading | transcribing | cleaning
+    //   | completed | failed
+    //
+    // transcription_source records provenance so the UI can show "字幕" vs
+    // "ASR · Deepgram" and so we can rerun only the failed path on retry:
+    //   '' | subtitle | asr:openai | asr:deepgram | asr:siliconflow
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN transcription_status TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN transcription_error TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN transcription_source TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN audio_duration_sec INTEGER NOT NULL DEFAULT 0",
+        [],
+    )
+    .ok();
+    // Partial index: only rows actively in the pipeline. Keeps the index tiny
+    // (completed/empty rows dominate the table) while making startup self-heal
+    // (`resume_pending_transcription`) an O(log n) lookup.
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_web_clips_transcription_pending
+           ON web_clips(transcription_status)
+           WHERE transcription_status IN ('pending','downloading','transcribing','cleaning')",
         [],
     )
     .ok();
@@ -398,15 +446,159 @@ pub fn kv_get(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, 
         .map_err(|e| e.to_string())
 }
 
-/// Read AI configuration from app_kv table.
+/// Helper: INSERT-or-UPDATE a single app_kv entry.
+pub(crate) fn set_kv(
+    conn: &rusqlite::Connection,
+    key: &str,
+    val: &str,
+) -> Result<(), String> {
+    conn.execute(
+        "INSERT INTO app_kv(key, val) VALUES(?1, ?2)
+           ON CONFLICT(key) DO UPDATE SET val = excluded.val",
+        rusqlite::params![key, val],
+    )
+    .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Keychain account name for a given AI provider. Stable external contract:
+/// Keychain Access shows users entries by this name, so changing the format
+/// would strand existing secrets.
+pub fn ai_keychain_account_for(provider: &str) -> String {
+    format!("ai_{provider}")
+}
+
+/// Idempotent migration: earlier builds stored a single flat `api_key` in
+/// app_kv keyed by `provider` (and `api_base` / `model` likewise flat).
+/// Move each into its per-provider slot, push the raw key into the OS
+/// keychain, and wipe every legacy row. Running on a fresh install is a
+/// no-op (the SELECTs just return None).
+pub fn migrate_ai_keys_to_keychain(conn: &rusqlite::Connection) -> Result<(), String> {
+    // Step 1: promote any flat (pre-Round-6) layout into per-provider rows.
+    let legacy_provider = kv_get(conn, "provider")?.unwrap_or_default();
+    if !legacy_provider.is_empty() {
+        if kv_get(conn, "ai_selected_provider")?
+            .unwrap_or_default()
+            .is_empty()
+        {
+            set_kv(conn, "ai_selected_provider", &legacy_provider)?;
+        }
+        // api_base / model move to their per-provider slot. The `api_key`
+        // is handled separately in step 2 — it goes to keychain, not DB.
+        for (legacy, per_provider) in [
+            ("api_base", format!("ai_api_base__{legacy_provider}")),
+            ("model", format!("ai_model__{legacy_provider}")),
+        ] {
+            let dest = kv_get(conn, &per_provider)?.unwrap_or_default();
+            if dest.is_empty() {
+                if let Some(val) = kv_get(conn, legacy)? {
+                    if !val.is_empty() {
+                        set_kv(conn, &per_provider, &val)?;
+                    }
+                }
+            }
+        }
+        // Legacy api_key → keychain under `ai_<legacy_provider>`, plus
+        // the non-secret flag + 尾号 so the settings UI never has to
+        // probe the keychain to show "已配置".
+        if let Some(key) = kv_get(conn, "api_key")? {
+            if !key.is_empty() {
+                let account = ai_keychain_account_for(&legacy_provider);
+                let existing = crate::secrets::get(&account).map_err(|e| e.to_string())?;
+                if existing.is_none() {
+                    crate::secrets::set(&account, &key).map_err(|e| e.to_string())?;
+                }
+                set_kv(conn, &format!("ai_configured__{legacy_provider}"), "true")?;
+                set_kv(
+                    conn,
+                    &format!("ai_key_hint__{legacy_provider}"),
+                    &crate::secrets::key_last_four(&key),
+                )?;
+            }
+        }
+        // Wipe legacy rows.
+        conn.execute(
+            "DELETE FROM app_kv WHERE key IN ('provider','api_base','api_key','model')",
+            [],
+        )
+        .map_err(|e| e.to_string())?;
+    } else {
+        // No legacy selected provider but possibly an orphan api_key row —
+        // remove it defensively so it never lingers in backups.
+        conn.execute("DELETE FROM app_kv WHERE key = 'api_key'", [])
+            .map_err(|e| e.to_string())?;
+    }
+
+    // Step 2: drain any per-provider `api_key__*` rows (a previous build
+    // stored them in DB). Move survivors into the keychain and drop the
+    // DB rows. No intermediate builds shipped with this shape, but leaving
+    // the sweep in place costs us nothing and future-proofs.
+    let mut stmt = conn
+        .prepare("SELECT key, val FROM app_kv WHERE key LIKE 'ai_api_key__%'")
+        .map_err(|e| e.to_string())?;
+    let pairs: Vec<(String, String)> = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .map_err(|e| e.to_string())?
+        .filter_map(Result::ok)
+        .collect();
+    drop(stmt);
+    for (db_key, value) in pairs {
+        let provider = db_key
+            .strip_prefix("ai_api_key__")
+            .expect("LIKE filter guarantees prefix");
+        if !value.is_empty() {
+            let account = ai_keychain_account_for(provider);
+            let existing = crate::secrets::get(&account).map_err(|e| e.to_string())?;
+            if existing.is_none() {
+                crate::secrets::set(&account, &value).map_err(|e| e.to_string())?;
+            }
+            set_kv(conn, &format!("ai_configured__{provider}"), "true")?;
+            set_kv(
+                conn,
+                &format!("ai_key_hint__{provider}"),
+                &crate::secrets::key_last_four(&value),
+            )?;
+        }
+        conn.execute("DELETE FROM app_kv WHERE key = ?1", [&db_key])
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Read AI configuration for the currently selected provider.
+///
+/// Returns a flat `HashMap<String, String>` with `provider` / `api_base` /
+/// `api_key` / `model` keys — the shape `AiClientConfig::from_map` expects.
+/// The `api_key` value is pulled live from the OS keychain, not from any
+/// SQLite row.
 pub fn read_ai_config(
     conn: &rusqlite::Connection,
 ) -> Result<std::collections::HashMap<String, String>, String> {
+    migrate_ai_keys_to_keychain(conn)?;
+
     let mut out = std::collections::HashMap::new();
-    let keys = ["provider", "api_base", "api_key", "model"];
-    for k in keys {
-        if let Some(v) = kv_get(conn, k)? {
-            out.insert(k.to_string(), v);
+    let provider = kv_get(conn, "ai_selected_provider")?.unwrap_or_default();
+    if provider.is_empty() {
+        return Ok(out);
+    }
+
+    out.insert("provider".into(), provider.clone());
+    if let Some(base) = kv_get(conn, &format!("ai_api_base__{provider}"))? {
+        if !base.is_empty() {
+            out.insert("api_base".into(), base);
+        }
+    }
+    if let Some(model) = kv_get(conn, &format!("ai_model__{provider}"))? {
+        if !model.is_empty() {
+            out.insert("model".into(), model);
+        }
+    }
+    if let Some(key) = crate::secrets::get(&ai_keychain_account_for(&provider))
+        .map_err(|e| e.to_string())?
+    {
+        if !key.is_empty() {
+            out.insert("api_key".into(), key);
         }
     }
     Ok(out)
@@ -474,5 +666,145 @@ mod tests {
         .unwrap();
         let result = super::kv_get(&conn, "provider").unwrap();
         assert_eq!(result, Some("openai".to_string()));
+    }
+
+    // ── AI key migration: legacy app_kv → keychain ─────────────────────
+
+    fn seed(conn: &Connection, key: &str, val: &str) {
+        super::set_kv(conn, key, val).expect("kv insert");
+    }
+
+    #[test]
+    fn ai_migration_populates_configured_flag_and_hint() {
+        // After migration the settings panel must render "已配置 · 尾号 real"
+        // without probing the keychain — that's the whole point of the
+        // Round 8 flag/hint mirror. Confirm the flag + hint land in app_kv.
+        crate::secrets::reset();
+        let conn = test_db();
+        seed(&conn, "provider", "openai");
+        seed(&conn, "api_key", "sk-abcdefgh1234wxyz");
+        super::migrate_ai_keys_to_keychain(&conn).expect("migrate");
+        assert_eq!(
+            super::kv_get(&conn, "ai_configured__openai").unwrap().as_deref(),
+            Some("true")
+        );
+        assert_eq!(
+            super::kv_get(&conn, "ai_key_hint__openai").unwrap().as_deref(),
+            Some("wxyz")
+        );
+    }
+
+    #[test]
+    fn ai_migration_moves_flat_key_into_keychain() {
+        crate::secrets::reset();
+        let conn = test_db();
+        // Shape 1: the original flat layout.
+        seed(&conn, "provider", "deepseek");
+        seed(&conn, "api_key", "sk-deepseek-real");
+        seed(&conn, "api_base", "https://api.deepseek.com");
+        seed(&conn, "model", "deepseek-chat");
+
+        super::migrate_ai_keys_to_keychain(&conn).expect("migrate");
+
+        // Secret lands in keychain, legacy DB rows are gone.
+        assert_eq!(
+            crate::secrets::get("ai_deepseek").unwrap().as_deref(),
+            Some("sk-deepseek-real")
+        );
+        assert!(super::kv_get(&conn, "api_key").unwrap().is_none());
+        assert!(super::kv_get(&conn, "provider").unwrap().is_none());
+        assert!(super::kv_get(&conn, "api_base").unwrap().is_none());
+
+        // Non-secret settings relocate to per-provider slots.
+        assert_eq!(
+            super::kv_get(&conn, "ai_selected_provider").unwrap().as_deref(),
+            Some("deepseek")
+        );
+        assert_eq!(
+            super::kv_get(&conn, "ai_api_base__deepseek").unwrap().as_deref(),
+            Some("https://api.deepseek.com")
+        );
+        assert_eq!(
+            super::kv_get(&conn, "ai_model__deepseek").unwrap().as_deref(),
+            Some("deepseek-chat")
+        );
+    }
+
+    #[test]
+    fn ai_migration_is_idempotent() {
+        crate::secrets::reset();
+        let conn = test_db();
+        seed(&conn, "provider", "openai");
+        seed(&conn, "api_key", "sk-openai");
+        super::migrate_ai_keys_to_keychain(&conn).expect("1st");
+        super::migrate_ai_keys_to_keychain(&conn).expect("2nd");
+        assert_eq!(
+            crate::secrets::get("ai_openai").unwrap().as_deref(),
+            Some("sk-openai")
+        );
+    }
+
+    #[test]
+    fn ai_migration_preserves_existing_keychain_entry() {
+        crate::secrets::reset();
+        let conn = test_db();
+        // User already saved a newer key via post-migration UI.
+        crate::secrets::set("ai_openai", "sk-new-from-ui").unwrap();
+        seed(&conn, "provider", "openai");
+        seed(&conn, "api_key", "sk-stale-legacy");
+
+        super::migrate_ai_keys_to_keychain(&conn).expect("migrate");
+
+        assert_eq!(
+            crate::secrets::get("ai_openai").unwrap().as_deref(),
+            Some("sk-new-from-ui"),
+            "never clobber a newer keychain value"
+        );
+        assert!(super::kv_get(&conn, "api_key").unwrap().is_none());
+    }
+
+    #[test]
+    fn ai_migration_no_op_on_fresh_install() {
+        crate::secrets::reset();
+        let conn = test_db();
+        super::migrate_ai_keys_to_keychain(&conn).expect("migrate");
+        assert!(crate::secrets::get("ai_openai").unwrap().is_none());
+    }
+
+    #[test]
+    fn ai_migration_cleans_orphan_api_key_without_provider() {
+        // Defense in depth: if some prior bug left an `api_key` row but no
+        // `provider`, we still must not leave it sitting in backups.
+        crate::secrets::reset();
+        let conn = test_db();
+        seed(&conn, "api_key", "sk-orphan");
+        super::migrate_ai_keys_to_keychain(&conn).expect("migrate");
+        assert!(super::kv_get(&conn, "api_key").unwrap().is_none());
+    }
+
+    #[test]
+    fn read_ai_config_pulls_key_from_keychain() {
+        crate::secrets::reset();
+        let conn = test_db();
+        seed(&conn, "ai_selected_provider", "openai");
+        seed(&conn, "ai_api_base__openai", "https://api.openai.com");
+        seed(&conn, "ai_model__openai", "gpt-4o-mini");
+        crate::secrets::set("ai_openai", "sk-runtime-key").unwrap();
+
+        let cfg = super::read_ai_config(&conn).unwrap();
+        assert_eq!(cfg.get("provider").map(String::as_str), Some("openai"));
+        assert_eq!(cfg.get("api_key").map(String::as_str), Some("sk-runtime-key"));
+        assert_eq!(
+            cfg.get("api_base").map(String::as_str),
+            Some("https://api.openai.com")
+        );
+        assert_eq!(cfg.get("model").map(String::as_str), Some("gpt-4o-mini"));
+    }
+
+    #[test]
+    fn keychain_account_name_is_stable() {
+        // External contract: keychain entries show up under this name.
+        assert_eq!(super::ai_keychain_account_for("openai"), "ai_openai");
+        assert_eq!(super::ai_keychain_account_for("deepseek"), "ai_deepseek");
     }
 }

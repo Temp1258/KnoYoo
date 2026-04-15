@@ -1073,6 +1073,15 @@ pub fn open_book_externally(id: i64) -> Result<(), String> {
 /// Runs in a single background thread, sequentially, so a large pending
 /// queue can't thrash the LLM or user's CPU. Caps the batch at 10 to avoid
 /// surprising token spend on a fresh install with many stuck books.
+///
+/// NOTE: No longer invoked on app startup. The AI path reads the OS
+/// keychain, which would prompt the user for their login password before
+/// they've touched the app — the opposite of the "only on explicit user
+/// action" rule we hold for keychain access. Kept around for potential
+/// future use (e.g. a user-triggered "retry all pending" button on the
+/// books page); the `dead_code` allow below silences the unused warning
+/// until something wires it up.
+#[allow(dead_code)]
 pub fn resume_pending_ai_extraction() {
     std::thread::spawn(|| {
         let ids: Vec<i64> = match open_db() {

@@ -1,78 +1,269 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::ai_client::{self, AiClientConfig};
-use crate::db::open_db;
+use crate::db::{
+    ai_keychain_account_for, kv_get, migrate_ai_keys_to_keychain, open_db, set_kv,
+};
 use crate::models::ChatMessage;
+use crate::secrets;
 
-/// Mask an API key for display: show first 3 and last 4 chars.
-/// Uses char-based indexing to avoid panics on multi-byte strings.
-fn mask_api_key(key: &str) -> String {
-    let chars: Vec<char> = key.chars().collect();
-    let len = chars.len();
-    if len <= 8 {
-        return "*".repeat(len);
-    }
-    let prefix: String = chars[..3].iter().collect();
-    let suffix: String = chars[len - 4..].iter().collect();
-    format!("{}{}{}", prefix, "*".repeat(len - 7), suffix)
+/// Providers the settings UI knows how to preset. We read/write keychain
+/// entries only for these — the list doubles as an allowlist to prevent a
+/// malformed `provider` field from polluting the keychain namespace.
+const SUPPORTED_AI_PROVIDERS: &[&str] = &[
+    "deepseek",
+    "silicon",
+    "dashscope",
+    "zhipu",
+    "moonshot",
+    "ollama",
+    "openai",
+    "anthropic",
+];
+
+/// Per-provider state surfaced to the frontend. API keys live in the OS
+/// keychain and never reach the UI — the only signal is `configured`.
+#[derive(Serialize, Debug, Default, Clone)]
+pub struct AiProviderState {
+    pub configured: bool,
+    pub api_base: String,
+    pub model: String,
+    /// Last four chars of the stored key (the "尾号"). Empty when
+    /// `configured` is false. Computed live from the keychain entry on
+    /// every `get_ai_config` — never persisted to SQLite, so backups stay
+    /// truly key-free.
+    pub key_hint: String,
 }
 
-/// Read AI config: returns {provider, api_base, api_key (masked), model}
+#[derive(Serialize, Debug, Default)]
+pub struct AiFullConfig {
+    /// Currently active provider id (`""` if none picked yet).
+    pub provider: String,
+    /// Mirrors `providers[provider].api_base` for the active edit form.
+    pub api_base: String,
+    /// Mirrors `providers[provider].model` for the active edit form.
+    pub model: String,
+    pub providers: BTreeMap<String, AiProviderState>,
+}
+
+#[derive(Deserialize, Debug, Default)]
+pub struct AiSetCfg {
+    #[serde(default)]
+    pub provider: Option<String>,
+    #[serde(default)]
+    pub api_base: Option<String>,
+    #[serde(default)]
+    pub model: Option<String>,
+    /// Three-state semantics, same as ASR:
+    ///   - `None`         → leave stored key alone
+    ///   - `Some("")`     → explicit keychain delete
+    ///   - `Some("sk-…")` → write to keychain under `ai_<provider>`
+    #[serde(default)]
+    pub api_key: Option<String>,
+}
+
+/// Read AI config for the settings panel.
+///
+/// Crucially: this path never probes the OS keychain. The "is configured"
+/// signal + 尾号 hint are mirrored into app_kv by `set_ai_config` / the
+/// migration, so rendering the settings screen never triggers a keychain
+/// authorization prompt — previously 8 providers × 1 probe = 8 prompts on
+/// every settings open, which was unusable on dev builds with unstable
+/// code signatures. Raw keys still ONLY live in the keychain.
 #[tauri::command]
-pub fn get_ai_config() -> Result<HashMap<String, String>, String> {
+pub fn get_ai_config() -> Result<AiFullConfig, String> {
     let conn = open_db()?;
-    let mut cfg = crate::db::read_ai_config(&conn)?;
-    // Never expose the real API key via IPC
-    if let Some(key) = cfg.get("api_key") {
-        cfg.insert("api_key".to_string(), mask_api_key(key));
+    migrate_ai_keys_to_keychain(&conn)?;
+
+    let active = kv_get(&conn, "ai_selected_provider")?.unwrap_or_default();
+    let mut providers: BTreeMap<String, AiProviderState> = BTreeMap::new();
+    for p in SUPPORTED_AI_PROVIDERS {
+        let configured = kv_get(&conn, &format!("ai_configured__{p}"))?
+            .map(|v| v == "true")
+            .unwrap_or(false);
+        let key_hint = kv_get(&conn, &format!("ai_key_hint__{p}"))?.unwrap_or_default();
+        let api_base = kv_get(&conn, &format!("ai_api_base__{p}"))?.unwrap_or_default();
+        let model = kv_get(&conn, &format!("ai_model__{p}"))?.unwrap_or_default();
+        providers.insert(
+            (*p).to_string(),
+            AiProviderState {
+                configured,
+                api_base,
+                model,
+                key_hint,
+            },
+        );
     }
-    Ok(cfg)
+
+    let active_state = providers.get(&active).cloned().unwrap_or_default();
+    Ok(AiFullConfig {
+        provider: active,
+        api_base: active_state.api_base,
+        model: active_state.model,
+        providers,
+    })
 }
 
-/// Allowed keys for AI configuration.
-const ALLOWED_AI_KEYS: &[&str] = &["provider", "api_base", "api_key", "model"];
-
-/// Write AI config: only updates provided keys.
-/// Skips api_key if it looks masked (contains consecutive ***).
+/// Persist partial AI config updates. See `AiSetCfg` for field semantics.
 #[tauri::command]
-pub fn set_ai_config(cfg: HashMap<String, String>) -> Result<(), String> {
-    for k in cfg.keys() {
-        if !ALLOWED_AI_KEYS.contains(&k.as_str()) {
-            return Err(format!("不允许的配置键: {k}"));
+pub fn set_ai_config(cfg: AiSetCfg) -> Result<(), String> {
+    let conn = open_db()?;
+    migrate_ai_keys_to_keychain(&conn)?;
+
+    // 1. Active selection
+    if let Some(p) = cfg.provider.as_deref() {
+        let trimmed = p.trim();
+        if !trimmed.is_empty() && !SUPPORTED_AI_PROVIDERS.contains(&trimmed) {
+            return Err(format!("不允许的 AI 提供商: {trimmed}"));
+        }
+        set_kv(&conn, "ai_selected_provider", trimmed)?;
+    }
+
+    // 2. Per-provider writes need a target. Prefer the just-set value;
+    //    fall back to the stored selection.
+    let target = match cfg.provider.as_deref() {
+        Some(p) if !p.trim().is_empty() => p.trim().to_string(),
+        _ => kv_get(&conn, "ai_selected_provider")?.unwrap_or_default(),
+    };
+    if target.is_empty() {
+        return Ok(());
+    }
+
+    if let Some(key) = cfg.api_key.as_ref() {
+        let account = ai_keychain_account_for(&target);
+        let trimmed = key.trim();
+        if trimmed.is_empty() {
+            // Explicit delete. Wipe the flag + hint too so the UI flips
+            // to "未配置" on the next read.
+            secrets::delete(&account).map_err(|e| e.to_string())?;
+            conn.execute(
+                "DELETE FROM app_kv WHERE key = ?1",
+                [format!("ai_configured__{target}")],
+            )
+            .map_err(|e| e.to_string())?;
+            conn.execute(
+                "DELETE FROM app_kv WHERE key = ?1",
+                [format!("ai_key_hint__{target}")],
+            )
+            .map_err(|e| e.to_string())?;
+        } else {
+            secrets::set(&account, trimmed).map_err(|e| e.to_string())?;
+            // Mirror the non-secret "is configured" + 尾号 into app_kv so
+            // the settings screen can render without a keychain probe.
+            set_kv(&conn, &format!("ai_configured__{target}"), "true")?;
+            set_kv(
+                &conn,
+                &format!("ai_key_hint__{target}"),
+                &secrets::key_last_four(trimmed),
+            )?;
         }
     }
-    let mut conn = open_db()?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    for (k, v) in &cfg {
-        // Don't overwrite real key with masked placeholder
-        if k == "api_key" && v.contains("***") {
-            continue;
-        }
-        tx.execute(
-            "INSERT INTO app_kv(key, val) VALUES(?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET val=excluded.val",
-            rusqlite::params![k, v],
-        )
-        .map_err(|e| e.to_string())?;
+    if let Some(b) = cfg.api_base.as_ref() {
+        set_kv(&conn, &format!("ai_api_base__{target}"), b.trim())?;
     }
-    tx.commit().map_err(|e| e.to_string())?;
+    if let Some(m) = cfg.model.as_ref() {
+        set_kv(&conn, &format!("ai_model__{target}"), m.trim())?;
+    }
     Ok(())
 }
 
-/// Read raw (unmasked) AI config from DB — for internal use only.
+/// Read raw (unmasked) AI config. Used by every in-process caller that
+/// needs to actually talk to the AI provider — they see real values.
 fn read_raw_config() -> Result<std::collections::HashMap<String, String>, String> {
     let conn = open_db()?;
     crate::db::read_ai_config(&conn)
 }
 
-/// Test AI connection: validates config and makes a real API call.
+/// Copy an already-stored API key from one role slot to the other for
+/// a dual-role logical provider (e.g. SiliconFlow or OpenAI, where the
+/// same account-level key works for both chat and audio endpoints).
+///
+/// Callers pass the AI provider id (`silicon` / `openai`) and the ASR
+/// provider id (`siliconflow` / `openai`) that make up the logical pair.
+/// The command figures out which side already has a key, reads it, and
+/// mirrors it to the empty side — users don't need to re-paste or
+/// even know the key exists anymore.
+///
+/// Returns a short human-readable status for the toast.
 #[tauri::command]
-pub fn ai_smoketest() -> Result<String, String> {
-    let cfg = read_raw_config()?;
-    let provider = cfg.get("provider").cloned().unwrap_or_default();
-    let api_key = cfg.get("api_key").cloned().unwrap_or_default();
+pub fn sync_dual_role_key(
+    ai_provider: String,
+    asr_provider: String,
+) -> Result<String, String> {
+    let ai_acc = ai_keychain_account_for(&ai_provider);
+    let asr_acc = format!("asr_{asr_provider}");
+
+    let ai_key = secrets::get(&ai_acc).map_err(|e| e.to_string())?;
+    let asr_key = secrets::get(&asr_acc).map_err(|e| e.to_string())?;
+
+    match (ai_key, asr_key) {
+        (Some(k), None) if !k.is_empty() => {
+            // Copy AI → ASR
+            secrets::set(&asr_acc, &k).map_err(|e| e.to_string())?;
+            let conn = open_db()?;
+            set_kv(&conn, &format!("asr_configured__{asr_provider}"), "true")?;
+            set_kv(
+                &conn,
+                &format!("asr_key_hint__{asr_provider}"),
+                &secrets::key_last_four(&k),
+            )?;
+            Ok("已同步到视频转录".to_string())
+        }
+        (None, Some(k)) if !k.is_empty() => {
+            // Copy ASR → AI
+            secrets::set(&ai_acc, &k).map_err(|e| e.to_string())?;
+            let conn = open_db()?;
+            set_kv(&conn, &format!("ai_configured__{ai_provider}"), "true")?;
+            set_kv(
+                &conn,
+                &format!("ai_key_hint__{ai_provider}"),
+                &secrets::key_last_four(&k),
+            )?;
+            Ok("已同步到 AI 文本".to_string())
+        }
+        (Some(_), Some(_)) => Ok("两边都已配置，无需同步".to_string()),
+        _ => Err("两边都未配置，没有可同步的 Key".to_string()),
+    }
+}
+
+/// Nuclear option: delete every KnoYoo keychain entry (AI + ASR) and clear
+/// the app_kv `configured` / `key_hint` flags. Useful when the keychain's
+/// ACL is in a bad state (common in dev builds where the binary's code
+/// signature shifts across rebuilds and macOS insists on reprompting).
+/// After this the settings panel shows "all 未配置"; user re-enters keys
+/// which re-establishes clean ACL ownership for the current binary.
+#[tauri::command]
+pub fn reset_api_keys() -> Result<usize, String> {
+    let removed = secrets::clear_all_knoyoo_secrets().map_err(|e| e.to_string())?;
+    let conn = open_db()?;
+    conn.execute(
+        "DELETE FROM app_kv WHERE \
+            key LIKE 'ai_configured__%' OR key LIKE 'ai_key_hint__%' OR \
+            key LIKE 'asr_configured__%' OR key LIKE 'asr_key_hint__%'",
+        [],
+    )
+    .map_err(|e| e.to_string())?;
+    tracing::info!("reset_api_keys: cleared {} keychain accounts", removed);
+    Ok(removed)
+}
+
+
+/// Test AI connection: makes a real API call with minimal text.
+///
+/// Takes an optional `cfg` override. When the settings panel passes the
+/// live form values in, we use those directly — no keychain write, no
+/// keychain read (unless the user is testing a previously-stored key
+/// without retyping it, in which case we do one read). This avoids the
+/// old "save-then-test" round-trip that cost 2-3 keychain prompts per
+/// click in dev builds.
+#[tauri::command]
+pub fn ai_smoketest(cfg: Option<AiSetCfg>) -> Result<String, String> {
+    let cfg_map = build_smoketest_config(cfg)?;
+
+    let provider = cfg_map.get("provider").cloned().unwrap_or_default();
+    let api_key = cfg_map.get("api_key").cloned().unwrap_or_default();
     if provider.is_empty() {
         return Ok("未选择 AI 提供商".to_string());
     }
@@ -80,7 +271,7 @@ pub fn ai_smoketest() -> Result<String, String> {
         return Ok("未填写 API Key".to_string());
     }
 
-    let config = match AiClientConfig::from_map(&cfg) {
+    let config = match AiClientConfig::from_map(&cfg_map) {
         Ok(c) => c,
         Err(e) => return Ok(format!("配置不完整: {e}")),
     };
@@ -94,6 +285,80 @@ pub fn ai_smoketest() -> Result<String, String> {
         Ok(_) => Ok(format!("ok:{api_base}")),
         Err(e) => Ok(format!("连接失败: {e}")),
     }
+}
+
+/// Merge a frontend override onto stored config for smoketest purposes.
+///
+/// Precedence for each field: explicit non-empty override → per-provider
+/// stored value in app_kv → nothing. The api_key is special: only read
+/// from keychain as a fallback when the override didn't provide one —
+/// this minimises keychain access to at most one op per smoketest.
+fn build_smoketest_config(
+    override_cfg: Option<AiSetCfg>,
+) -> Result<std::collections::HashMap<String, String>, String> {
+    let Some(o) = override_cfg else {
+        return read_raw_config();
+    };
+
+    let mut m = std::collections::HashMap::new();
+
+    // Provider — required for everything else.
+    let provider = match o.provider.as_deref().map(str::trim) {
+        Some(p) if !p.is_empty() => p.to_string(),
+        _ => return read_raw_config(),
+    };
+    if !SUPPORTED_AI_PROVIDERS.contains(&provider.as_str()) {
+        return Err(format!("不允许的 AI 提供商: {provider}"));
+    }
+    m.insert("provider".into(), provider.clone());
+
+    let conn = open_db()?;
+
+    // api_base / model: override first, fall back to stored per-provider.
+    match o.api_base.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => {
+            m.insert("api_base".into(), v.to_string());
+        }
+        _ => {
+            if let Some(v) = kv_get(&conn, &format!("ai_api_base__{provider}"))? {
+                if !v.is_empty() {
+                    m.insert("api_base".into(), v);
+                }
+            }
+        }
+    }
+    match o.model.as_deref().map(str::trim) {
+        Some(v) if !v.is_empty() => {
+            m.insert("model".into(), v.to_string());
+        }
+        _ => {
+            if let Some(v) = kv_get(&conn, &format!("ai_model__{provider}"))? {
+                if !v.is_empty() {
+                    m.insert("model".into(), v);
+                }
+            }
+        }
+    }
+
+    // api_key: explicit override wins. Otherwise fall back to keychain
+    // (that's the one necessary read if user is testing an already-stored
+    // key without retyping).
+    match o.api_key.as_deref().map(str::trim) {
+        Some(k) if !k.is_empty() => {
+            m.insert("api_key".into(), k.to_string());
+        }
+        _ => {
+            if let Some(stored) = secrets::get(&ai_keychain_account_for(&provider))
+                .map_err(|e| e.to_string())?
+            {
+                if !stored.is_empty() {
+                    m.insert("api_key".into(), stored);
+                }
+            }
+        }
+    }
+
+    Ok(m)
 }
 
 /// Extract JSON from AI response (allows ```json ... ``` wrapping).

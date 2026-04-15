@@ -10,3 +10,8 @@
 notes.db
 notes.db-journal
 notes.db-wal
+
+# Sidecar binaries — fetched by scripts/fetch-sidecars.{sh,ps1} before build.
+# Too large to commit (yt-dlp ~30MB, ffmpeg ~80MB per platform).
+binaries/*
+!binaries/.gitkeep

@@ -10,9 +10,11 @@ import {
   MessageCircle,
   Code,
   Camera,
+  Loader2,
+  AlertCircle,
   type LucideIcon,
 } from "lucide-react";
-import type { WebClip } from "../../types";
+import type { TranscriptionStatus, WebClip } from "../../types";
 import HighlightText from "./HighlightText";
 
 const SOURCE_CONFIG: Record<
@@ -72,6 +74,16 @@ export default function ClipCard({
   const SourceIcon = st.icon;
   const ytId = clip.source_type === "video" ? getYouTubeId(clip.url) : null;
 
+  // Transcription state — only relevant for video clips that went through
+  // the import_video_clip pipeline. Non-video clips have empty status.
+  const tStatus = (clip.transcription_status as TranscriptionStatus | undefined) ?? "";
+  const tProcessing =
+    tStatus === "pending" ||
+    tStatus === "downloading" ||
+    tStatus === "transcribing" ||
+    tStatus === "cleaning";
+  const tFailed = tStatus === "failed";
+
   return (
     <div
       className={`group relative rounded-xl border border-l-[3px] ${st.border} bg-bg-secondary dark:glass-card p-4 hover:border-accent/30 hover:shadow-md transition-all duration-200 cursor-pointer ${
@@ -79,9 +91,27 @@ export default function ClipCard({
       } ${animateOut ? "animate-slide-out-right" : ""}`}
       onClick={() => onSelect(clip)}
     >
-      {/* Unread indicator */}
-      {!clip.is_read && (
-        <div className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-accent" title="未读" />
+      {/* Status indicator (priority: transcription state → unread dot) */}
+      {tProcessing ? (
+        <div
+          className="absolute top-2 right-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-accent/10 text-accent text-[10px] font-medium"
+          title="视频转录中"
+        >
+          <Loader2 size={10} className="animate-spin" />
+          转录中
+        </div>
+      ) : tFailed ? (
+        <div
+          className="absolute top-2 right-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md bg-danger-light text-danger text-[10px] font-medium"
+          title={clip.transcription_error || "视频转录失败"}
+        >
+          <AlertCircle size={10} />
+          失败
+        </div>
+      ) : (
+        !clip.is_read && (
+          <div className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-accent" title="未读" />
+        )
       )}
       {/* Thumbnail: YouTube or OG image */}
       {ytId ? (
@@ -123,12 +153,18 @@ export default function ClipCard({
         {domain} &middot; {new Date(clip.created_at).toLocaleDateString("zh-CN")}
       </div>
 
-      {/* Summary */}
-      {clip.summary && (
+      {/* Summary — or transcription placeholder when video pipeline is running. */}
+      {clip.summary ? (
         <p className="text-[12px] text-text-secondary leading-relaxed line-clamp-3 mb-3 m-0">
           <HighlightText text={clip.summary} query={searchQuery} />
         </p>
-      )}
+      ) : tProcessing ? (
+        <p className="text-[12px] text-text-tertiary italic line-clamp-2 mb-3 m-0">
+          正在提取视频字幕或进行语音转文字…
+        </p>
+      ) : tFailed && clip.transcription_error ? (
+        <p className="text-[12px] text-danger line-clamp-2 mb-3 m-0">{clip.transcription_error}</p>
+      ) : null}
 
       {/* Tags */}
       {clip.tags.length > 0 && (

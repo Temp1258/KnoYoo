@@ -328,14 +328,13 @@ EPUB / PDF 文件存放于同目录下 `books/`，封面存放于 `book_covers/`
 
 ### 规划中
 
+- [ ] **视频 → 文字 ASR 管道**（当前主攻方向）：YouTube / Bilibili 一键导入，字幕优先、云端 ASR 兜底（OpenAI Whisper / Deepgram / SiliconFlow），七段式细颗粒进度。详见 [`docs/VIDEO_TRANSCRIPTION.md`](docs/VIDEO_TRANSCRIPTION.md)
 - [ ] 订阅制（免配置 API Key，走云端代理）
 - [ ] 端到端加密多端同步（可选）
 - [ ] 全局快捷键（Cmd+K 搜索）
 - [ ] 智能集合（规则自动归类）
 - [ ] 扫描 PDF OCR 支持
-- [ ] Bilibili 字幕抓取
 - [ ] 上架 Chrome Web Store
-- [ ] 分发 macOS DMG / Windows NSIS
 
 ---
 

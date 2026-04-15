@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { Database, Download, Upload, ShieldCheck } from "lucide-react";
 import { save, open } from "@tauri-apps/plugin-dialog";
 import SegmentedControl from "../components/ui/SegmentedControl";
-import AISettingsPanel from "../components/AI/AISettingsPanel";
+import ApiConfigPanel from "../components/Settings/ApiConfigPanel";
+import ResetApiKeysCard from "../components/Settings/ResetApiKeysCard";
 import BookmarkImportDialog from "../components/Import/BookmarkImportDialog";
 import ThemePicker from "../components/Settings/ThemePicker";
 import { useTheme } from "../hooks/useTheme";
@@ -11,7 +12,7 @@ import { tauriInvoke } from "../hooks/useTauriInvoke";
 type Tab = "ai" | "display" | "data" | "import" | "about";
 
 const TABS = [
-  { value: "ai" as Tab, label: "AI 配置" },
+  { value: "ai" as Tab, label: "API 配置" },
   { value: "display" as Tab, label: "显示" },
   { value: "data" as Tab, label: "数据" },
   { value: "import" as Tab, label: "导入" },
@@ -81,7 +82,9 @@ export default function SettingsPage() {
     setBackupStatus(null);
     try {
       await tauriInvoke("import_full_database", { path });
-      setBackupStatus("备份导入成功，请重启应用以生效");
+      setBackupStatus(
+        "备份导入成功，请重启应用以生效。注意：API Key 不随备份迁移，请到「AI 配置」和「视频转录」重新填写。",
+      );
       setImportConfirm(false);
       loadDataInfo();
     } catch (e) {
@@ -95,7 +98,12 @@ export default function SettingsPage() {
 
       <SegmentedControl options={TABS} value={tab} onChange={setTab} className="mb-6" />
 
-      {tab === "ai" && <AISettingsPanel />}
+      {tab === "ai" && (
+        <div className="space-y-6">
+          <ApiConfigPanel />
+          <ResetApiKeysCard />
+        </div>
+      )}
 
       {tab === "display" && (
         <div className="space-y-4">
@@ -171,6 +179,11 @@ export default function SettingsPage() {
           {/* Backup / Restore */}
           <div className="p-4 rounded-xl bg-bg-secondary border border-border space-y-3">
             <div className="text-[14px] font-medium text-text">备份与恢复</div>
+            <p className="text-[12px] text-text-tertiary leading-relaxed m-0">
+              备份文件仅包含笔记数据，
+              <span className="text-text-secondary">不包含任何 API Key</span>
+              （后者保存在系统钥匙串中）。在新机器上恢复后，请重新配置 AI 与视频转录的 Key。
+            </p>
             <div className="flex gap-3">
               <button
                 onClick={handleExportBackup}

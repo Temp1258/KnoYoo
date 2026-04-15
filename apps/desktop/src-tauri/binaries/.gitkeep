@@ -1,0 +1,3 @@
+# Sidecar binaries land here via scripts/fetch-sidecars.{sh,ps1}.
+# Contents are gitignored — binaries are too large to commit. CI fetches
+# them before `tauri build`; developers run the script once after cloning.

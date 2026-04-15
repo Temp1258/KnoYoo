@@ -31,6 +31,10 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
+    "externalBin": [
+      "binaries/yt-dlp",
+      "binaries/ffmpeg"
+    ],
     "windows": {
       "wix": { "language": "zh-CN" }
     }

@@ -2,6 +2,7 @@
 
 mod ai;
 mod ai_client;
+mod asr_client;
 mod bilibili;
 mod books;
 mod clip_server;
@@ -13,7 +14,10 @@ mod import;
 mod error;
 mod html_extract;
 mod models;
+mod secrets;
+mod transcribe;
 mod youtube;
+mod ytdlp;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -36,14 +40,19 @@ fn main() {
     // Start local HTTP server for browser extension communication
     clip_server::start_server();
 
-    // Nudge any books that are stuck in "pending" AI analysis (crashed during
-    // a prior run, or just had their legacy bad metadata cleared by a
-    // migration) so the user doesn't have to manually retry each one.
-    books::resume_pending_ai_extraction();
+    // We deliberately do NOT auto-resume pending book AI analyses on
+    // startup. That path reads the OS keychain to fetch the AI provider
+    // key, which triggers a macOS auth prompt before the user has even
+    // touched the app. If a book is stuck in 'pending', the books page
+    // shows a "让 AI 分析" button per card that the user can click
+    // themselves — the trigger then happens in response to an explicit
+    // user action, which is the only time keychain access should
+    // surprise them with a prompt.
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_shell::init())
         .setup(|app| {
             // Build tray right-click menu
             let show_item = MenuItem::with_id(app, "show", "显示主窗口", true, None::<&str>)?;
@@ -99,6 +108,8 @@ fn main() {
             // AI
             ai::get_ai_config,
             ai::set_ai_config,
+            ai::reset_api_keys,
+            ai::sync_dual_role_key,
             ai::ai_smoketest,
             ai::ai_chat,
             ai::ai_chat_with_context,
@@ -185,6 +196,11 @@ fn main() {
             books::read_book_cover,
             books::open_book_externally,
             books::ai_extract_book_metadata,
+            // Video → transcript pipeline
+            transcribe::import_video_clip,
+            transcribe::retry_transcription,
+            transcribe::get_asr_config,
+            transcribe::set_asr_config,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

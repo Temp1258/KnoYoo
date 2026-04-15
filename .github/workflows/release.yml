@@ -68,6 +68,18 @@ jobs:
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
+      # Tauri's bundle.externalBin refuses to build if the declared sidecars
+      # are missing. Fetch yt-dlp + ffmpeg for the target platform before the
+      # build step. Binaries are gitignored (~110MB each platform).
+      - name: Fetch sidecars (macOS)
+        if: runner.os == 'macOS'
+        run: scripts/fetch-sidecars.sh ${{ matrix.rust_target }}
+
+      - name: Fetch sidecars (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: scripts\fetch-sidecars.ps1 -Target ${{ matrix.rust_target }}
+
       - name: Build Tauri bundle
         run: |
           cd apps/desktop

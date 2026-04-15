@@ -47,6 +47,18 @@ pub struct WebClip {
     pub created_at: String,
     pub updated_at: String,
     pub deleted_at: Option<String>,
+    /// Empty for non-video clips. For video clips: `pending | downloading |
+    /// transcribing | cleaning | completed | failed`.
+    #[serde(default)]
+    pub transcription_status: String,
+    #[serde(default)]
+    pub transcription_error: String,
+    /// Provenance tag: `subtitle | asr:openai | asr:deepgram | asr:siliconflow`.
+    #[serde(default)]
+    pub transcription_source: String,
+    /// Video duration in seconds; 0 for non-video clips.
+    #[serde(default)]
+    pub audio_duration_sec: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -85,6 +97,21 @@ pub(crate) fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
         created_at: row.get("created_at")?,
         updated_at: row.get("updated_at")?,
         deleted_at: row.get("deleted_at")?,
+        // Transcription columns were added in a migration; older DBs without
+        // the columns surface as empty / 0 thanks to the default-on-missing
+        // pattern (unwrap_or_default) we already use for raw_content.
+        transcription_status: row
+            .get::<_, String>("transcription_status")
+            .unwrap_or_default(),
+        transcription_error: row
+            .get::<_, String>("transcription_error")
+            .unwrap_or_default(),
+        transcription_source: row
+            .get::<_, String>("transcription_source")
+            .unwrap_or_default(),
+        audio_duration_sec: row
+            .get::<_, i64>("audio_duration_sec")
+            .unwrap_or_default(),
     })
 }
 
@@ -606,7 +633,7 @@ const AI_CLEAN_INPUT_CHARS: usize = 24_000;
 ///
 /// Deliberately asks the model **not** to summarize — we want size-preserving
 /// cleanup. Summarization happens in stage 3 (`auto_tag_clip_inner`).
-fn ai_clean_clip_inner(clip_id: i64) -> Result<(), String> {
+pub(crate) fn ai_clean_clip_inner(clip_id: i64) -> Result<(), String> {
     let conn = open_db()?;
 
     let (raw, current): (String, String) = conn
@@ -710,7 +737,7 @@ fn ai_clean_clip_inner(clip_id: i64) -> Result<(), String> {
     Ok(())
 }
 
-fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
+pub(crate) fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
     let conn = open_db()?;
 
     let (title, content): (String, String) = conn

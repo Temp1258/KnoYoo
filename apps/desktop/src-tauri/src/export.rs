@@ -260,6 +260,22 @@ pub fn import_full_database(path: String) -> Result<(), String> {
         tracing::error!("Database restore failed: {}", e);
         "恢复失败".to_string()
     })?;
+
+    // The backup's `*_configured__*` / `*_key_hint__*` rows describe the
+    // SOURCE machine's keychain — they're meaningless here. If we left
+    // them, the settings panel would show "已配置 · 尾号 xxxx" for keys
+    // the current keychain doesn't hold, and the pipeline would fail on
+    // first use. Clear them so the user sees "未配置" and knows to
+    // re-enter, matching the toast message in SettingsPage.
+    if let Ok(conn) = crate::db::open_db() {
+        let _ = conn.execute(
+            "DELETE FROM app_kv WHERE \
+                key LIKE 'ai_configured__%' OR key LIKE 'ai_key_hint__%' OR \
+                key LIKE 'asr_configured__%' OR key LIKE 'asr_key_hint__%'",
+            [],
+        );
+    }
+
     tracing::info!("Database restored from: {}", path);
     Ok(())
 }

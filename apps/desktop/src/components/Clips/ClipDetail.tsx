@@ -26,6 +26,7 @@ import type { WebClip, ClipNote } from "../../types";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import Button from "../ui/Button";
 import AddToCollectionDialog from "../Collections/AddToCollectionDialog";
+import TranscribeProgress from "./TranscribeProgress";
 import { useExport } from "../../hooks/useExport";
 
 type Props = {
@@ -55,6 +56,33 @@ function extractHeadings(content: string): Heading[] {
 
 const DEFAULT_FONT_SIZE = 14;
 const FONT_SIZE_KEY = "knoyoo-clip-font-size";
+
+function formatDuration(sec: number): string {
+  if (!sec || sec < 0) return "";
+  const h = Math.floor(sec / 3600);
+  const m = Math.floor((sec % 3600) / 60);
+  const s = Math.floor(sec % 60);
+  if (h > 0) return `${h}:${m.toString().padStart(2, "0")}:${s.toString().padStart(2, "0")}`;
+  return `${m}:${s.toString().padStart(2, "0")}`;
+}
+
+/** Rust backend writes `subtitle` / `asr:openai` / ... — format for humans. */
+function formatTranscriptionSource(source: string): string {
+  if (source === "subtitle") return "字幕";
+  if (source.startsWith("asr:")) {
+    const id = source.slice(4);
+    const label =
+      id === "openai"
+        ? "OpenAI"
+        : id === "deepgram"
+          ? "Deepgram"
+          : id === "siliconflow"
+            ? "SiliconFlow"
+            : id;
+    return `ASR · ${label}`;
+  }
+  return source;
+}
 
 export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: Props) {
   const [editingSummary, setEditingSummary] = useState(false);
@@ -177,30 +205,47 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
     };
   }, [clip.id]);
 
-  // Poll while the AI pipeline is still working on this clip. We detect
-  // "in-flight" as "summary is empty" — the last stage sets it. Capped at
-  // 60s so a failed AI run doesn't keep us polling forever.
+  // Poll while the AI pipeline is still working. "In-flight" means either:
+  //   • transcription pipeline active (video clips only), OR
+  //   • summary is still empty on a non-video clip.
+  // Video clips get a longer cap (10 min) because transcription runs much
+  // longer than a web article's stage 2/3 cleanup.
+  const videoActive = (() => {
+    const s = clip.transcription_status;
+    return s === "pending" || s === "downloading" || s === "transcribing" || s === "cleaning";
+  })();
+  const articleActive = !videoActive && !clip.summary && clip.source_type !== "video";
   useEffect(() => {
-    if (clip.summary) return;
+    if (!videoActive && !articleActive) return;
     let cancelled = false;
     const interval = setInterval(async () => {
       if (cancelled) return;
       try {
         const fresh = await tauriInvoke<WebClip>("get_clip", { id: clip.id });
-        if (!cancelled && fresh.summary) {
+        if (cancelled) return;
+        const stillActive =
+          fresh.transcription_status === "pending" ||
+          fresh.transcription_status === "downloading" ||
+          fresh.transcription_status === "transcribing" ||
+          fresh.transcription_status === "cleaning" ||
+          (!fresh.summary && fresh.source_type !== "video");
+        // Always notify parent on change so failed/completed states render.
+        if (fresh.updated_at !== clip.updated_at) {
           onUpdate?.(fresh);
         }
+        if (!stillActive) clearInterval(interval);
       } catch {
         // transient — next tick retries
       }
     }, 4000);
-    const stopTimer = setTimeout(() => clearInterval(interval), 60_000);
+    const cap = videoActive ? 600_000 : 60_000;
+    const stopTimer = setTimeout(() => clearInterval(interval), cap);
     return () => {
       cancelled = true;
       clearInterval(interval);
       clearTimeout(stopTimer);
     };
-  }, [clip.id, clip.summary, onUpdate]);
+  }, [clip.id, clip.updated_at, videoActive, articleActive, onUpdate]);
 
   const domain = (() => {
     try {
@@ -350,14 +395,38 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
       </div>
 
       {/* Title */}
-      <h1 className="text-[22px] font-bold text-text mb-2">{clip.title || "无标题"}</h1>
+      <h1 className="text-[22px] font-bold text-text mb-2">
+        {clip.title || (videoActive ? "正在获取视频标题…" : "无标题")}
+      </h1>
 
       {/* Meta */}
-      <div className="flex items-center gap-3 text-[12px] text-text-tertiary mb-4">
+      <div className="flex items-center gap-3 text-[12px] text-text-tertiary mb-4 flex-wrap">
         <span>{domain}</span>
         <span>{new Date(clip.created_at).toLocaleDateString("zh-CN")}</span>
         <span className="px-1.5 py-0.5 rounded bg-bg-tertiary text-[11px]">{clip.source_type}</span>
+        {clip.source_type === "video" && !!clip.audio_duration_sec && (
+          <span className="text-[11px]">{formatDuration(clip.audio_duration_sec)}</span>
+        )}
+        {clip.transcription_source && (
+          <span className="px-1.5 py-0.5 rounded bg-bg-tertiary text-[11px]" title="转录来源">
+            {formatTranscriptionSource(clip.transcription_source)}
+          </span>
+        )}
       </div>
+
+      {/* Transcription progress / failure card (video clips only) */}
+      <TranscribeProgress
+        clip={clip}
+        onRetryStarted={async () => {
+          // Immediate visual update — flip status to pending so the card
+          // swaps to the progress variant without waiting for the next poll.
+          onUpdate?.({
+            ...clip,
+            transcription_status: "pending",
+            transcription_error: "",
+          });
+        }}
+      />
 
       {/* Tags (editable) */}
       <div className="mb-4">

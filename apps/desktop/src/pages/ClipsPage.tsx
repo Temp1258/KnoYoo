@@ -13,11 +13,13 @@ import {
   BookOpen,
   SlidersHorizontal,
   MoreHorizontal,
+  Video,
 } from "lucide-react";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 import type { WebClip } from "../types";
 import ClipCard from "../components/Clips/ClipCard";
 import ClipDetail from "../components/Clips/ClipDetail";
+import VideoImportDialog from "../components/Clips/VideoImportDialog";
 import EmptyState from "../components/Clips/EmptyState";
 import OnboardingFlow from "../components/Onboarding/OnboardingFlow";
 import Button from "../components/ui/Button";
@@ -60,6 +62,7 @@ export default function ClipsPage() {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const moreMenuRef = useRef<HTMLDivElement>(null);
+  const [videoImportOpen, setVideoImportOpen] = useState(false);
   const [selectedClip, setSelectedClip] = useState<WebClip | null>(null);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -700,6 +703,16 @@ export default function ClipsPage() {
                   <div className="absolute right-0 mt-1 w-40 rounded-xl bg-bg-secondary border border-border shadow-lg z-30 py-1">
                     <button
                       onClick={() => {
+                        setVideoImportOpen(true);
+                        setMoreMenuOpen(false);
+                      }}
+                      className="w-full text-left px-3 py-2 text-[12px] text-text hover:bg-bg-tertiary transition-colors cursor-pointer flex items-center gap-2"
+                    >
+                      <Video size={13} />
+                      导入视频
+                    </button>
+                    <button
+                      onClick={() => {
                         handleBatchRetag();
                         setMoreMenuOpen(false);
                       }}
@@ -966,6 +979,23 @@ export default function ClipsPage() {
           )}
         </div>
       </div>
+
+      {/* Video import dialog. Opens the ClipDetail drawer on the newly
+          created clip so users can watch progress in place. */}
+      <VideoImportDialog
+        open={videoImportOpen}
+        onClose={() => setVideoImportOpen(false)}
+        onStarted={async (clipId) => {
+          try {
+            const clip = await tauriInvoke<WebClip>("get_clip", { id: clipId });
+            setSelectedClip(clip);
+            // Refresh list so the new placeholder card shows up immediately.
+            loadClips();
+          } catch (e) {
+            console.warn("get_clip after import_video_clip failed:", e);
+          }
+        }}
+      />
     </div>
   );
 }
