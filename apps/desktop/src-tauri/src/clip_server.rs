@@ -364,8 +364,9 @@ fn send_json_response(
         404 => "Not Found",
         413 => "Payload Too Large",
         422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
         500 => "Internal Server Error",
-        _ => "OK",
+        _ => "",
     };
     // Deliberately NO Access-Control-Allow-* headers. Extensions bypass CORS via
     // host_permissions, so they keep working. Websites can't read responses.
