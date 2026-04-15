@@ -595,8 +595,10 @@ pub struct OllamaStatus {
 }
 
 /// Check if Ollama is running locally and list available models.
+/// Always succeeds — connection/parse failures report `running: false`
+/// so the UI can show a disabled state instead of an error toast.
 #[tauri::command]
-pub fn detect_ollama() -> Result<OllamaStatus, String> {
+pub fn detect_ollama() -> OllamaStatus {
     let resp = ureq::get("http://localhost:11434/api/tags")
         .timeout(std::time::Duration::from_secs(2))
         .call();
@@ -612,15 +614,15 @@ pub fn detect_ollama() -> Result<OllamaStatus, String> {
                         .collect()
                 })
                 .unwrap_or_default();
-            Ok(OllamaStatus {
+            OllamaStatus {
                 running: true,
                 models,
-            })
+            }
         }
-        _ => Ok(OllamaStatus {
+        _ => OllamaStatus {
             running: false,
             models: vec![],
-        }),
+        },
     }
 }
 
