@@ -30,5 +30,14 @@ export function useSearchHistory() {
     localStorage.removeItem(STORAGE_KEY);
   }, []);
 
-  return { history, addQuery, clearHistory };
+  const removeQuery = useCallback((q: string) => {
+    setHistory((prev) => {
+      const next = prev.filter((h) => h !== q);
+      if (next.length === 0) localStorage.removeItem(STORAGE_KEY);
+      else localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
+      return next;
+    });
+  }, []);
+
+  return { history, addQuery, clearHistory, removeQuery };
 }

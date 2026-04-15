@@ -108,7 +108,11 @@ export default function ClipsPage() {
   const [searchFocused, setSearchFocused] = useState(false);
   const [aiSearchMode, setAiSearchMode] = useState(false);
   const blurTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const { history: searchHistory, addQuery: addSearchHistory } = useSearchHistory();
+  const {
+    history: searchHistory,
+    addQuery: addSearchHistory,
+    removeQuery: removeSearchHistory,
+  } = useSearchHistory();
 
   // Use refs for filter values to avoid re-creating loadClips on every filter change
   const filtersRef = useRef({
@@ -724,24 +728,41 @@ export default function ClipsPage() {
             {searchFocused && !query && searchHistory.length > 0 && (
               <div className="absolute left-6 right-6 mt-1 rounded-xl bg-bg-secondary border border-border shadow-md z-20 py-1">
                 {searchHistory.map((h) => (
-                  <button
+                  <div
                     key={h}
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      setQuery(h);
-                      setPage(1);
-                      setFuzzyResults(null);
-                      if (aiSearchMode) {
-                        handleAISearch(h);
-                      } else {
-                        setTimeout(() => loadClips(), 0);
-                      }
-                    }}
-                    className="w-full text-left px-4 py-2 text-[12px] text-text-secondary hover:bg-bg-tertiary transition-colors cursor-pointer"
+                    className="group flex items-center pr-2 hover:bg-bg-tertiary transition-colors"
                   >
-                    <Search size={12} className="inline mr-2 text-text-tertiary" />
-                    {h}
-                  </button>
+                    <button
+                      onMouseDown={(e) => {
+                        e.preventDefault();
+                        setQuery(h);
+                        setPage(1);
+                        setFuzzyResults(null);
+                        if (aiSearchMode) {
+                          handleAISearch(h);
+                        } else {
+                          setTimeout(() => loadClips(), 0);
+                        }
+                      }}
+                      className="flex-1 text-left px-4 py-2 text-[12px] text-text-secondary cursor-pointer"
+                    >
+                      <Search size={12} className="inline mr-2 text-text-tertiary" />
+                      {h}
+                    </button>
+                    <button
+                      onMouseDown={(e) => {
+                        // Prevent input blur + row click; mousedown fires before blur.
+                        e.preventDefault();
+                        e.stopPropagation();
+                        removeSearchHistory(h);
+                      }}
+                      title="删除此条历史"
+                      aria-label={`删除搜索历史：${h}`}
+                      className="shrink-0 w-5 h-5 flex items-center justify-center rounded-full text-text-tertiary hover:text-text hover:bg-bg opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+                    >
+                      <X size={11} strokeWidth={2.2} />
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
