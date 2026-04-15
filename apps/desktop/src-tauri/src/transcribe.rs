@@ -259,7 +259,9 @@ fn run_asr_path(
     // from the yt-dlp subprocess event loop without borrowing `app`.
     let emit_app = app.clone();
     let audio_path = ytdlp::download_audio(app, url, work_dir, move |pct| {
-        let overall = 10 + (pct * 30.0).round() as u32;
+        // Guard against NaN / out-of-range progress from the yt-dlp pipe.
+        let pct_safe = if pct.is_finite() { pct.clamp(0.0, 1.0) } else { 0.0 };
+        let overall = 10 + (pct_safe * 30.0).round() as u32;
         let _ = emit_app.emit(
             PROGRESS_EVENT,
             &ProgressEvent {
@@ -333,7 +335,7 @@ fn run_asr(path: &Path) -> Result<(String, String), AppError> {
     let provider = asr_client::build_provider(&cfg)?;
 
     let size = std::fs::metadata(path)
-        .map(|m| m.len() as usize)
+        .map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX))
         .unwrap_or(0);
     if size > provider.max_file_bytes() {
         return Err(AppError::validation(format!(

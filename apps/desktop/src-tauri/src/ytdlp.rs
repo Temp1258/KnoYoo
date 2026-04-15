@@ -336,8 +336,13 @@ fn parse_metadata(v: &serde_json::Value) -> VideoMetadata {
         uploader: v["uploader"].as_str().unwrap_or_default().to_string(),
         description: v["description"].as_str().unwrap_or_default().to_string(),
         // yt-dlp emits duration as a float (seconds). Sub-second precision
-        // doesn't matter for our progress math.
-        duration_sec: v["duration"].as_f64().unwrap_or(0.0).max(0.0) as u64,
+        // doesn't matter for our progress math. Guard against NaN / Inf:
+        // `as u64` on +Inf saturates to u64::MAX, which would break every
+        // downstream percent calculation.
+        duration_sec: {
+            let d = v["duration"].as_f64().unwrap_or(0.0);
+            if d.is_finite() && d >= 0.0 { d as u64 } else { 0 }
+        },
         thumbnail: v["thumbnail"].as_str().unwrap_or_default().to_string(),
         webpage_url: v["webpage_url"].as_str().unwrap_or_default().to_string(),
         subtitle_langs: lang_keys(&v["subtitles"]),

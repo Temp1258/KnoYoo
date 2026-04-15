@@ -549,11 +549,13 @@ pub fn add_book(file_path: String) -> Result<Book, String> {
     // Insert phase: anything that fails here must roll back the copied file
     // (and any cover we wrote). The inner fn returns Ok once the INSERT has
     // committed successfully.
+    let file_size_i64 = i64::try_from(file_size)
+        .map_err(|_| "文件过大，超过支持范围".to_string())?;
     if let Err(e) = add_book_insert(
         hash.clone(),
         file_rel,
         format,
-        file_size as i64,
+        file_size_i64,
         &dest,
         &display_title,
     ) {
@@ -919,22 +921,24 @@ pub fn empty_books_trash() -> Result<i64, String> {
         rows.flatten().collect()
     };
     let total = ids.len();
-    let mut purged: i64 = 0;
+    let mut purged: usize = 0;
     for id in ids {
         match purge_book(id) {
             Ok(()) => purged += 1,
             Err(e) => tracing::error!("purge book {} failed during empty_books_trash: {}", id, e),
         }
     }
-    if (purged as usize) < total {
+    if purged < total {
         tracing::warn!(
             "empty_books_trash: purged {}/{} rows; {} failed",
             purged,
             total,
-            total - purged as usize
+            total - purged
         );
     }
-    Ok(purged)
+    // total is bounded by DB size; i64 cast is safe on 64-bit targets but
+    // use try_from to stay future-proof.
+    Ok(i64::try_from(purged).unwrap_or(i64::MAX))
 }
 
 #[tauri::command]

@@ -874,7 +874,7 @@ pub fn ai_batch_retag_clips() -> Result<i64, String> {
             .map_err(|e| e.to_string())?;
         rows.flatten().collect()
     };
-    let total = ids.len() as i64;
+    let total = i64::try_from(ids.len()).unwrap_or(i64::MAX);
 
     if total > 0 {
         std::thread::spawn(move || {
