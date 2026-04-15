@@ -16,11 +16,50 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 
 [lints.clippy]
 pedantic = { level = "warn", priority = -1 }
-# Allow common patterns that pedantic flags unnecessarily
+# Allow common patterns that pedantic flags unnecessarily.
+# Each allow is a deliberate decision; removing one means committing to
+# fix every remaining call site in the codebase.
 module_name_repetitions = "allow"
 must_use_candidate = "allow"
 missing_errors_doc = "allow"
 missing_panics_doc = "allow"
+# Tauri #[command] handlers take owned serde inputs by contract.
+needless_pass_by_value = "allow"
+# Helper fns defined near their use site improves locality — the pedantic
+# "put items at top of scope" rule fights the grain of this codebase.
+items_after_statements = "allow"
+# A few functions are deliberately long (db::run_migrations, HTTP router,
+# books::add_book). Breaking them into tiny helpers would hurt readability
+# without meaningful benefit.
+too_many_lines = "allow"
+too_many_arguments = "allow"
+# WebClipFilters etc. are query DTOs — the boolean flags ARE the API.
+struct_excessive_bools = "allow"
+# AsrConfig fields share an `asr_` prefix intentionally, as that's how the
+# keychain entries are namespaced.
+struct_field_names = "allow"
+# Debug/trace helpers use short loop bindings.
+many_single_char_names = "allow"
+# `buf += &format!(...)` beats manually juggling `write!` + .unwrap() here.
+format_push_string = "allow"
+format_collect = "allow"
+# File size → MB display casts (usize→f64): verified all sites are well
+# under 2^52 bytes (≈4 PB).
+cast_precision_loss = "allow"
+# Every hot-path cast with a real truncation/sign risk already has an
+# explicit guard from the commit 6 fixes; the remainder are bounded
+# percent / progress computations.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+# secrets.rs:set/delete deliberately keep Result<> for API parity with
+# the keychain backend — swallowing errors silently is not on the table.
+unnecessary_wraps = "allow"
+# secrets.rs folds multiple keyring errors into `Ok(())` (idempotent
+# delete semantics). The duplicate arms document intent.
+match_same_arms = "allow"
+# Style preference — explicit `if let / else return` reads more naturally
+# than `let-else` when the else branch has multiple statements.
+manual_let_else = "allow"
 
 [profile.release]
 strip = true
