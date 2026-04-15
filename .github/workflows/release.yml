@@ -78,10 +78,12 @@ jobs:
         if: startsWith(matrix.os, 'ubuntu')
         run: |
           sudo apt-get update
+          # Tauri 2 uses libayatana-appindicator3-dev; the older
+          # libappindicator3-dev conflicts with it and has broken deps on
+          # Ubuntu 22.04, so we only install the Ayatana variant.
           sudo apt-get install -y \
             libgtk-3-dev \
             libwebkit2gtk-4.1-dev \
-            libappindicator3-dev \
             librsvg2-dev \
             patchelf \
             libayatana-appindicator3-dev
