@@ -76,7 +76,10 @@ fn validate_url_safe(url: &str) -> Result<(), String> {
         }
     }
 
-    // Block common internal TLDs
+    // Block common internal TLDs. `host_lower` is already lowercased at L56,
+    // so suffix matching is effectively case-insensitive — clippy can't prove
+    // that and flags it as a file-extension check.
+    #[allow(clippy::case_sensitive_file_extension_comparisons)]
     if host_lower.ends_with(".local")
         || host_lower.ends_with(".internal")
         || host_lower.ends_with(".localhost")
@@ -246,9 +249,8 @@ fn fetch_html(url: &str) -> Result<String, String> {
                     .header("location")
                     .ok_or_else(|| format!("Redirect {status} without Location header"))?
                     .to_string();
-                // Resolve relative redirect URLs
+                // Resolve relative redirect URLs; loop re-enters automatically.
                 current_url = resolve_url(&location, &current_url);
-                continue;
             }
             Err(ureq::Error::Status(status, _)) => {
                 return Err(format!("HTTP {status} from {current_url}"));
