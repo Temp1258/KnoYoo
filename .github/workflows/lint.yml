@@ -30,6 +30,14 @@ jobs:
           workspaces: apps/desktop/src-tauri -> target
           key: clippy-aarch64-apple-darwin
 
+      # Tauri's build.rs validates bundle.externalBin paths even for
+      # `cargo clippy` — the sidecars must exist on disk or the build
+      # script fails before clippy ever sees the source. Fetch them the
+      # same way release.yml does; the script is idempotent and the
+      # rust-cache above keeps target/ hot across runs.
+      - name: Fetch sidecars
+        run: scripts/fetch-sidecars.sh aarch64-apple-darwin
+
       - name: Clippy (binary + tests)
         run: cargo clippy --all-targets -- -D warnings
         working-directory: apps/desktop/src-tauri
