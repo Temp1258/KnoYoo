@@ -160,7 +160,7 @@ export default function BooksTrashPanel({ onCountChange }: Props) {
         <div className="flex justify-end mb-4">
           <Button variant="danger" size="sm" onClick={() => setConfirmEmpty(true)}>
             <Trash2 size={13} />
-            清空图书回收站
+            清空书籍乐色
           </Button>
         </div>
       )}
@@ -243,7 +243,7 @@ export default function BooksTrashPanel({ onCountChange }: Props) {
           <div className="bg-bg-secondary rounded-xl shadow-lg border border-border w-full max-w-sm mx-4 p-5">
             <div className="flex items-center gap-2 mb-3">
               <AlertTriangle size={18} className="text-danger shrink-0" />
-              <h3 className="text-[15px] font-semibold text-text m-0">清空图书回收站</h3>
+              <h3 className="text-[15px] font-semibold text-text m-0">清空书籍乐色</h3>
             </div>
             <p className="text-[13px] text-text-secondary m-0 mb-4">
               确定要永久删除 {books.length} 本书吗？书籍文件和封面会一并清理。

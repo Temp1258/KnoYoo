@@ -29,7 +29,7 @@ export default function TrashPage() {
   return (
     <div>
       <div className="flex items-baseline gap-3 mb-4">
-        <h1 className="text-[28px] font-bold tracking-tight m-0">回收站</h1>
+        <h1 className="text-[28px] font-bold tracking-tight m-0">乐色</h1>
       </div>
 
       <SegmentedControl options={tabs} value={tab} onChange={setTab} className="mb-6" />

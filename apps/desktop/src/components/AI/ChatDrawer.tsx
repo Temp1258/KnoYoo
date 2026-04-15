@@ -335,7 +335,7 @@ export default function ChatDrawer() {
           {chatMsgs.length === 0 && (
             <div className="text-center py-6">
               <div className="text-[13px] text-text-tertiary mb-4">
-                向 AI 助手提问，它会优先基于你的知识库内容回答
+                向 AI 助手提问，它会优先基于你的智库内容回答
               </div>
               {suggestions.length > 0 && (
                 <div className="space-y-2">

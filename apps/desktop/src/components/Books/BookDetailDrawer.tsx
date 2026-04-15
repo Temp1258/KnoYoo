@@ -211,7 +211,7 @@ export default function BookDetailDrawer({
     }
     try {
       await onDelete(book.id);
-      showToast("已移入回收站", "success");
+      showToast("已移入乐色", "success");
       onClose();
     } catch (e) {
       showToast(`删除失败：${e}`, "error");

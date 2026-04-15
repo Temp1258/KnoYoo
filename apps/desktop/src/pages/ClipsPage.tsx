@@ -404,7 +404,7 @@ export default function ClipsPage() {
         tauriInvoke("delete_web_clip", { id }).then(() => loadMeta());
       }, 15000);
       pendingDeletesRef.current.set(id, { timer, clip });
-      showToast("已移至回收站（可在回收站中恢复）", "info", {
+      showToast("已移至乐色（可在乐色中恢复）", "info", {
         label: "撤销",
         onClick: () => {
           const pending = pendingDeletesRef.current.get(id);
@@ -548,7 +548,7 @@ export default function ClipsPage() {
           {/* Header — clean: title + count + refresh */}
           <div className="flex items-center justify-between mb-4">
             <div className="flex items-center gap-3">
-              <h1 className="text-[28px] font-bold tracking-tight m-0">知识库</h1>
+              <h1 className="text-[28px] font-bold tracking-tight m-0">智库</h1>
               <span className="text-[13px] text-text-tertiary">{total} 条收藏</span>
             </div>
             <Button
@@ -626,7 +626,7 @@ export default function ClipsPage() {
                 />
                 <input
                   type="text"
-                  placeholder={aiSearchMode ? "AI 搜索：描述你记得的内容..." : "搜索知识库..."}
+                  placeholder={aiSearchMode ? "AI 搜索：描述你记得的内容..." : "搜索智库..."}
                   value={query}
                   onFocus={() => setSearchFocused(true)}
                   onBlur={() => {

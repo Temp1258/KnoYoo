@@ -524,10 +524,10 @@ pub fn add_book(file_path: String) -> Result<Book, String> {
         if let Some((t, deleted_at)) = dup {
             if deleted_at.is_some() {
                 return Err(format!(
-                    "《{t}》在回收站中，请先恢复或彻底清除后再添加"
+                    "《{t}》在乐色中，请先恢复或彻底清除后再添加"
                 ));
             }
-            return Err(format!("《{t}》已在图书角"));
+            return Err(format!("《{t}》已在书籍"));
         }
     }
 

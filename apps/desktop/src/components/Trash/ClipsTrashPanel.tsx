@@ -49,7 +49,7 @@ export default function ClipsTrashPanel({ onCountChange }: Props) {
       setTrashCount(count);
     } catch (e) {
       console.error("Failed to load trash:", e);
-      showToast("加载回收站失败", "error");
+      showToast("加载乐色失败", "error");
     } finally {
       setLoading(false);
     }
@@ -131,14 +131,14 @@ export default function ClipsTrashPanel({ onCountChange }: Props) {
             disabled={emptyingTrash}
           >
             <Trash2 size={13} />
-            清空剪藏回收站
+            清空剪藏乐色
           </Button>
         </div>
       )}
 
       <div className="flex items-center gap-2 px-4 py-2.5 rounded-xl mb-4 bg-yellow-500/5 border border-yellow-500/15">
         <AlertTriangle size={14} className="text-yellow-600 shrink-0" />
-        <span className="text-[12px] text-yellow-700">剪藏回收站中的内容将在 30 天后自动清除</span>
+        <span className="text-[12px] text-yellow-700">剪藏乐色中的内容将在 30 天后自动清除</span>
       </div>
 
       {loading && clips.length === 0 && (
@@ -228,7 +228,7 @@ export default function ClipsTrashPanel({ onCountChange }: Props) {
           <div className="bg-bg-secondary rounded-xl shadow-lg border border-border w-full max-w-sm mx-4 p-5">
             <div className="flex items-center gap-2 mb-3">
               <AlertTriangle size={18} className="text-danger shrink-0" />
-              <h3 className="text-[15px] font-semibold text-text m-0">清空剪藏回收站</h3>
+              <h3 className="text-[15px] font-semibold text-text m-0">清空剪藏乐色</h3>
             </div>
             <p className="text-[13px] text-text-secondary m-0 mb-4">
               确定要永久删除 {trashCount} 条剪藏吗？此操作无法撤销。

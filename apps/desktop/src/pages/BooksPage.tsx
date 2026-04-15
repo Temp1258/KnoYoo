@@ -91,7 +91,7 @@ export default function BooksPage() {
           ok += 1;
         } catch (e) {
           const msg = String(e);
-          if (msg.includes("已在图书角")) {
+          if (msg.includes("已在书籍")) {
             skipped += 1;
           } else {
             errors.push(msg);
@@ -174,7 +174,7 @@ export default function BooksPage() {
 
       <header className="flex items-center justify-between mb-6">
         <div>
-          <h1 className="text-[28px] font-bold tracking-tight">图书角</h1>
+          <h1 className="text-[28px] font-bold tracking-tight">书籍</h1>
           <p className="text-[13px] text-text-tertiary mt-1">你读过、正在读、想读的书都在这里</p>
         </div>
         <button
@@ -264,7 +264,7 @@ function EmptyState({ onPick }: { onPick: () => void }) {
           <BookOpen size={32} className="text-accent" strokeWidth={1.6} />
         </div>
         <div>
-          <div className="text-[16px] font-semibold text-text">图书角空空如也</div>
+          <div className="text-[16px] font-semibold text-text">书架空空如也</div>
           <div className="text-[12px] text-text-tertiary mt-1.5 leading-relaxed">
             拖入 EPUB 或 PDF 文件，或点击此处选择
           </div>

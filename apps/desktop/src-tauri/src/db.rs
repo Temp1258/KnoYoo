@@ -203,7 +203,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .ok();
 
-    // Migration: books library ("图书角")
+    // Migration: books library ("书籍")
     // NOTE: file_hash uses a PARTIAL unique index (below) rather than an inline UNIQUE,
     // so soft-deleted rows never block re-upload of the same file.
     conn.execute_batch(

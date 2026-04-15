@@ -11,7 +11,7 @@ export default function BookDropOverlay({ visible }: { visible: boolean }) {
         <div className="w-16 h-16 rounded-2xl bg-accent-light flex items-center justify-center">
           <BookUp size={32} className="text-accent" strokeWidth={1.6} />
         </div>
-        <div className="text-[16px] font-semibold text-text">松开以添加到图书角</div>
+        <div className="text-[16px] font-semibold text-text">松开以添加到书籍</div>
         <div className="text-[12px] text-text-tertiary">支持 EPUB、PDF</div>
       </div>
     </div>

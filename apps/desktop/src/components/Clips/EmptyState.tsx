@@ -43,7 +43,7 @@ export default function EmptyState({ onLoadDemo, onCopyToken, tokenCopied }: Pro
         <Sparkles size={20} className="absolute -top-1 -right-2 text-accent opacity-60" />
       </div>
 
-      <h2 className="text-[20px] font-bold text-text mb-1">开始构建你的知识库</h2>
+      <h2 className="text-[20px] font-bold text-text mb-1">开始构建你的智库</h2>
       <p className="text-[13px] text-text-tertiary mb-6">三步开始，一键收藏有价值的网页内容</p>
 
       <div className="w-full space-y-3 mb-6">
