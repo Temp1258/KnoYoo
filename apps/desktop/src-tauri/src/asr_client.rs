@@ -1,15 +1,15 @@
 //! Speech-to-text (ASR) clients.
 //!
 //! Three cloud providers behind a common trait:
-//! - OpenAI Whisper (`/v1/audio/transcriptions`, multipart, 25MB hard cap)
+//! - `OpenAI` Whisper (`/v1/audio/transcriptions`, multipart, 25MB hard cap)
 //! - Deepgram (`/v1/listen`, raw audio body, `Token` auth header)
-//! - SiliconFlow (OpenAI-compatible multipart, cheaper SenseVoice model)
+//! - `SiliconFlow` (OpenAI-compatible multipart, cheaper `SenseVoice` model)
 //!
 //! Callers upload a single audio file ≤ `max_file_bytes()`. Splitting for
 //! longer videos is the caller's job — see `media::split_audio` and the
 //! transcribe pipeline for chunk orchestration.
 //!
-//! Privacy note: audio is sent to the selected provider. KnoYoo's promise is
+//! Privacy note: audio is sent to the selected provider. `KnoYoo`'s promise is
 //! that *results* stay local; cloud ASR is an explicit trade-off the user
 //! opts into via settings. The UI must surface which provider is in use.
 
@@ -269,7 +269,7 @@ impl AsrProvider for Deepgram {
         // Response shape: results.channels[0].alternatives[0].transcript
         body.pointer("/results/channels/0/alternatives/0/transcript")
             .and_then(|v| v.as_str())
-            .map(|s| s.to_string())
+            .map(std::string::ToString::to_string)
             .ok_or_else(|| AppError::ai("Deepgram 未返回有效 transcript"))
     }
 }
@@ -328,7 +328,7 @@ fn parse_openai_shape(resp: ureq::Response) -> Result<String, AppError> {
             .map_err(|e| AppError::ai(format!("解析 ASR 响应失败: {e}")))?;
     body.get("text")
         .and_then(|v| v.as_str())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .ok_or_else(|| AppError::ai("ASR 未返回有效文本"))
 }
 
@@ -339,8 +339,7 @@ fn read_audio_capped(path: &Path, cap: usize) -> Result<Vec<u8>, AppError> {
     let size = usize::try_from(meta.len()).unwrap_or(usize::MAX);
     if size > cap {
         return Err(AppError::validation(format!(
-            "音频块超过供应商上限 ({} > {} bytes)",
-            size, cap
+            "音频块超过供应商上限 ({size} > {cap} bytes)"
         )));
     }
     let mut buf = Vec::with_capacity(size);

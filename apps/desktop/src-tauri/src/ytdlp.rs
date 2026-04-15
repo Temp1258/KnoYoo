@@ -30,7 +30,7 @@ pub struct VideoMetadata {
     /// Publisher-authored subtitle languages (typically higher quality than
     /// ASR-generated captions).
     pub subtitle_langs: Vec<String>,
-    /// YouTube's auto-generated captions. Used as a fallback when
+    /// `YouTube`'s auto-generated captions. Used as a fallback when
     /// `subtitle_langs` is empty.
     pub auto_caption_langs: Vec<String>,
 }
@@ -71,7 +71,7 @@ pub fn fetch_metadata(app: &AppHandle, url: &str) -> Result<VideoMetadata, AppEr
 
 /// Pick the best subtitle language out of what's available.
 ///
-/// Preference ladder: simplified Chinese first (since KnoYoo's default
+/// Preference ladder: simplified Chinese first (since `KnoYoo`'s default
 /// audience), then traditional, then generic `zh`, then English variants,
 /// then any remaining track. Returns `None` when the list is empty.
 pub fn pick_subtitle_lang(available: &[String]) -> Option<String> {
@@ -96,7 +96,7 @@ pub fn pick_subtitle_lang(available: &[String]) -> Option<String> {
 /// Download the best matching subtitle track as an SRT file.
 ///
 /// `prefer_publisher = true` drives `--write-subs`; `false` uses
-/// `--write-auto-subs` (YouTube's machine-generated captions). Returns the
+/// `--write-auto-subs` (`YouTube`'s machine-generated captions). Returns the
 /// path to the `.srt` file on success, `None` when no suitable subtitle
 /// exists. Caller decides which branch to try based on metadata.
 pub fn download_subtitle(
@@ -220,7 +220,7 @@ fn strip_markup(s: &str) -> String {
 /// We intentionally skip `-x` / `--audio-format` post-processing here: those
 /// shell out to ffmpeg which isn't on PATH in bundled builds. The caller
 /// (ASR layer) can accept native container formats (m4a / webm / opus),
-/// which OpenAI Whisper, Deepgram, and SiliconFlow all handle.
+/// which `OpenAI` Whisper, Deepgram, and `SiliconFlow` all handle.
 pub fn download_audio(
     app: &AppHandle,
     url: &str,
@@ -493,12 +493,12 @@ mod tests {
     #[test]
     fn subtitle_lang_falls_back_through_zh_variants() {
         assert_eq!(
-            pick_subtitle_lang(&vec!["zh-HK".into(), "en".into()]).as_deref(),
+            pick_subtitle_lang(&["zh-HK".into(), "en".into()]).as_deref(),
             Some("zh-HK")
         );
         // Unknown zh-prefixed variant still matches the "starts_with(zh)" rule.
         assert_eq!(
-            pick_subtitle_lang(&vec!["zh-Foo".into(), "fr".into()]).as_deref(),
+            pick_subtitle_lang(&["zh-Foo".into(), "fr".into()]).as_deref(),
             Some("zh-Foo")
         );
     }
@@ -506,7 +506,7 @@ mod tests {
     #[test]
     fn subtitle_lang_falls_back_to_english() {
         assert_eq!(
-            pick_subtitle_lang(&vec!["fr".into(), "en-GB".into(), "de".into()]).as_deref(),
+            pick_subtitle_lang(&["fr".into(), "en-GB".into(), "de".into()]).as_deref(),
             Some("en-GB")
         );
     }
@@ -514,7 +514,7 @@ mod tests {
     #[test]
     fn subtitle_lang_last_resort_picks_first() {
         assert_eq!(
-            pick_subtitle_lang(&vec!["ja".into(), "ko".into()]).as_deref(),
+            pick_subtitle_lang(&["ja".into(), "ko".into()]).as_deref(),
             Some("ja")
         );
         assert_eq!(pick_subtitle_lang(&[]), None);

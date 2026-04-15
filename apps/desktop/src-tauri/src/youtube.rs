@@ -1,6 +1,6 @@
 //! YouTube-specific extraction.
 //!
-//! Standard article extraction doesn't work for YouTube — the watch page is a
+//! Standard article extraction doesn't work for `YouTube` — the watch page is a
 //! JS-rendered SPA with very little meaningful text in the initial HTML. BUT
 //! the initial HTML does embed a large JSON blob called `ytInitialPlayerResponse`
 //! that contains everything we need: video title, description, channel, and
@@ -9,7 +9,7 @@
 //! The caption tracks let us build a **full spoken transcript** of the video —
 //! every line the speaker says ends up in the clip's `content` field. For
 //! videos with publisher-provided subtitles (TED, lectures) this is a clean
-//! transcript; for everything else we fall back to YouTube's auto-generated
+//! transcript; for everything else we fall back to `YouTube`'s auto-generated
 //! ASR captions, which still capture every spoken word.
 
 use std::io::Read;
@@ -35,7 +35,7 @@ pub fn is_youtube_url(url: &str) -> bool {
     extract_video_id(url).is_some()
 }
 
-/// Extract the 11-character YouTube video ID from common URL shapes.
+/// Extract the 11-character `YouTube` video ID from common URL shapes.
 pub fn extract_video_id(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?.to_lowercase();
@@ -75,14 +75,14 @@ fn clean_video_id(s: &str) -> Option<String> {
     }
 }
 
-/// Fetch the watch page and assemble a YoutubeVideo with the spoken transcript.
+/// Fetch the watch page and assemble a `YoutubeVideo` with the spoken transcript.
 ///
 /// Multi-tier resilience: if the `ytInitialPlayerResponse` JSON is missing or
 /// the format changed, we fall back to plain `<meta>` tag extraction so the
 /// user always gets SOMETHING (title + description) instead of a silent fail.
 pub fn fetch_video(url: &str) -> Result<YoutubeVideo, String> {
     let video_id = extract_video_id(url).ok_or("不是有效的 YouTube 链接")?;
-    let watch_url = format!("https://www.youtube.com/watch?v={}", video_id);
+    let watch_url = format!("https://www.youtube.com/watch?v={video_id}");
 
     let html = fetch_text(&watch_url)?;
 
@@ -117,7 +117,7 @@ pub fn fetch_video(url: &str) -> Result<YoutubeVideo, String> {
 
         return Ok(YoutubeVideo {
             title: if title.is_empty() {
-                format!("YouTube 视频 {}", video_id)
+                format!("YouTube 视频 {video_id}")
             } else {
                 title
             },
@@ -139,8 +139,8 @@ pub fn fetch_video(url: &str) -> Result<YoutubeVideo, String> {
     Ok(meta)
 }
 
-/// Pull title / description / thumbnail from standard OpenGraph + Twitter
-/// meta tags that YouTube (and most SSR'd pages) include.
+/// Pull title / description / thumbnail from standard `OpenGraph` + Twitter
+/// meta tags that `YouTube` (and most SSR'd pages) include.
 fn extract_meta_fallback(html: &str, video_id: &str) -> YoutubeVideo {
     use scraper::{Html, Selector};
     let doc = Html::parse_document(html);
@@ -160,9 +160,7 @@ fn extract_meta_fallback(html: &str, video_id: &str) -> YoutubeVideo {
             // <title> tag fallback
             Selector::parse("title")
                 .ok()
-                .and_then(|s| doc.select(&s).next())
-                .map(|el| el.text().collect::<String>().trim().to_string())
-                .unwrap_or_else(|| format!("YouTube 视频 {}", video_id))
+                .and_then(|s| doc.select(&s).next()).map_or_else(|| format!("YouTube 视频 {video_id}"), |el| el.text().collect::<String>().trim().to_string())
         } else {
             og
         }
@@ -292,7 +290,7 @@ fn extract_transcript(
 /// Prefer (1) non-ASR original-language track, (2) any non-ASR track,
 /// (3) ASR in the original/primary language, (4) first available.
 /// For TED-style talks this picks the publisher's clean transcript; for vlogs
-/// it falls back to YouTube's auto-generated ASR so we still get every line.
+/// it falls back to `YouTube`'s auto-generated ASR so we still get every line.
 fn pick_best_track(
     tracks: &[serde_json::Value],
 ) -> Option<(&serde_json::Value, &'static str)> {
@@ -304,8 +302,7 @@ fn pick_best_track(
     if let Some(t) = non_asr.iter().find(|t| {
         t["languageCode"]
             .as_str()
-            .map(|l| l.starts_with("en"))
-            .unwrap_or(false)
+            .is_some_and(|l| l.starts_with("en"))
     }) {
         return Some((t, "publisher"));
     }
@@ -319,8 +316,7 @@ fn pick_best_track(
     if let Some(t) = tracks.iter().find(|t| {
         t["languageCode"]
             .as_str()
-            .map(|l| l.starts_with("en"))
-            .unwrap_or(false)
+            .is_some_and(|l| l.starts_with("en"))
     }) {
         return Some((t, "auto"));
     }
@@ -329,7 +325,7 @@ fn pick_best_track(
     tracks.first().map(|t| (t, "auto"))
 }
 
-/// Parse YouTube's `<transcript><text start="..." dur="...">...</text>...` XML
+/// Parse `YouTube`'s `<transcript><text start="..." dur="...">...</text>...` XML
 /// into newline-joined plain text. We rely on the `scraper` HTML parser since
 /// it's already in the dependency tree and handles entity decoding for us.
 fn parse_caption_xml(xml: &str) -> String {

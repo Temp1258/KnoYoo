@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::error::AppError;
 use crate::models::{ChatCompletionResponse, DEFAULT_MODEL};
 
-/// Configuration for the AI client, read from app_kv.
+/// Configuration for the AI client, read from `app_kv`.
 pub struct AiClientConfig {
     pub api_base: String,
     pub api_key: String,
@@ -13,7 +13,7 @@ pub struct AiClientConfig {
 }
 
 impl AiClientConfig {
-    /// Build from a HashMap (as returned by `read_ai_config`).
+    /// Build from a `HashMap` (as returned by `read_ai_config`).
     pub fn from_map(cfg: &HashMap<String, String>) -> Result<Self, AppError> {
         let api_base = cfg
             .get("api_base")

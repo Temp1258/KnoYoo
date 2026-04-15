@@ -147,12 +147,12 @@ fn extract_bilibili(url: &str) -> Result<ExtractedPage, String> {
         parts.push(format!("时长：{dur}"));
     }
     parts.push(format!("BV号：{}", v.bvid));
-    if !v.description.trim().is_empty() {
-        parts.push(format!("## 视频简介\n\n{}", v.description.trim()));
-    } else {
+    if v.description.trim().is_empty() {
         parts.push(
             "## 视频简介\n\n（该视频无简介。未来版本将补充自动字幕转录。）".to_string(),
         );
+    } else {
+        parts.push(format!("## 视频简介\n\n{}", v.description.trim()));
     }
 
     let content = parts.join("\n\n");
@@ -324,7 +324,7 @@ fn extract_favicon(doc: &Html, page_url: &str) -> String {
 }
 
 /// Gate-keep URLs that will end up in `<img src>` / `<a href>` on the frontend.
-/// Only http/https pass; javascript:/data:/file:/vbscript: etc. are rejected.
+/// Only http/https pass; <javascript:/data:/file:/vbscript>: etc. are rejected.
 fn is_safe_http_url(s: &str) -> bool {
     match url::Url::parse(s) {
         Ok(u) => matches!(u.scheme(), "http" | "https"),
@@ -477,7 +477,7 @@ fn collapse_blank_lines(s: &str) -> String {
 /// Collect text from an element, joining with newlines for block elements.
 fn collect_text_clean(el: &scraper::ElementRef) -> String {
     el.text()
-        .map(|t| t.trim())
+        .map(str::trim)
         .filter(|t| !t.is_empty())
         .collect::<Vec<_>>()
         .join("\n")
@@ -542,7 +542,7 @@ mod tests {
 
     #[test]
     fn extract_from_html() {
-        let html = r#"
+        let html = r"
         <html>
         <head><title>Test Page</title></head>
         <body>
@@ -554,7 +554,7 @@ mod tests {
             <footer>Footer stuff</footer>
         </body>
         </html>
-        "#;
+        ";
         let doc = Html::parse_document(html);
         let title = extract_title(&doc).unwrap();
         assert_eq!(title, "Test Page");

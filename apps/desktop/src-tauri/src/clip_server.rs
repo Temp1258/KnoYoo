@@ -1,7 +1,7 @@
 //! Local HTTP server for browser extension communication.
 //!
 //! Listens on 127.0.0.1:19836 and accepts POST /api/clip to add web clips.
-//! Uses a simple token stored in app_kv for authentication.
+//! Uses a simple token stored in `app_kv` for authentication.
 
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
@@ -172,7 +172,7 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
             .unwrap_or_default()
             .as_secs();
         {
-            let mut last = LAST_HANDSHAKE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut last = LAST_HANDSHAKE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if now.saturating_sub(*last) < HANDSHAKE_COOLDOWN_SECS {
                 send_json_response(&mut stream, 429, r#"{"error":"too many requests"}"#)?;
                 return Ok(());
@@ -232,12 +232,9 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         let mut body = vec![0u8; content_length];
         reader.read_exact(&mut body).map_err(|e| e.to_string())?;
 
-        let clip: NewClip = match serde_json::from_slice(&body) {
-            Ok(c) => c,
-            Err(_) => {
-                send_json_response(&mut stream, 400, r#"{"error":"invalid JSON"}"#)?;
-                return Ok(());
-            }
+        let clip: NewClip = if let Ok(c) = serde_json::from_slice(&body) { c } else {
+            send_json_response(&mut stream, 400, r#"{"error":"invalid JSON"}"#)?;
+            return Ok(());
         };
 
         match crate::clips::add_web_clip(clip) {
@@ -293,12 +290,9 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
             "article".to_string()
         }
 
-        let req: ClipUrlRequest = match serde_json::from_slice(&body) {
-            Ok(r) => r,
-            Err(_) => {
-                send_json_response(&mut stream, 400, r#"{"error":"invalid JSON"}"#)?;
-                return Ok(());
-            }
+        let req: ClipUrlRequest = if let Ok(r) = serde_json::from_slice(&body) { r } else {
+            send_json_response(&mut stream, 400, r#"{"error":"invalid JSON"}"#)?;
+            return Ok(());
         };
 
         // Strip site-specific tracking params so the same video opened from a

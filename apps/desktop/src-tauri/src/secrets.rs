@@ -1,7 +1,7 @@
 //! OS keychain wrapper for API secrets.
 //!
 //! Secrets (API keys) are stored in the host keychain — macOS Keychain
-//! Services or Windows Credential Manager — so they never touch our SQLite
+//! Services or Windows Credential Manager — so they never touch our `SQLite`
 //! database. The database backup / restore flow deliberately does NOT move
 //! keychain entries, which is the right default: a user restoring on a
 //! different machine shouldn't inherit stale keys, and a copied `notes.db`
@@ -22,7 +22,7 @@
 use crate::error::AppError;
 
 /// Service identifier registered in the OS keychain. Matches the Tauri
-/// bundle identifier so Keychain Access shows keys under the KnoYoo app.
+/// bundle identifier so Keychain Access shows keys under the `KnoYoo` app.
 /// Used by both the always-on release backend and the env-var-gated
 /// keychain path inside the dev backend.
 #[cfg(not(test))]

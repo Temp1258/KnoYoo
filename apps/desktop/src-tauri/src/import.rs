@@ -102,37 +102,34 @@ pub fn import_bookmarks(path: String, fetchContent: bool) -> Result<ImportResult
         }
 
         if fetchContent {
-            match crate::html_extract::fetch_and_extract(&entry.url) {
-                Ok(page) => {
-                    let clip = NewClip {
-                        url: entry.url.clone(),
-                        title: if page.title.is_empty() { entry.title.clone() } else { page.title },
-                        content: page.content,
-                        raw_content: Some(page.raw_content),
-                        source_type: Some("article".to_string()),
-                        favicon: Some(page.favicon),
-                        og_image: Some(page.og_image),
-                    };
-                    // Use no-autotag variant to avoid spawning a thread per import
-                    match crate::clips::add_web_clip_no_autotag(clip) {
-                        Ok(_) => imported += 1,
-                        Err(_) => failed += 1,
-                    }
+            if let Ok(page) = crate::html_extract::fetch_and_extract(&entry.url) {
+                let clip = NewClip {
+                    url: entry.url.clone(),
+                    title: if page.title.is_empty() { entry.title.clone() } else { page.title },
+                    content: page.content,
+                    raw_content: Some(page.raw_content),
+                    source_type: Some("article".to_string()),
+                    favicon: Some(page.favicon),
+                    og_image: Some(page.og_image),
+                };
+                // Use no-autotag variant to avoid spawning a thread per import
+                match crate::clips::add_web_clip_no_autotag(clip) {
+                    Ok(_) => imported += 1,
+                    Err(_) => failed += 1,
                 }
-                Err(_) => {
-                    let clip = NewClip {
-                        url: entry.url.clone(),
-                        title: entry.title.clone(),
-                        content: String::new(),
-                        raw_content: None,
-                        source_type: Some("article".to_string()),
-                        favicon: None,
-                        og_image: None,
-                    };
-                    match crate::clips::add_web_clip_no_autotag(clip) {
-                        Ok(_) => imported += 1,
-                        Err(_) => failed += 1,
-                    }
+            } else {
+                let clip = NewClip {
+                    url: entry.url.clone(),
+                    title: entry.title.clone(),
+                    content: String::new(),
+                    raw_content: None,
+                    source_type: Some("article".to_string()),
+                    favicon: None,
+                    og_image: None,
+                };
+                match crate::clips::add_web_clip_no_autotag(clip) {
+                    Ok(_) => imported += 1,
+                    Err(_) => failed += 1,
                 }
             }
             std::thread::sleep(std::time::Duration::from_secs(1));

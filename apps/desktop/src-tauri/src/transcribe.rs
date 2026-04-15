@@ -289,7 +289,7 @@ fn run_asr_path(
 
 /// AI cleanup is optional — if it fails (no AI configured, rate limit,
 /// >66% compression rejection), we keep the raw transcript as `content`
-/// and move on. A failed cleanup MUST NOT fail the whole pipeline.
+/// > and move on. A failed cleanup MUST NOT fail the whole pipeline.
 fn run_ai_cleanup(clip_id: i64) {
     if let Err(e) = crate::clips::ai_clean_clip_inner(clip_id) {
         tracing::warn!(
@@ -362,10 +362,10 @@ fn audio_mime_for_path(path: &Path) -> String {
         .map(str::to_ascii_lowercase)
         .as_deref()
     {
-        Some("m4a") | Some("mp4") | Some("aac") => "audio/mp4".into(),
-        Some("mp3") | Some("mpga") => "audio/mpeg".into(),
+        Some("m4a" | "mp4" | "aac") => "audio/mp4".into(),
+        Some("mp3" | "mpga") => "audio/mpeg".into(),
         Some("webm") => "audio/webm".into(),
-        Some("opus") | Some("ogg") => "audio/ogg".into(),
+        Some("opus" | "ogg") => "audio/ogg".into(),
         Some("wav") => "audio/wav".into(),
         Some("flac") => "audio/flac".into(),
         _ => "application/octet-stream".into(),
@@ -409,12 +409,12 @@ fn set_kv_entry(
 /// Idempotent migration of legacy ASR storage. Two legacy shapes:
 ///
 /// 1. Very old: single flat `asr_api_key` keyed by `asr_provider`.
-/// 2. Round-4: per-provider `asr_api_key__<provider>` rows in app_kv.
+/// 2. Round-4: per-provider `asr_api_key__<provider>` rows in `app_kv`.
 ///
-/// Both carried the raw API key in SQLite — exactly what we want to stop
+/// Both carried the raw API key in `SQLite` — exactly what we want to stop
 /// doing. This moves every surviving key into the OS keychain and wipes
-/// the DB rows. Non-secret settings (provider selection, api_base, model,
-/// language) stay in app_kv.
+/// the DB rows. Non-secret settings (provider selection, `api_base`, model,
+/// language) stay in `app_kv`.
 fn migrate_asr_keys_to_keychain(conn: &rusqlite::Connection) -> Result<(), String> {
     // ── Shape 1 → Shape 2 first (so the rest of the function only has to
     //    handle one legacy layout).
@@ -546,7 +546,7 @@ pub struct AsrSetCfg {
 
 /// Build the flat `HashMap<String, String>` that `AsrConfig::from_map`
 /// expects, pulling the active provider's key from the keychain and the
-/// rest from app_kv. Only called from the transcription pipeline.
+/// rest from `app_kv`. Only called from the transcription pipeline.
 fn read_asr_config() -> Result<HashMap<String, String>, AppError> {
     let conn = open_db().map_err(AppError::database)?;
     migrate_asr_keys_to_keychain(&conn).map_err(AppError::database)?;
@@ -738,8 +738,8 @@ pub fn retry_transcription(app: AppHandle, clip_id: i64) -> Result<(), String> {
 /// - API keys live in the OS keychain and NEVER reach the frontend. The
 ///   only signal the UI receives is a `configured: bool` per provider
 ///   derived from a keychain probe.
-/// - Non-secret settings (active provider, api_base, model, language)
-///   come from app_kv as usual.
+/// - Non-secret settings (active provider, `api_base`, model, language)
+///   come from `app_kv` as usual.
 #[tauri::command]
 pub fn get_asr_config() -> Result<AsrFullConfig, String> {
     let conn = open_db()?;
@@ -755,8 +755,7 @@ pub fn get_asr_config() -> Result<AsrFullConfig, String> {
     let mut providers: BTreeMap<String, AsrProviderState> = BTreeMap::new();
     for p in SUPPORTED_PROVIDERS {
         let configured = kv_get(&conn, &format!("asr_configured__{p}"))?
-            .map(|v| v == "true")
-            .unwrap_or(false);
+            .is_some_and(|v| v == "true");
         let key_hint = kv_get(&conn, &format!("asr_key_hint__{p}"))?.unwrap_or_default();
         let api_base = kv_get(&conn, &format!("asr_api_base__{p}"))?.unwrap_or_default();
         let model = kv_get(&conn, &format!("asr_model__{p}"))?.unwrap_or_default();
@@ -786,7 +785,7 @@ pub fn get_asr_config() -> Result<AsrFullConfig, String> {
 /// - `asr_provider` → writes the active selection (validated against
 ///   `SUPPORTED_PROVIDERS`).
 /// - `asr_language` → shared across providers.
-/// - `asr_api_base` / `asr_model` → written to the per-provider app_kv
+/// - `asr_api_base` / `asr_model` → written to the per-provider `app_kv`
 ///   slot keyed by `asr_provider` (or the currently selected provider).
 /// - `asr_api_key` → written to the OS keychain under `asr_<provider>`.
 ///

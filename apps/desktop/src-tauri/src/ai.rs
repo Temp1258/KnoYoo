@@ -32,7 +32,7 @@ pub struct AiProviderState {
     pub model: String,
     /// Last four chars of the stored key (the "尾号"). Empty when
     /// `configured` is false. Computed live from the keychain entry on
-    /// every `get_ai_config` — never persisted to SQLite, so backups stay
+    /// every `get_ai_config` — never persisted to `SQLite`, so backups stay
     /// truly key-free.
     pub key_hint: String,
 }
@@ -67,7 +67,7 @@ pub struct AiSetCfg {
 /// Read AI config for the settings panel.
 ///
 /// Crucially: this path never probes the OS keychain. The "is configured"
-/// signal + 尾号 hint are mirrored into app_kv by `set_ai_config` / the
+/// signal + 尾号 hint are mirrored into `app_kv` by `set_ai_config` / the
 /// migration, so rendering the settings screen never triggers a keychain
 /// authorization prompt — previously 8 providers × 1 probe = 8 prompts on
 /// every settings open, which was unusable on dev builds with unstable
@@ -81,8 +81,7 @@ pub fn get_ai_config() -> Result<AiFullConfig, String> {
     let mut providers: BTreeMap<String, AiProviderState> = BTreeMap::new();
     for p in SUPPORTED_AI_PROVIDERS {
         let configured = kv_get(&conn, &format!("ai_configured__{p}"))?
-            .map(|v| v == "true")
-            .unwrap_or(false);
+            .is_some_and(|v| v == "true");
         let key_hint = kv_get(&conn, &format!("ai_key_hint__{p}"))?.unwrap_or_default();
         let api_base = kv_get(&conn, &format!("ai_api_base__{p}"))?.unwrap_or_default();
         let model = kv_get(&conn, &format!("ai_model__{p}"))?.unwrap_or_default();
@@ -177,7 +176,7 @@ fn read_raw_config() -> Result<std::collections::HashMap<String, String>, String
 }
 
 /// Copy an already-stored API key from one role slot to the other for
-/// a dual-role logical provider (e.g. SiliconFlow or OpenAI, where the
+/// a dual-role logical provider (e.g. `SiliconFlow` or `OpenAI`, where the
 /// same account-level key works for both chat and audio endpoints).
 ///
 /// Callers pass the AI provider id (`silicon` / `openai`) and the ASR
@@ -228,8 +227,8 @@ pub fn sync_dual_role_key(
     }
 }
 
-/// Nuclear option: delete every KnoYoo keychain entry (AI + ASR) and clear
-/// the app_kv `configured` / `key_hint` flags. Useful when the keychain's
+/// Nuclear option: delete every `KnoYoo` keychain entry (AI + ASR) and clear
+/// the `app_kv` `configured` / `key_hint` flags. Useful when the keychain's
 /// ACL is in a bad state (common in dev builds where the binary's code
 /// signature shifts across rebuilds and macOS insists on reprompting).
 /// After this the settings panel shows "all 未配置"; user re-enters keys
@@ -290,7 +289,7 @@ pub fn ai_smoketest(cfg: Option<AiSetCfg>) -> Result<String, String> {
 /// Merge a frontend override onto stored config for smoketest purposes.
 ///
 /// Precedence for each field: explicit non-empty override → per-provider
-/// stored value in app_kv → nothing. The api_key is special: only read
+/// stored value in `app_kv` → nothing. The `api_key` is special: only read
 /// from keychain as a fallback when the override didn't provide one —
 /// this minimises keychain access to at most one op per smoketest.
 fn build_smoketest_config(
@@ -496,9 +495,9 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
             let desc = if summary.is_empty() {
                 title.clone()
             } else {
-                format!("{}: {}", title, summary)
+                format!("{title}: {summary}")
             };
-            buf.push_str(&format!("- [ID:{}][{}] {} (标签:{})\n", id, domain, desc, tags));
+            buf.push_str(&format!("- [ID:{id}][{domain}] {desc} (标签:{tags})\n"));
             clip_ids.push(id);
         }
         buf
@@ -541,7 +540,7 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
         if buf.is_empty() {
             String::new()
         } else {
-            format!("\n## 用户的学习笔记\n{}", buf)
+            format!("\n## 用户的学习笔记\n{buf}")
         }
     };
 
@@ -610,7 +609,7 @@ pub fn detect_ollama() -> OllamaStatus {
                 .as_array()
                 .map(|arr| {
                     arr.iter()
-                        .filter_map(|m| m["name"].as_str().map(|s| s.to_string()))
+                        .filter_map(|m| m["name"].as_str().map(std::string::ToString::to_string))
                         .collect()
                 })
                 .unwrap_or_default();
@@ -676,7 +675,7 @@ pub fn ai_suggest_actions() -> Result<Vec<AiSuggestion>, String> {
     if unread_count >= 10 {
         suggestions.push(AiSuggestion {
             suggestion_type: "review_clips".to_string(),
-            title: format!("你有 {} 条未读收藏", unread_count),
+            title: format!("你有 {unread_count} 条未读收藏"),
             description: "找时间回顾一下最近收藏的内容".to_string(),
         });
     }
@@ -699,7 +698,7 @@ pub fn ai_suggest_actions() -> Result<Vec<AiSuggestion>, String> {
         if *count >= 5 {
             suggestions.push(AiSuggestion {
                 suggestion_type: "create_collection".to_string(),
-                title: format!("关于「{}」的收藏已有 {} 条", tag, count),
+                title: format!("关于「{tag}」的收藏已有 {count} 条"),
                 description: "是否要创建一个专题集合？".to_string(),
             });
         }

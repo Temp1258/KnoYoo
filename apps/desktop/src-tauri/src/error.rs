@@ -84,7 +84,7 @@ impl From<ureq::Error> for AppError {
             ureq::Error::Status(401, _) => Self::ai("API Key 无效或已过期"),
             ureq::Error::Status(402, _) => Self::ai("API 额度不足，请检查账户余额"),
             ureq::Error::Status(429, _) => Self::ai("请求频率过高，请稍后再试"),
-            ureq::Error::Status(code, _) => Self::ai(format!("API 请求失败 (HTTP {})", code)),
+            ureq::Error::Status(code, _) => Self::ai(format!("API 请求失败 (HTTP {code})")),
             ureq::Error::Transport(t) => {
                 let msg = match t.kind() {
                     ureq::ErrorKind::Dns => "DNS 解析失败，请检查网络连接",
@@ -95,10 +95,10 @@ impl From<ureq::Error> for AppError {
                         if s.contains("timed out") || s.contains("Timeout") {
                             "AI 响应超时，请稍后再试"
                         } else {
-                            return Self::ai(format!("网络错误: {}", e));
+                            return Self::ai(format!("网络错误: {e}"));
                         }
                     }
-                    _ => return Self::ai(format!("网络错误: {}", e)),
+                    _ => return Self::ai(format!("网络错误: {e}")),
                 };
                 Self::ai(msg)
             }
@@ -106,7 +106,7 @@ impl From<ureq::Error> for AppError {
     }
 }
 
-/// Backward-compatible: convert AppError to String for existing commands.
+/// Backward-compatible: convert `AppError` to String for existing commands.
 impl From<AppError> for String {
     fn from(e: AppError) -> Self {
         e.message

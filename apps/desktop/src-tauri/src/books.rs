@@ -122,7 +122,7 @@ fn hex_sha256(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     let digest = hasher.finalize();
-    digest.iter().map(|b| format!("{:02x}", b)).collect()
+    digest.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// Infer image extension from magic bytes (no heavy image crate needed).
@@ -145,9 +145,7 @@ fn detect_image_ext(bytes: &[u8]) -> &'static str {
 
 fn filename_stem(path: &Path) -> String {
     path.file_stem()
-        .and_then(|s| s.to_str())
-        .map(std::string::ToString::to_string)
-        .unwrap_or_else(|| "未命名".to_string())
+        .and_then(|s| s.to_str()).map_or_else(|| "未命名".to_string(), std::string::ToString::to_string)
 }
 
 fn year_from_date_string(s: &str) -> Option<i64> {
@@ -202,7 +200,7 @@ fn extract_epub(path: &Path) -> Result<BookMeta, String> {
 
 // ── PDF extraction ───────────────────────────────────────────────────────
 
-/// Decode PDF metadata strings. PDFs use either PDFDocEncoding (Latin-1 subset)
+/// Decode PDF metadata strings. PDFs use either `PDFDocEncoding` (Latin-1 subset)
 /// or UTF-16BE with a BOM. We handle both; unknown bytes become U+FFFD.
 fn decode_pdf_string(bytes: &[u8]) -> String {
     if bytes.starts_with(&[0xFE, 0xFF]) {
@@ -432,7 +430,7 @@ fn extract_pdf_text(path: &Path, budget: usize) -> Result<String, String> {
     Ok(buf.chars().take(budget).collect())
 }
 
-/// Run pdf-extract wrapped in catch_unwind: the crate panics on a small set
+/// Run pdf-extract wrapped in `catch_unwind`: the crate panics on a small set
 /// of malformed PDFs. Returns `Ok(None)` when pdf-extract ran cleanly but
 /// returned empty text (common for scanned image-only PDFs), so the caller
 /// can then try the lopdf fallback.
@@ -698,7 +696,7 @@ pub fn list_books(status: Option<String>) -> Result<Vec<Book>, String> {
     };
 
     let mut stmt = conn.prepare(query).map_err(|e| e.to_string())?;
-    let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(|b| b.as_ref()).collect();
+    let params_ref: Vec<&dyn rusqlite::ToSql> = params.iter().map(std::convert::AsRef::as_ref).collect();
     let rows = stmt
         .query_map(params_ref.as_slice(), row_to_book)
         .map_err(|e| e.to_string())?;

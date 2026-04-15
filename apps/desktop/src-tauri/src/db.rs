@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 /// Tracks whether schema has been successfully initialized for this process.
-/// Using Mutex<bool> instead of OnceLock so failed initialization can be retried.
+/// Using Mutex<bool> instead of `OnceLock` so failed initialization can be retried.
 static SCHEMA_INITIALIZED: Mutex<bool> = Mutex::new(false);
 
 pub fn app_data_dir() -> Result<PathBuf, String> {
@@ -45,7 +45,7 @@ pub fn app_temp_media_dir() -> Result<PathBuf, String> {
 /// Run schema creation and migrations (only once per process).
 fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute_batch(
-        r#"
+        r"
     PRAGMA foreign_keys = ON;
 
     -- Application key-value config (AI settings, tokens, etc.)
@@ -132,7 +132,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
       updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
       FOREIGN KEY (clip_id) REFERENCES web_clips(id) ON DELETE CASCADE
     );
-    "#,
+    ",
     )
     .map_err(|e| e.to_string())?;
 
@@ -255,7 +255,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     // NOTE: file_hash uses a PARTIAL unique index (below) rather than an inline UNIQUE,
     // so soft-deleted rows never block re-upload of the same file.
     conn.execute_batch(
-        r#"
+        r"
         CREATE TABLE IF NOT EXISTS books (
           id               INTEGER PRIMARY KEY AUTOINCREMENT,
           file_hash        TEXT NOT NULL,
@@ -286,7 +286,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         CREATE INDEX IF NOT EXISTS idx_books_status ON books(status);
         CREATE INDEX IF NOT EXISTS idx_books_deleted_at ON books(deleted_at);
         CREATE INDEX IF NOT EXISTS idx_books_updated_at ON books(updated_at DESC);
-        "#,
+        ",
     )
     .ok();
 
@@ -306,7 +306,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     if has_legacy_unique {
         tracing::info!("Migrating books table: removing legacy UNIQUE on file_hash");
         let migration = conn.execute_batch(
-            r#"
+            r"
             BEGIN;
             CREATE TABLE books_new (
               id               INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -342,7 +342,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
             CREATE INDEX IF NOT EXISTS idx_books_deleted_at ON books(deleted_at);
             CREATE INDEX IF NOT EXISTS idx_books_updated_at ON books(updated_at DESC);
             COMMIT;
-            "#,
+            ",
         );
         if let Err(e) = migration {
             tracing::error!("books table migration failed (rolling back): {}", e);
@@ -418,7 +418,7 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     Ok(())
 }
 
-/// Open SQLite database. Schema is created only on the first successful call per process.
+/// Open `SQLite` database. Schema is created only on the first successful call per process.
 /// If schema initialization fails, it will be retried on the next call.
 pub fn open_db() -> Result<Connection, String> {
     let db_path = app_db_path()?;
@@ -429,7 +429,7 @@ pub fn open_db() -> Result<Connection, String> {
         .map_err(|e| e.to_string())?;
 
     // Schema creation: only once on success, retried on failure
-    let mut initialized = SCHEMA_INITIALIZED.lock().unwrap_or_else(|e| e.into_inner());
+    let mut initialized = SCHEMA_INITIALIZED.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if !*initialized {
         ensure_schema(&conn)?;
         *initialized = true;
@@ -446,7 +446,7 @@ pub fn kv_get(conn: &rusqlite::Connection, key: &str) -> Result<Option<String>, 
         .map_err(|e| e.to_string())
 }
 
-/// Helper: INSERT-or-UPDATE a single app_kv entry.
+/// Helper: INSERT-or-UPDATE a single `app_kv` entry.
 pub(crate) fn set_kv(
     conn: &rusqlite::Connection,
     key: &str,
@@ -469,14 +469,19 @@ pub fn ai_keychain_account_for(provider: &str) -> String {
 }
 
 /// Idempotent migration: earlier builds stored a single flat `api_key` in
-/// app_kv keyed by `provider` (and `api_base` / `model` likewise flat).
+/// `app_kv` keyed by `provider` (and `api_base` / `model` likewise flat).
 /// Move each into its per-provider slot, push the raw key into the OS
 /// keychain, and wipe every legacy row. Running on a fresh install is a
 /// no-op (the SELECTs just return None).
 pub fn migrate_ai_keys_to_keychain(conn: &rusqlite::Connection) -> Result<(), String> {
     // Step 1: promote any flat (pre-Round-6) layout into per-provider rows.
     let legacy_provider = kv_get(conn, "provider")?.unwrap_or_default();
-    if !legacy_provider.is_empty() {
+    if legacy_provider.is_empty() {
+        // No legacy selected provider but possibly an orphan api_key row —
+        // remove it defensively so it never lingers in backups.
+        conn.execute("DELETE FROM app_kv WHERE key = 'api_key'", [])
+            .map_err(|e| e.to_string())?;
+    } else {
         if kv_get(conn, "ai_selected_provider")?
             .unwrap_or_default()
             .is_empty()
@@ -522,11 +527,6 @@ pub fn migrate_ai_keys_to_keychain(conn: &rusqlite::Connection) -> Result<(), St
             [],
         )
         .map_err(|e| e.to_string())?;
-    } else {
-        // No legacy selected provider but possibly an orphan api_key row —
-        // remove it defensively so it never lingers in backups.
-        conn.execute("DELETE FROM app_kv WHERE key = 'api_key'", [])
-            .map_err(|e| e.to_string())?;
     }
 
     // Step 2: drain any per-provider `api_key__*` rows (a previous build
@@ -571,7 +571,7 @@ pub fn migrate_ai_keys_to_keychain(conn: &rusqlite::Connection) -> Result<(), St
 /// Returns a flat `HashMap<String, String>` with `provider` / `api_base` /
 /// `api_key` / `model` keys — the shape `AiClientConfig::from_map` expects.
 /// The `api_key` value is pulled live from the OS keychain, not from any
-/// SQLite row.
+/// `SQLite` row.
 pub fn read_ai_config(
     conn: &rusqlite::Connection,
 ) -> Result<std::collections::HashMap<String, String>, String> {
@@ -611,10 +611,10 @@ pub fn check_db_health() -> Result<String, String> {
     let result: String = conn
         .query_row("PRAGMA integrity_check", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    if result != "ok" {
-        tracing::error!("Database integrity check failed: {}", result);
-    } else {
+    if result == "ok" {
         tracing::info!("Database integrity check: ok");
+    } else {
+        tracing::error!("Database integrity check failed: {}", result);
     }
     Ok(result)
 }
@@ -636,14 +636,14 @@ mod tests {
     fn test_db() -> Connection {
         let conn = Connection::open_in_memory().expect("open in-memory db");
         conn.execute_batch(
-            r#"
+            r"
             PRAGMA foreign_keys = ON;
 
             CREATE TABLE IF NOT EXISTS app_kv (
               key TEXT PRIMARY KEY,
               val TEXT NOT NULL
             );
-            "#,
+            ",
         )
         .expect("init schema");
         conn

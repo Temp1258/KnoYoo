@@ -25,9 +25,9 @@ pub fn is_bilibili_url(url: &str) -> bool {
 }
 
 /// Pull the BV id out of common Bilibili URL shapes:
-///   https://www.bilibili.com/video/BV1xxx/?spm_id_from=...
-///   https://m.bilibili.com/video/BV1xxx
-///   https://b23.tv/BV1xxx
+///   <https://www.bilibili.com/video/BV1xxx/?spm_id_from>=...
+///   <https://m.bilibili.com/video/BV1xxx>
+///   <https://b23.tv/BV1xxx>
 pub fn extract_bvid(url: &str) -> Option<String> {
     let parsed = url::Url::parse(url).ok()?;
     let host = parsed.host_str()?.to_lowercase();
@@ -63,8 +63,7 @@ fn is_valid_bvid(s: &str) -> bool {
 pub fn fetch_video(url: &str) -> Result<BilibiliVideo, String> {
     let bvid = extract_bvid(url).ok_or("不是有效的 Bilibili 链接")?;
     let api_url = format!(
-        "https://api.bilibili.com/x/web-interface/view?bvid={}",
-        bvid
+        "https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
     );
 
     let body = fetch_text(&api_url)?;

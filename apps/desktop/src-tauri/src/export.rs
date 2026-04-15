@@ -35,7 +35,7 @@ fn clip_to_markdown(clip: &WebClip, note: Option<&str>) -> String {
 
     if let Some(n) = note {
         if !n.is_empty() {
-            md.push_str(&format!("## My Notes\n\n{}\n\n", n));
+            md.push_str(&format!("## My Notes\n\n{n}\n\n"));
         }
     }
 
@@ -138,7 +138,7 @@ pub fn export_collection_to_dir(collectionId: i64, dirPath: String) -> Result<u3
 
         let md = clip_to_markdown(&clip, note.as_deref());
         let base = sanitize_filename(&clip.title);
-        let mut filename = format!("{}.md", base);
+        let mut filename = format!("{base}.md");
         let mut counter = 1;
         // Use create_new to atomically avoid TOCTOU race
         let dir = std::path::Path::new(&dirPath);
@@ -156,7 +156,7 @@ pub fn export_collection_to_dir(collectionId: i64, dirPath: String) -> Result<u3
                     break;
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    filename = format!("{}_{}.md", base, counter);
+                    filename = format!("{base}_{counter}.md");
                     counter += 1;
                     if counter > 1000 {
                         return Err("导出失败：文件名冲突过多".to_string());
@@ -170,7 +170,7 @@ pub fn export_collection_to_dir(collectionId: i64, dirPath: String) -> Result<u3
     Ok(count)
 }
 
-/// Export full database as a backup file using SQLite's online backup API.
+/// Export full database as a backup file using `SQLite`'s online backup API.
 /// This is safe against concurrent writes and produces a consistent snapshot.
 #[tauri::command]
 pub fn export_full_database(path: String) -> Result<(), String> {

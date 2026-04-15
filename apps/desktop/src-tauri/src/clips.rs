@@ -5,7 +5,7 @@ use crate::db::open_db;
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
-/// Escape special characters in SQLite LIKE patterns.
+/// Escape special characters in `SQLite` LIKE patterns.
 fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
@@ -117,7 +117,7 @@ pub(crate) fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
 
 // ── Commands ──────────────────────────────────────────────────────────────
 
-/// Maximum allowed size for clip content (500 KB) to prevent DoS via oversized payloads.
+/// Maximum allowed size for clip content (500 KB) to prevent `DoS` via oversized payloads.
 const MAX_CONTENT_LEN: usize = 512_000;
 
 /// Internal: insert a clip without triggering auto-tag. Used by import paths.
@@ -212,7 +212,7 @@ pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
 
 /// Threshold below which we consider a clip's content "too thin" and try a
 /// server-side scrape to supplement it. Set at 100 chars — that's roughly
-/// "title + one short phrase". Title-only SPA cases (SpaceX at 16 chars)
+/// "title + one short phrase". Title-only SPA cases (`SpaceX` at 16 chars)
 /// still trigger. Legitimately short pages like paulgraham.com's homepage
 /// (116 chars of link text) no longer burn a server fetch they wouldn't
 /// benefit from.
@@ -325,7 +325,7 @@ pub fn list_web_clips(
     }
     if let Some(s) = starred {
         conditions.push(format!("is_starred = ?{}", params.len() + 1));
-        params.push(Box::new(if s { 1i64 } else { 0i64 }));
+        params.push(Box::new(i64::from(s)));
     }
 
     let sql = format!(
@@ -337,7 +337,7 @@ pub fn list_web_clips(
     params.push(Box::new(i64::from(size)));
     params.push(Box::new(i64::from(offset)));
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(std::convert::AsRef::as_ref).collect();
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(param_refs.as_slice(), row_to_clip)
@@ -589,7 +589,7 @@ pub fn count_pending_clips() -> Result<i64, String> {
     .map_err(|e| e.to_string())
 }
 
-/// Get all unique tags across all clips (aggregated in SQL via json_each).
+/// Get all unique tags across all clips (aggregated in SQL via `json_each`).
 #[tauri::command]
 pub fn list_clip_tags() -> Result<Vec<String>, String> {
     let conn = open_db()?;
@@ -772,16 +772,15 @@ pub(crate) fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
 2. 提取 3-5 个关键词标签
 3. 判断内容类型：article / video / doc / tweet / code
 
-用户已有的标签：{existing_tags}
+用户已有的标签：{existing_tags_str}
 如果内容与已有标签相关，优先复用已有标签保持一致性。
 
 严格返回 JSON：
 {{"summary":"摘要","tags":["标签1","标签2"],"source_type":"article"}}
 只输出 JSON，不要其他文字。"#,
-        existing_tags = existing_tags_str,
     );
 
-    let user = format!("网页标题：{}\n网页正文：\n{}", title, truncated);
+    let user = format!("网页标题：{title}\n网页正文：\n{truncated}");
 
     let messages = vec![
         serde_json::json!({"role": "system", "content": system}),
@@ -987,8 +986,7 @@ pub fn ai_fuzzy_search_clips(description: String) -> Result<Vec<WebClip>, String
             Ok((
                 id,
                 format!(
-                    "[{}] {} | {} | 标签:{} | {}",
-                    id, title, summary, tags, domain
+                    "[{id}] {title} | {summary} | 标签:{tags} | {domain}"
                 ),
             ))
         })
@@ -1015,7 +1013,7 @@ pub fn ai_fuzzy_search_clips(description: String) -> Result<Vec<WebClip>, String
 {"ids":[1,2,3]}
 只输出 JSON，不要其他文字。"#;
 
-    let user = format!("用户描述：{}\n\n收藏列表：\n{}", description, index_text);
+    let user = format!("用户描述：{description}\n\n收藏列表：\n{index_text}");
 
     let messages = vec![
         serde_json::json!({"role": "system", "content": system}),
@@ -1030,7 +1028,7 @@ pub fn ai_fuzzy_search_clips(description: String) -> Result<Vec<WebClip>, String
 
     let ids: Vec<i64> = parsed["ids"]
         .as_array()
-        .map(|arr| arr.iter().filter_map(|v| v.as_i64()).collect())
+        .map(|arr| arr.iter().filter_map(serde_json::Value::as_i64).collect())
         .unwrap_or_default();
 
     if ids.is_empty() {
@@ -1044,13 +1042,13 @@ pub fn ai_fuzzy_search_clips(description: String) -> Result<Vec<WebClip>, String
         .map(|(i, _)| format!("?{}", i + 1))
         .collect::<Vec<_>>()
         .join(",");
-    let sql = format!("SELECT * FROM web_clips WHERE id IN ({})", placeholders);
+    let sql = format!("SELECT * FROM web_clips WHERE id IN ({placeholders})");
 
     let params: Vec<Box<dyn rusqlite::types::ToSql>> = ids
         .iter()
         .map(|id| Box::new(*id) as Box<dyn rusqlite::types::ToSql>)
         .collect();
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(std::convert::AsRef::as_ref).collect();
 
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
@@ -1136,7 +1134,7 @@ pub fn list_web_clips_advanced(
     }
     if let Some(s) = starred {
         conditions.push(format!("is_starred = ?{}", params.len() + 1));
-        params.push(Box::new(if s { 1i64 } else { 0i64 }));
+        params.push(Box::new(i64::from(s)));
     }
     if let Some(true) = unread {
         conditions.push("is_read = 0".to_string());
@@ -1163,7 +1161,7 @@ pub fn list_web_clips_advanced(
     params.push(Box::new(i64::from(size)));
     params.push(Box::new(i64::from(offset)));
 
-    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+    let param_refs: Vec<&dyn rusqlite::types::ToSql> = params.iter().map(std::convert::AsRef::as_ref).collect();
     let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
     let rows = stmt
         .query_map(param_refs.as_slice(), row_to_clip)
@@ -1247,7 +1245,7 @@ pub fn ai_weekly_clip_summary() -> Result<String, String> {
             let title: String = r.get(0)?;
             let summary: String = r.get(1)?;
             let tags: String = r.get(2)?;
-            Ok(format!("- {} | {} | {}", title, summary, tags))
+            Ok(format!("- {title} | {summary} | {tags}"))
         })
         .map_err(|e| e.to_string())?
         .flatten()
@@ -1313,8 +1311,7 @@ pub fn get_app_status() -> Result<AppStatus, String> {
         .query_row("SELECT COUNT(*) > 0 FROM clip_notes", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let onboarding_complete = crate::db::kv_get(&conn, "onboarding_complete")?
-        .map(|v| v == "true")
-        .unwrap_or(false);
+        .is_some_and(|v| v == "true");
     Ok(AppStatus {
         clip_count,
         ai_configured,
@@ -1339,7 +1336,7 @@ pub fn set_onboarding_complete() -> Result<(), String> {
 // ── Related Clips ────────────────────────────────────────────────────────
 
 /// Find clips related to the given clip via shared tags and domain.
-/// Uses SQL json_each to match tags in the database instead of loading all clips.
+/// Uses SQL `json_each` to match tags in the database instead of loading all clips.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn find_related_clips(clipId: i64, limit: Option<u32>) -> Result<Vec<WebClip>, String> {
@@ -1359,8 +1356,7 @@ pub fn find_related_clips(clipId: i64, limit: Option<u32>) -> Result<Vec<WebClip
         .split("//")
         .nth(1)
         .and_then(|s| s.split('/').next())
-        .map(|h| h.strip_prefix("www.").unwrap_or(h))
-        .unwrap_or("")
+        .map_or("", |h| h.strip_prefix("www.").unwrap_or(h))
         .to_string();
 
     if tags.is_empty() && domain.is_empty() {
@@ -1398,7 +1394,7 @@ pub fn find_related_clips(clipId: i64, limit: Option<u32>) -> Result<Vec<WebClip
         params.push(Box::new(i64::from(limit)));
 
         let param_refs: Vec<&dyn rusqlite::types::ToSql> =
-            params.iter().map(|p| p.as_ref()).collect();
+            params.iter().map(std::convert::AsRef::as_ref).collect();
         let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
         let rows = stmt
             .query_map(param_refs.as_slice(), row_to_clip)
