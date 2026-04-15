@@ -16,3 +16,6 @@ vite.config.d.ts
 !src/**
 !src-tauri/
 !src-tauri/**
+
+# ...but still ignore macOS metadata the re-inclusion above would surface
+.DS_Store
