@@ -126,6 +126,7 @@ export default function ClipsPage() {
     timeRange,
     starredOnly,
     unreadOnly,
+    aiSearchMode,
   });
   filtersRef.current = {
     query,
@@ -135,6 +136,7 @@ export default function ClipsPage() {
     timeRange,
     starredOnly,
     unreadOnly,
+    aiSearchMode,
   };
 
   // Stale request guard: only apply results from the latest request
@@ -155,7 +157,7 @@ export default function ClipsPage() {
         });
         if (f.starredOnly) results = results.filter((c) => c.is_starred);
         // Auto-fallback to AI search when FTS returns empty
-        if (results.length === 0 && !aiSearchMode) {
+        if (results.length === 0 && !f.aiSearchMode) {
           if (currentRequestId !== requestIdRef.current) return;
           setFuzzyLoading(true);
           try {
