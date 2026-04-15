@@ -28,14 +28,6 @@ jobs:
             rust_target: aarch64-apple-darwin
             bundles: dmg
             label: macos-arm64
-          - os: macos-13
-            rust_target: x86_64-apple-darwin
-            bundles: dmg
-            label: macos-x64
-          - os: ubuntu-22.04
-            rust_target: x86_64-unknown-linux-gnu
-            bundles: appimage,deb
-            label: linux-x64
 
     runs-on: ${{ matrix.os }}
 
@@ -73,21 +65,6 @@ jobs:
           workspaces: apps/desktop/src-tauri -> target
           key: ${{ matrix.rust_target }}
 
-      # Linux needs the WebKit + GTK dev headers for Tauri's WebView.
-      - name: Install Linux dependencies
-        if: startsWith(matrix.os, 'ubuntu')
-        run: |
-          sudo apt-get update
-          # Tauri 2 uses libayatana-appindicator3-dev; the older
-          # libappindicator3-dev conflicts with it and has broken deps on
-          # Ubuntu 22.04, so we only install the Ayatana variant.
-          sudo apt-get install -y \
-            libgtk-3-dev \
-            libwebkit2gtk-4.1-dev \
-            librsvg2-dev \
-            patchelf \
-            libayatana-appindicator3-dev
-
       - name: Install JS deps
         run: pnpm install --frozen-lockfile
 
@@ -97,14 +74,14 @@ jobs:
           pnpm exec tauri build --target ${{ matrix.rust_target }} --bundles ${{ matrix.bundles }}
 
       # Grab whatever the platform produced. Tauri puts files under
-      # target/<target>/release/bundle/{msi,dmg,appimage,deb}/.
+      # target/<target>/release/bundle/{msi,dmg}/.
       - name: Collect artifacts
         id: collect
         shell: bash
         run: |
           mkdir -p release-assets
           find apps/desktop/src-tauri/target/${{ matrix.rust_target }}/release/bundle \
-            -type f \( -name "*.msi" -o -name "*.dmg" -o -name "*.AppImage" -o -name "*.deb" \) \
+            -type f \( -name "*.msi" -o -name "*.dmg" \) \
             -exec cp {} release-assets/ \;
           ls -lh release-assets/
 

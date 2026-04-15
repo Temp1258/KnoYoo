@@ -15,13 +15,13 @@ KnoYoo 是一个 **本地优先** 的个人知识管理工具，由 Tauri 桌面
 | 平台 | 文件 |
 |---|---|
 | **macOS** (Apple Silicon) | `KnoYoo_*_aarch64.dmg` |
-| **macOS** (Intel) | `KnoYoo_*_x64.dmg` |
-| **Windows** (x64) | `KnoYoo_*_x64_en-US.msi` |
-| **Linux** (x64) | `KnoYoo_*_amd64.AppImage` · `.deb` |
+| **Windows** (x64) | `KnoYoo_*_x64_zh-CN.msi` |
 
 👉 **[最新 Release](https://github.com/Temp1258/KnoYoo/releases/latest)**
 
 浏览器扩展需要配合桌面端使用，首次启动按引导装一下即可。
+
+> macOS Intel 与 Linux 构建暂未包含——Intel Mac runner 在 GitHub Actions 上已陆续下线；Linux AppImage / deb 需求较低，优先保证两大主流平台。如有需要可从源码自行构建（`pnpm tauri:build`）。
 
 ---
 
