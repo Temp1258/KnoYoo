@@ -362,7 +362,10 @@ export default function ClipsPage() {
     return () => observer.disconnect();
   }, [hasMore, loadMore]);
 
-  // Cleanup timers on unmount
+  // Cleanup timers on unmount. Soft-delete commits happen immediately at
+  // the moment of deletion now (see handleDelete), so unmount just needs
+  // to clear the local 15-second undo timers — no DB action required,
+  // and no risk of firing stale IPC calls after the component is gone.
   useEffect(() => {
     const animTimers = animationTimersRef.current;
     const pendingDeletes = pendingDeletesRef.current;
@@ -371,10 +374,7 @@ export default function ClipsPage() {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
       animTimers.forEach((t) => clearTimeout(t));
       animTimers.clear();
-      pendingDeletes.forEach(({ timer }, id) => {
-        clearTimeout(timer);
-        tauriInvoke("delete_web_clip", { id });
-      });
+      pendingDeletes.forEach(({ timer }) => clearTimeout(timer));
       pendingDeletes.clear();
     };
   }, []);
@@ -405,7 +405,18 @@ export default function ClipsPage() {
     if (selectedClip?.id === id) setSelectedClip(null);
     // Start slide-out animation
     setSlidingOutIds((prev) => new Set(prev).add(id));
-    // After animation, remove from list and schedule actual soft-delete
+    // After animation: remove from local list, commit the soft-delete to
+    // the backend IMMEDIATELY, and open a 15-second undo window.
+    //
+    // Why commit now instead of deferring to the timer?
+    //   - Other pages (Discover, Collections) read straight from DB. If
+    //     we defer the commit, they keep showing the clip until the
+    //     timer fires, which looks like a sync bug.
+    //   - Unmount cleanup used to eagerly fire delete_web_clip; moving
+    //     the commit to "now" means unmount has nothing to do beyond
+    //     clearing the UI timer.
+    //   - Undo is still supported via restore_clip, which flips the
+    //     deleted_at flag back to NULL.
     const animTimer = setTimeout(() => {
       animationTimersRef.current.delete(id);
       setSlidingOutIds((prev) => {
@@ -414,19 +425,49 @@ export default function ClipsPage() {
         return next;
       });
       setClips((prev) => prev.filter((c) => c.id !== id));
-      const timer = setTimeout(() => {
-        pendingDeletesRef.current.delete(id);
-        tauriInvoke("delete_web_clip", { id }).then(() => loadMeta());
-      }, 15000);
-      pendingDeletesRef.current.set(id, { timer, clip });
-      showToast("已移至乐色（可在乐色中恢复）", "info", {
-        label: "撤销",
-        onClick: () => {
+
+      // Commit the soft-delete. On failure restore the card locally and
+      // surface the error — never leave the UI and the DB disagreeing.
+      tauriInvoke("delete_web_clip", { id })
+        .then(() => loadMeta())
+        .catch((e) => {
+          console.error("delete_web_clip failed:", e);
           const pending = pendingDeletesRef.current.get(id);
           if (pending) {
             clearTimeout(pending.timer);
             pendingDeletesRef.current.delete(id);
-            setClips((prev) => [pending.clip, ...prev]);
+          }
+          setClips((prev) => [clip, ...prev]);
+          showToast("删除失败，已恢复", "error");
+        });
+
+      // 15-second undo window. Timer just expires the pending entry —
+      // it does NOT fire any backend action; the delete already happened.
+      const timer = setTimeout(() => {
+        pendingDeletesRef.current.delete(id);
+      }, 15000);
+      pendingDeletesRef.current.set(id, { timer, clip });
+
+      showToast("已移至乐色（可在乐色中恢复）", "info", {
+        label: "撤销",
+        onClick: async () => {
+          const pending = pendingDeletesRef.current.get(id);
+          if (!pending) return;
+          clearTimeout(pending.timer);
+          pendingDeletesRef.current.delete(id);
+          // Optimistic restore: put the cached card back immediately so
+          // the user sees undo take effect without a network round-trip.
+          setClips((prev) => [pending.clip, ...prev]);
+          try {
+            const restored = await tauriInvoke<WebClip>("restore_clip", { id });
+            // Swap the optimistic copy for the backend's authoritative
+            // state (updated_at has shifted, etc.).
+            setClips((prev) => prev.map((c) => (c.id === id ? restored : c)));
+            loadMeta();
+          } catch (err) {
+            console.error("restore_clip failed:", err);
+            setClips((prev) => prev.filter((c) => c.id !== id));
+            showToast("撤销失败，请在乐色中手动恢复", "error");
           }
         },
       });
