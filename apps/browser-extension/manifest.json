@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "KnoYoo 网页收藏助手",
-  "version": "2.0.2",
+  "version": "2.0.3",
   "description": "一键收藏网页内容到 KnoYoo 本地智库",
   "permissions": ["activeTab", "storage", "alarms", "contextMenus", "tabs", "notifications"],
   "host_permissions": ["http://localhost:19836/*"],
