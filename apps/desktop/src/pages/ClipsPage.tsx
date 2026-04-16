@@ -33,6 +33,8 @@ import { useSearchHistory } from "../hooks/useSearchHistory";
 
 type TimeRange = "all" | "week" | "month" | "quarter";
 
+const UNDO_WINDOW_MS = 15_000;
+
 const TIME_RANGES: { value: TimeRange; label: string }[] = [
   { value: "all", label: "全部" },
   { value: "week", label: "最近一周" },
@@ -445,7 +447,7 @@ export default function ClipsPage() {
       // it does NOT fire any backend action; the delete already happened.
       const timer = setTimeout(() => {
         pendingDeletesRef.current.delete(id);
-      }, 15000);
+      }, UNDO_WINDOW_MS);
       pendingDeletesRef.current.set(id, { timer, clip });
 
       showToast("已移至乐色（可在乐色中恢复）", "info", {

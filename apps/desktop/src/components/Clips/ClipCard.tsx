@@ -122,7 +122,8 @@ export default function ClipCard({
           className="w-full h-32 object-cover rounded-lg mb-2"
         />
       ) : (
-        clip.og_image && (
+        clip.og_image &&
+        isSafeUrl(clip.og_image) && (
           <img
             src={clip.og_image}
             alt=""
@@ -137,7 +138,7 @@ export default function ClipCard({
       {/* Header */}
       <div className="flex items-start gap-2.5 mb-1">
         <SourceIcon size={14} className={`${st.color} mt-0.5 shrink-0`} />
-        {clip.favicon ? (
+        {clip.favicon && isSafeUrl(clip.favicon) ? (
           <img src={clip.favicon} alt="" className="w-4 h-4 mt-0.5 rounded-sm shrink-0" />
         ) : (
           <div className="w-4 h-4 mt-0.5 rounded-sm bg-bg-tertiary shrink-0" />

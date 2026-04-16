@@ -16,13 +16,19 @@ interface Props {
 }
 
 const SUPPORTED_HOSTS = [
-  { label: "YouTube", match: /youtu\.be|youtube\.com/ },
-  { label: "Bilibili", match: /bilibili\.com|b23\.tv/ },
+  { label: "YouTube", match: /(?:^|\.)(?:youtu\.be|youtube\.com)$/ },
+  { label: "Bilibili", match: /(?:^|\.)(?:bilibili\.com|b23\.tv)$/ },
 ];
 
 function detectHost(url: string): string | null {
+  let hostname: string;
+  try {
+    hostname = new URL(url).hostname;
+  } catch {
+    return null;
+  }
   for (const h of SUPPORTED_HOSTS) {
-    if (h.match.test(url)) return h.label;
+    if (h.match.test(hostname)) return h.label;
   }
   return null;
 }

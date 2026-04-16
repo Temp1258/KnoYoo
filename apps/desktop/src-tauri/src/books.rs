@@ -584,9 +584,9 @@ pub fn add_book(file_path: String) -> Result<Book, String> {
     // best-effort: if AI isn't configured or the call fails, the fields stay
     // empty and the user can edit manually or retry via the drawer.
     let book_id = book.id;
-    std::thread::spawn(move || {
+    crate::clips::try_spawn_ai_task(&format!("book-{book_id}"), move || {
         if let Err(e) = ai_extract_book_metadata(book_id) {
-            tracing::info!("auto AI extraction for book {} skipped: {}", book_id, e);
+            tracing::info!("auto AI extraction for book {book_id} skipped: {e}");
         }
     });
 

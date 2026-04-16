@@ -1,7 +1,26 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+
 use serde::{Deserialize, Serialize};
 
 use crate::ai_client::{self, AiClientConfig};
 use crate::db::open_db;
+
+static AI_BACKGROUND_TASKS: AtomicUsize = AtomicUsize::new(0);
+const MAX_AI_BACKGROUND_TASKS: usize = 8;
+
+pub(crate) fn try_spawn_ai_task<F: FnOnce() + Send + 'static>(label: &str, f: F) -> bool {
+    let prev = AI_BACKGROUND_TASKS.fetch_add(1, Ordering::Relaxed);
+    if prev >= MAX_AI_BACKGROUND_TASKS {
+        AI_BACKGROUND_TASKS.fetch_sub(1, Ordering::Relaxed);
+        tracing::info!("AI task queue full ({MAX_AI_BACKGROUND_TASKS}), skipping: {label}");
+        return false;
+    }
+    std::thread::spawn(move || {
+        f();
+        AI_BACKGROUND_TASKS.fetch_sub(1, Ordering::Relaxed);
+    });
+    true
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────
 
@@ -195,7 +214,7 @@ pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
     // Each stage is independent — a failure at 1a still lets stages 2 and 3
     // run on whatever we have.
     let clip_id = row.id;
-    std::thread::spawn(move || {
+    try_spawn_ai_task(&format!("clip-{clip_id}"), move || {
         if let Err(e) = enrich_raw_content_if_thin(clip_id) {
             tracing::warn!("Enrich clip {} failed: {}", clip_id, e);
         }
@@ -876,13 +895,13 @@ pub fn ai_batch_retag_clips() -> Result<i64, String> {
     let total = i64::try_from(ids.len()).unwrap_or(i64::MAX);
 
     if total > 0 {
-        std::thread::spawn(move || {
+        try_spawn_ai_task("batch-retag", move || {
             for id in ids {
                 if let Err(e) = auto_tag_clip_inner(id) {
                     tracing::warn!("Batch retag clip {} failed: {}", id, e);
                 }
             }
-            tracing::info!("Batch retag completed: {} clips processed", total);
+            tracing::info!("Batch retag completed: {total} clips processed");
         });
     }
 

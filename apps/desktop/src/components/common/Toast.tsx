@@ -4,7 +4,7 @@ import Button from "../ui/Button";
 import Input from "../ui/Input";
 import { ToastContext, type ToastAction, type ToastItem, type ToastType } from "./toast-context";
 
-let nextId = 0;
+let nextId = 1;
 
 const typeStyles: Record<ToastType, string> = {
   success: "border-success/30 bg-bg-secondary",
@@ -32,7 +32,8 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
 
   const showToast = useCallback(
     (message: string, type: ToastType = "success", action?: ToastAction) => {
-      const id = ++nextId;
+      nextId = (nextId + 1) % Number.MAX_SAFE_INTEGER || 1;
+      const id = nextId;
       setToasts((prev) => [...prev, { id, message, type, action }]);
       const duration = action ? 5000 : type === "error" ? 5000 : 3000;
       setTimeout(() => {
