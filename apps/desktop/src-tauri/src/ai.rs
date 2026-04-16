@@ -187,12 +187,13 @@ fn read_raw_config() -> Result<std::collections::HashMap<String, String>, String
 ///
 /// Returns a short human-readable status for the toast.
 #[tauri::command]
+#[allow(non_snake_case)]
 pub fn sync_dual_role_key(
-    ai_provider: String,
-    asr_provider: String,
+    aiProvider: String,
+    asrProvider: String,
 ) -> Result<String, String> {
-    let ai_acc = ai_keychain_account_for(&ai_provider);
-    let asr_acc = format!("asr_{asr_provider}");
+    let ai_acc = ai_keychain_account_for(&aiProvider);
+    let asr_acc = format!("asr_{asrProvider}");
 
     let ai_key = secrets::get(&ai_acc).map_err(|e| e.to_string())?;
     let asr_key = secrets::get(&asr_acc).map_err(|e| e.to_string())?;
@@ -202,10 +203,10 @@ pub fn sync_dual_role_key(
             // Copy AI → ASR
             secrets::set(&asr_acc, &k).map_err(|e| e.to_string())?;
             let conn = open_db()?;
-            set_kv(&conn, &format!("asr_configured__{asr_provider}"), "true")?;
+            set_kv(&conn, &format!("asr_configured__{asrProvider}"), "true")?;
             set_kv(
                 &conn,
-                &format!("asr_key_hint__{asr_provider}"),
+                &format!("asr_key_hint__{asrProvider}"),
                 &secrets::key_last_four(&k),
             )?;
             Ok("已同步到视频转录".to_string())
@@ -214,10 +215,10 @@ pub fn sync_dual_role_key(
             // Copy ASR → AI
             secrets::set(&ai_acc, &k).map_err(|e| e.to_string())?;
             let conn = open_db()?;
-            set_kv(&conn, &format!("ai_configured__{ai_provider}"), "true")?;
+            set_kv(&conn, &format!("ai_configured__{aiProvider}"), "true")?;
             set_kv(
                 &conn,
-                &format!("ai_key_hint__{ai_provider}"),
+                &format!("ai_key_hint__{aiProvider}"),
                 &secrets::key_last_four(&k),
             )?;
             Ok("已同步到 AI 文本".to_string())
