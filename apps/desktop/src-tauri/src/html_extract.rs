@@ -32,7 +32,67 @@ pub struct ExtractedPage {
     pub og_image: String,
 }
 
+/// Reject IP addresses that belong to private / internal / non-routable
+/// ranges. Centralizing this lets both the pre-flight URL check AND the
+/// DNS resolver (see `safe_resolve`) enforce the same policy, so a
+/// DNS-rebinding attacker can't slip a public hostname past the URL check
+/// and then point it at 127.0.0.1 during the actual `connect()`.
+fn validate_ip_safe(ip: std::net::IpAddr) -> Result<(), String> {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let blocked = v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_broadcast()
+                || v4.is_unspecified()
+                || v4.is_documentation();
+            if blocked {
+                return Err(format!("Blocked private/internal IP: {v4}"));
+            }
+        }
+        IpAddr::V6(v6) => {
+            // Unwrap v4-in-v6 tunnels (`::ffff:127.0.0.1`) — otherwise an
+            // attacker could sneak a loopback address past the check by
+            // wrapping it in IPv6 mapping syntax.
+            if let Some(mapped) = v6.to_ipv4_mapped() {
+                return validate_ip_safe(IpAddr::V4(mapped));
+            }
+            let seg0 = v6.segments()[0];
+            let blocked = v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || v6.is_unicast_link_local()     // fe80::/10
+                || (seg0 & 0xfe00) == 0xfc00;     // fc00::/7 unique-local
+            if blocked {
+                return Err(format!("Blocked private/internal IP: {v6}"));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Custom ureq resolver that runs every DNS result through
+/// `validate_ip_safe` before handing addresses back to ureq. This is the
+/// load-bearing defense against DNS rebinding: the URL's hostname can
+/// look fine at validation time, but if the resolver later returns a
+/// private IP (TTL-0 rebinding is a classic trick), we refuse it here
+/// — well before any TCP connect.
+fn safe_resolve(netloc: &str) -> std::io::Result<Vec<std::net::SocketAddr>> {
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<std::net::SocketAddr> = netloc.to_socket_addrs()?.collect();
+    for addr in &addrs {
+        validate_ip_safe(addr.ip())
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::PermissionDenied, e))?;
+    }
+    Ok(addrs)
+}
+
 /// Validate that a URL is safe to fetch (no internal/private networks).
+///
+/// This is a fast-path rejection against literal-IP and known-bad-TLD URLs.
+/// The real SSRF defense is `safe_resolve`, which runs at connect time and
+/// can't be bypassed by DNS rebinding.
 fn validate_url_safe(url: &str) -> Result<(), String> {
     let parsed = url::Url::parse(url).map_err(|e| format!("Invalid URL: {e}"))?;
 
@@ -58,26 +118,18 @@ fn validate_url_safe(url: &str) -> Result<(), String> {
         return Err(format!("Blocked host: {host}"));
     }
 
-    // Block private IP ranges
-    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
-        let is_private = match ip {
-            std::net::IpAddr::V4(v4) => {
-                v4.is_loopback()
-                    || v4.is_private()
-                    || v4.is_link_local()
-                    || v4.octets()[0] == 169 && v4.octets()[1] == 254 // link-local
-                    || v4.is_broadcast()
-                    || v4.is_unspecified()
-            }
-            std::net::IpAddr::V6(v6) => v6.is_loopback() || v6.is_unspecified(),
-        };
-        if is_private {
-            return Err(format!("Blocked private/internal IP: {host}"));
-        }
+    // Literal-IP URLs: validate upfront against the full policy. Use the
+    // typed Host enum so IPv6 literals like `[fe80::1]` — whose host_str()
+    // keeps the brackets and therefore won't parse as IpAddr — still hit
+    // the check.
+    match parsed.host() {
+        Some(url::Host::Ipv4(v4)) => validate_ip_safe(std::net::IpAddr::V4(v4))?,
+        Some(url::Host::Ipv6(v6)) => validate_ip_safe(std::net::IpAddr::V6(v6))?,
+        _ => {}
     }
 
-    // Block common internal TLDs. `host_lower` is already lowercased at L56,
-    // so suffix matching is effectively case-insensitive — clippy can't prove
+    // Block common internal TLDs. `host_lower` is already lowercased, so
+    // suffix matching is effectively case-insensitive — clippy can't prove
     // that and flags it as a file-extension check.
     #[allow(clippy::case_sensitive_file_extension_comparisons)]
     if host_lower.ends_with(".local")
@@ -221,10 +273,13 @@ const MAX_REDIRECTS: u8 = 5;
 fn fetch_html(url: &str) -> Result<String, String> {
     let mut current_url = url.to_string();
 
-    // Agent with no auto-redirects so we can validate each hop
+    // Agent with no auto-redirects so we can validate each hop, and a
+    // resolver that refuses any DNS result that resolves to a private IP
+    // (closes the DNS-rebinding bypass on validate_url_safe).
     let agent = ureq::AgentBuilder::new()
         .redirects(0)
         .timeout(FETCH_TIMEOUT)
+        .resolver(safe_resolve)
         .build();
 
     // Manual redirect loop: validate each hop against SSRF rules
@@ -563,5 +618,85 @@ mod tests {
         assert!(content.contains("Main Article"));
         assert!(content.contains("main content"));
         assert!(!content.contains("Navigation stuff"));
+    }
+
+    // ── SSRF / IP validation ──────────────────────────────────────────────
+    //
+    // `validate_ip_safe` is the load-bearing check under both the pre-flight
+    // URL validation and the DNS resolver. Any bypass here is an SSRF hole.
+
+    fn ip(s: &str) -> std::net::IpAddr {
+        s.parse().expect("test IP literal should parse")
+    }
+
+    #[test]
+    fn validate_ip_blocks_loopback() {
+        assert!(validate_ip_safe(ip("127.0.0.1")).is_err());
+        assert!(validate_ip_safe(ip("127.255.255.254")).is_err());
+        assert!(validate_ip_safe(ip("::1")).is_err());
+    }
+
+    #[test]
+    fn validate_ip_blocks_rfc1918_and_link_local() {
+        assert!(validate_ip_safe(ip("10.0.0.1")).is_err());
+        assert!(validate_ip_safe(ip("172.16.0.1")).is_err());
+        assert!(validate_ip_safe(ip("172.31.255.255")).is_err());
+        assert!(validate_ip_safe(ip("192.168.1.1")).is_err());
+        assert!(validate_ip_safe(ip("169.254.169.254")).is_err()); // AWS IMDS
+    }
+
+    #[test]
+    fn validate_ip_blocks_unspecified_and_broadcast() {
+        assert!(validate_ip_safe(ip("0.0.0.0")).is_err());
+        assert!(validate_ip_safe(ip("255.255.255.255")).is_err());
+        assert!(validate_ip_safe(ip("::")).is_err());
+    }
+
+    #[test]
+    fn validate_ip_blocks_ipv6_link_local_and_ula() {
+        assert!(validate_ip_safe(ip("fe80::1")).is_err());        // link-local
+        assert!(validate_ip_safe(ip("fc00::1")).is_err());        // ULA
+        assert!(validate_ip_safe(ip("fd00::dead:beef")).is_err()); // ULA
+        assert!(validate_ip_safe(ip("ff02::1")).is_err());        // multicast
+    }
+
+    #[test]
+    fn validate_ip_unwraps_v4_mapped_ipv6() {
+        // The canonical bypass attempt: wrap loopback in IPv6 syntax so
+        // the v6 arm doesn't recognize it. `to_ipv4_mapped` peels that off.
+        assert!(validate_ip_safe(ip("::ffff:127.0.0.1")).is_err());
+        assert!(validate_ip_safe(ip("::ffff:10.0.0.1")).is_err());
+        assert!(validate_ip_safe(ip("::ffff:192.168.0.1")).is_err());
+    }
+
+    #[test]
+    fn validate_ip_allows_public() {
+        assert!(validate_ip_safe(ip("8.8.8.8")).is_ok());
+        assert!(validate_ip_safe(ip("1.1.1.1")).is_ok());
+        assert!(validate_ip_safe(ip("142.250.80.46")).is_ok()); // google.com
+        assert!(validate_ip_safe(ip("2606:4700:4700::1111")).is_ok()); // cloudflare
+    }
+
+    #[test]
+    fn validate_url_rejects_literal_private_ip() {
+        assert!(validate_url_safe("http://127.0.0.1/").is_err());
+        assert!(validate_url_safe("http://10.0.0.1/").is_err());
+        assert!(validate_url_safe("http://[::1]/").is_err());
+        assert!(validate_url_safe("http://[fe80::1]/").is_err());
+    }
+
+    #[test]
+    fn validate_url_allows_normal_hostnames() {
+        // Hostnames defer to the resolver for IP-level checks — we only
+        // assert the URL parser + literal-IP + TLD gates pass.
+        assert!(validate_url_safe("https://example.com/page").is_ok());
+        assert!(validate_url_safe("https://en.wikipedia.org/wiki/Rust").is_ok());
+    }
+
+    #[test]
+    fn validate_url_rejects_non_http_schemes() {
+        assert!(validate_url_safe("javascript:alert(1)").is_err());
+        assert!(validate_url_safe("file:///etc/passwd").is_err());
+        assert!(validate_url_safe("ftp://example.com/").is_err());
     }
 }
