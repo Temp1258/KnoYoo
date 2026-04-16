@@ -41,6 +41,36 @@ function getFavicon(): string {
   return `${window.location.origin}/favicon.ico`;
 }
 
+// Selectors we strip from EVERY extraction path (both the article-selector
+// hit and the body-clone fallback). These guard against accidentally
+// capturing credentials/tokens from the page's forms when the user hits
+// "save" on a logged-in page. textContent alone wouldn't read <input>
+// values, but labels, hidden-field placeholders, and data- attributes can
+// still leak context we have no business sending to a third-party AI.
+const SENSITIVE_SELECTORS = [
+  "script",
+  "style",
+  "noscript",
+  "input[type='password']",
+  "input[type='hidden']",
+  "[autocomplete='current-password']",
+  "[autocomplete='new-password']",
+  "[autocomplete='one-time-code']",
+  "[data-sensitive]",
+];
+
+// Layout chrome dropped from the body-clone fallback only. Article-selector
+// paths already target content-ish regions so this would over-prune them.
+const LAYOUT_SELECTORS = ["nav", "header", "footer", "aside", ".sidebar", ".comments"];
+
+function scrubbedClone(el: Element, extraSelectors: string[] = []): Element {
+  const cloned = el.cloneNode(true) as Element;
+  for (const sel of [...SENSITIVE_SELECTORS, ...extraSelectors]) {
+    cloned.querySelectorAll(sel).forEach((n) => n.remove());
+  }
+  return cloned;
+}
+
 function extractArticleContent(): string {
   const selectors = [
     "article",
@@ -57,17 +87,11 @@ function extractArticleContent(): string {
   for (const selector of selectors) {
     const el = document.querySelector(selector);
     if (el && el.textContent && el.textContent.trim().length > 200) {
-      return cleanText(el);
+      return cleanText(scrubbedClone(el));
     }
   }
 
-  const body = document.body.cloneNode(true) as HTMLElement;
-  const removeSelectors = ["nav", "header", "footer", "aside", "script", "style", ".sidebar", ".comments"];
-  for (const sel of removeSelectors) {
-    body.querySelectorAll(sel).forEach((el) => el.remove());
-  }
-
-  return cleanText(body);
+  return cleanText(scrubbedClone(document.body, LAYOUT_SELECTORS));
 }
 
 function cleanText(el: Element): string {
