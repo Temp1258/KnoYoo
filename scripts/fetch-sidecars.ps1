@@ -98,5 +98,5 @@ if ((Test-Path $FfmpegOut) -and -not $Force) {
     }
 }
 
-Write-Host "Sidecars ready in $OutDir:"
+Write-Host "Sidecars ready in ${OutDir}:"
 Get-ChildItem $OutDir | Format-Table Name, Length
