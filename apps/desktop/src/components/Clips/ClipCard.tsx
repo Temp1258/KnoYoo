@@ -15,6 +15,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import type { TranscriptionStatus, WebClip } from "../../types";
+import { isSafeUrl } from "../../utils/url";
 import HighlightText from "./HighlightText";
 
 const SOURCE_CONFIG: Record<
@@ -194,16 +195,26 @@ export default function ClipCard({
           >
             <RefreshCw size={13} />
           </button>
-          <a
-            href={clip.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={(e) => e.stopPropagation()}
-            className="p-1 rounded-md text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors"
-            title="打开原始链接"
-          >
-            <ExternalLink size={13} />
-          </a>
+          {isSafeUrl(clip.url) ? (
+            <a
+              href={clip.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={(e) => e.stopPropagation()}
+              className="p-1 rounded-md text-text-tertiary hover:text-accent hover:bg-accent/10 transition-colors"
+              title="打开原始链接"
+            >
+              <ExternalLink size={13} />
+            </a>
+          ) : (
+            <span
+              onClick={(e) => e.stopPropagation()}
+              className="p-1 rounded-md text-text-tertiary opacity-40 cursor-not-allowed"
+              title="链接格式无效，无法打开"
+            >
+              <ExternalLink size={13} />
+            </span>
+          )}
           <button
             onClick={(e) => {
               e.stopPropagation();

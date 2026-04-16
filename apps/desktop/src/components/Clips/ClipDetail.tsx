@@ -23,6 +23,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { WebClip, ClipNote } from "../../types";
+import { isSafeUrl } from "../../utils/url";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import Button from "../ui/Button";
 import AddToCollectionDialog from "../Collections/AddToCollectionDialog";
@@ -384,12 +385,19 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
             >
               <Download size={14} />
             </Button>
-            <a href={clip.url} target="_blank" rel="noopener noreferrer">
-              <Button variant="ghost" size="sm">
+            {isSafeUrl(clip.url) ? (
+              <a href={clip.url} target="_blank" rel="noopener noreferrer">
+                <Button variant="ghost" size="sm">
+                  <ExternalLink size={14} />
+                  打开原文
+                </Button>
+              </a>
+            ) : (
+              <Button variant="ghost" size="sm" disabled title="链接格式无效，无法打开">
                 <ExternalLink size={14} />
                 打开原文
               </Button>
-            </a>
+            )}
           </div>
         </div>
       </div>
