@@ -31,12 +31,39 @@ async function setQueue(queue: QueuedClip[]): Promise<void> {
   await chrome.storage.local.set({ clip_queue: queue });
 }
 
+// Surface a notification when the offline queue overflows — previously the
+// oldest clip got silently dropped and users had no idea they were losing
+// saves. Cooldown prevents a fill-up of 50 pages from firing 50 toasts.
+const QUEUE_FULL_COOLDOWN_MS = 5 * 60 * 1000;
+
+async function maybeNotifyQueueFull(): Promise<void> {
+  const stored = await chrome.storage.local.get("queue_full_last_notified");
+  const last = typeof stored.queue_full_last_notified === "number" ? stored.queue_full_last_notified : 0;
+  const now = Date.now();
+  if (now - last < QUEUE_FULL_COOLDOWN_MS) return;
+  await chrome.storage.local.set({ queue_full_last_notified: now });
+  try {
+    chrome.notifications.create({
+      type: "basic",
+      iconUrl: chrome.runtime.getURL("icons/icon128.png"),
+      title: "KnoYoo 离线队列已满",
+      message: `缓存已达 ${MAX_QUEUE_SIZE} 条上限，最早的收藏已被丢弃。打开桌面端即可同步。`,
+      priority: 1,
+    });
+  } catch (e) {
+    // Notifications permission denied is harmless — log and move on.
+    console.warn("[KnoYoo] queue-full notification suppressed:", e);
+  }
+}
+
 async function enqueue(clip: ClipPayload): Promise<void> {
   return withQueueLock(async () => {
     const queue = await getQueue();
     if (queue.length >= MAX_QUEUE_SIZE) {
-      // Drop oldest item to make room
+      // Drop oldest item to make room — and tell the user, so they can
+      // open the desktop app before more saves fall off the back.
       queue.shift();
+      await maybeNotifyQueueFull();
     }
     queue.push({ ...clip, queuedAt: Date.now() });
     await setQueue(queue);
