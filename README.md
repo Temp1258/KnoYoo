@@ -1,14 +1,12 @@
-# KnoYoo — 本地优先的 AI 知识管理助手
+# KnoYoo — 本地优先的 AI 私人智库
 
-> 一键收藏网页，拖入电子书，AI 自动整理，再也找不回的内容从此成为过去。
+> 以零摩擦的方式将你消费的一切信息自动转化为结构化知识，在你需要时精准找回，并让你看见自己知识体系的生长。所有数据 100% 存储在本地，永远属于你自己。
 
-KnoYoo 是一个 **本地优先** 的个人知识管理工具，由 Tauri 桌面端 + 浏览器扩展组成。它要解决的问题很具体：**你在网上读到的好内容、下载过的电子书，很快就忘了在哪、叫什么。**
-
-浏览器扩展一键收藏网页 / 拖入 EPUB、PDF → AI 自动清洗正文、提炼摘要、标记分类 → 全文搜索 + AI 语义搜索帮你找回。**所有数据 100% 存储在本地 SQLite，永远不会上传到云端。**
+**[产品蓝图](BLUEPRINT.md)** — 产品初衷、核心定位、四大支柱、用户画像、竞品分析与演进路线图
 
 ---
 
-## 📥 下载
+## 下载
 
 最新版本从 GitHub Release 下载：
 
@@ -17,7 +15,7 @@ KnoYoo 是一个 **本地优先** 的个人知识管理工具，由 Tauri 桌面
 | **macOS** (Apple Silicon) | `KnoYoo_*_aarch64.dmg` |
 | **Windows** (x64) | `KnoYoo_*_x64_zh-CN.msi` |
 
-👉 **[最新 Release](https://github.com/Temp1258/KnoYoo/releases/latest)**
+**[最新 Release](https://github.com/Temp1258/KnoYoo/releases/latest)**
 
 浏览器扩展需要配合桌面端使用，首次启动按引导装一下即可。
 
@@ -25,78 +23,36 @@ KnoYoo 是一个 **本地优先** 的个人知识管理工具，由 Tauri 桌面
 
 ---
 
-## 核心特性
+## 核心特性速览
 
-### 📎 网页收藏 · 三阶段 AI 管道
+### 无痛输入 + 自动结构化
 
-浏览器里一键保存，后端按三阶段处理：
+- **网页**：浏览器扩展一键收藏，三阶段 AI 管道自动完成原文保留 → 清洗为可读 Markdown → 生成摘要和标签
+- **书籍**：拖入 EPUB / PDF，AI 通读正文自动填充书名、作者、简介、标签
+- **视频**：YouTube / Bilibili 链接导入，字幕优先 + ASR 兜底，自动转为可搜索文字
+- **书签**：浏览器书签批量导入
 
-1. **Raw** — 同时保留 content script（浏览器渲染后可见文本）+ 服务端 SSRF-safe 抓取两路原文，互相兜底。SPA 站点（SpaceX、React 类）不会只留标题
-2. **Readable** — AI 清洗成可读 Markdown 正文，严禁概括。带 size guard：清洗结果不能压缩原文超过 66%，否则拒绝覆盖
-3. **Summary + Tags** — 基于清洗后的正文生成精炼中文摘要和关键词标签，复用已有标签保持体系一致
+### 智能检索 + AI 对话
 
-详情页支持「**可读版 / 原始**」切换，两边都可查。AI 摘要可手动编辑或一键重跑。
+- **全文搜索**：SQLite FTS5，毫秒级响应
+- **语义搜索**：全文搜索无结果时 AI 自动兜底，用自然语言描述找内容
+- **知识对话**：向你的智库提问，AI 回答附带引用来源
+- **多维筛选**：标签、域名、时间、星标、已读/未读、集合
 
-### 📚 书籍 · EPUB / PDF 知识入库
+### 知识生长可视化
 
-拖入书籍文件，AI 通读正文前万字，自动填充：
+- **发现页**：标签词云、来源 Top5、28 天趋势、AI 周报、遗忘内容提醒
+- **书架**：想读 / 正在读 / 已读 / 弃读分组，阅读进度与评分
 
-- 真实标题（忽略 "Microsoft Word - xxx.doc" 这类残留）
-- 作者、出版社、年份
-- 2-4 句中文简介
-- 3-5 个关键词标签
+### 本地 + 数据主权
 
-**PDF 双路抽取**：先用 `pdf-extract`（高层库，兼容 ToUnicode CMap），失败才降级到 `lopdf` 逐页，中文/子集字体 PDF 也能吃下。纯扫描版 PDF 无法抽文字时自动以 **文件名** 作为占位标题，tile 上显示 `⚠` 角标，抽屉里弹出错误与重试按钮。
+- 100% 本地 SQLite 存储，零云端上传，零遥测
+- AI 调用走用户自配 API Key，可全部换成本地 Ollama
+- API Key 存 OS Keychain，Bearer Token 鉴权 + 常量时间比较
+- SSRF 防护 + DNS Rebinding 防御 + 严格 CSP
+- 一键备份/恢复，Markdown 导出，用户拥有完全控制权
 
-其他能力：
-
-- 封面自动提取（EPUB）或生成色块封面
-- 书架按 想读 / 正在读 / 已读 / 弃读 分组
-- 阅读进度、评分、标签、私人笔记
-- 系统默认阅读器一键打开
-- 软删除 + 图书专用乐色
-
-### 🎬 视频收藏
-
-- **YouTube**：解析 `ytInitialPlayerResponse`，优先抓 publisher 字幕，没有则用 ASR 自动字幕，逐字入库（≤ 80K 字符）
-- **Bilibili**：通过公开 `x/web-interface/view` API 拿标题、UP 主、简介、时长。支持 BV 号、`b23.tv` 短链、`/video/...?spm_id_from=...` 追踪链接（自动清洗去重）
-- 右键菜单支持直接导入链接对应页面，SPA 站点无法抓取时给出明确提示
-
-### 🤖 AI 智能
-
-- 多服务商兼容：DeepSeek / OpenAI / Ollama（本地零成本）/ 通义千问 / GLM / Moonshot / SiliconCloud / Anthropic
-- 收藏自动打标签 + 摘要；批量重跑支持
-- **AI JSON 解析健壮**：能从 "好的，这是结果：{...}" 这种带前后缀的回复里找出平衡括号 JSON，配 1 次失败重试
-- **AI 语义搜索**：全文搜索无结果时自动兜底，用自然语言描述找回内容
-- **AI 知识助手**：基于你的智库对话问答，回答 **附带引用来源**，聊天会话持久化
-- 每周学习总结：AI 分析你一周收藏的内容
-
-### 🔍 搜索与发现
-
-- SQLite FTS5 全文搜索，毫秒级响应
-- 多维度筛选：标签、域名、时间范围、星标、已读/未读
-- 集合归类：主题 + 颜色 + 描述
-- 个人笔记：为任意剪藏/图书添加批注
-- 相关推荐：打开一条收藏时自动推荐相关内容
-- 发现页：标签词云 / 来源 Top5 / 28 天趋势 / 遗忘内容提醒
-
-### 🛡️ 安全与隐私
-
-- **本地 HTTP 服务** 仅监听 `127.0.0.1:19836`，其它设备无法访问
-- **Bearer Token 鉴权**：OS 随机数生成，32 字节 hex，常量时间比较
-- **专用 `/api/auth-check` 端点**：扩展能区分"桌面端离线" vs "Token 不匹配"，popup 支持一键重新握手
-- **Handshake 速率限制**（3 秒冷却）
-- **SSRF 防护**：URL 抓取阻断 localhost / 私有 IP / link-local / `.internal` / `.local`
-- **严格 CSP**，`connect-src` 白名单限定 AI 供应商域名
-- **输入长度限制**：URL 4KB / 内容 500KB / 聊天 5MB / 书籍 500MB
-- 错误信息不泄露内部路径或数据库细节
-
-### 💾 数据
-
-- 软删除 + 独立乐色（30 天自动清理）
-- 数据库一键备份/恢复，走 SQLite Backup API 保证一致性
-- 设置页显示数据库位置和占用空间
-- 所有文件路径可见，你拥有完全控制权
+> 各特性的设计理念、实现细节与未来演进方向，详见 **[产品蓝图](BLUEPRINT.md)**。
 
 ---
 
@@ -199,8 +155,8 @@ apps/desktop/src/
 
 ### 环境要求
 
-- [Node.js](https://nodejs.org/) ≥ 18.18
-- [pnpm](https://pnpm.io/) ≥ 10.15
+- [Node.js](https://nodejs.org/) >= 18.18
+- [pnpm](https://pnpm.io/) >= 10.15
 - [Rust](https://rustup.rs/) stable
 - Tauri 2 系统依赖：参考 [官方文档](https://v2.tauri.app/start/prerequisites/)
 
@@ -227,7 +183,7 @@ cd apps/browser-extension && pnpm build
 2. 启用右上角「开发者模式」
 3. 点击「加载已解压的扩展程序」
 4. 选择 `apps/browser-extension/dist`
-5. 扩展会自动与桌面端握手，无需手动配置 Token。如 Token 失效，popup 内置「🔄 一键重新握手」按钮
+5. 扩展会自动与桌面端握手，无需手动配置 Token。如 Token 失效，popup 内置「一键重新握手」按钮
 
 ### 构建发布版
 
@@ -294,47 +250,6 @@ EPUB / PDF 文件存放于同目录下 `books/`，封面存放于 `book_covers/`
 | `chat_sessions` | AI 对话历史（持久化）|
 | `weekly_reports` | 周报缓存 |
 | `app_kv` | 应用配置（AI Key、server token、主题等）|
-
----
-
-## 隐私承诺
-
-- 🔒 所有剪藏、图书、笔记 **100% 存储在本地 SQLite**，永远不会上传到云端
-- 🔒 AI 功能仅在你主动使用时，将必要内容发送给你配置的 AI 供应商（可全换成本地 Ollama）
-- 🔒 KnoYoo 不收集任何用户数据，不使用遥测、埋点、分析
-- 🔒 本地 HTTP 服务仅监听 `127.0.0.1`，其它设备无法访问
-- 🔒 浏览器扩展与桌面端通信使用 Bearer token 鉴权 + 常量时间比较
-
----
-
-## 路线图
-
-### 已完成（v2.x）
-
-- [x] 本地优先架构
-- [x] Tauri 桌面端 + 浏览器扩展
-- [x] AI 自动标签 + 语义搜索 + 对话助手（附引用）
-- [x] 集合 / 笔记 / 书签导入 / Markdown + DB 导出
-- [x] 发现页知识画像
-- [x] 软删除 + 统一乐色 + 数据库备份/恢复
-- [x] 扩展自动握手连接 + token 鉴权
-- [x] 安全加固（CSP / 常量时间比较 / SSRF / 速率限制 / 输入验证）
-- [x] **书籍**：EPUB / PDF 拖入 + AI 元数据抽取 + 封面展示
-- [x] **三阶段网页管道**：raw → AI 清洗 → 摘要，带 size guard 不吞原文
-- [x] YouTube 字幕 + Bilibili 公共 API
-- [x] PDF 双路抽取（pdf-extract + lopdf）
-- [x] AI JSON 解析健壮化 + 失败重试
-- [x] **v2.0.2**：主题感知 SVG Logo（9 套配色自动跟随）/ 搜索历史逐条删除 / Dock 图标 HIG 内边距
-
-### 规划中
-
-- [ ] **视频 → 文字 ASR 管道**（当前主攻方向）：YouTube / Bilibili 一键导入，字幕优先、云端 ASR 兜底（OpenAI Whisper / Deepgram / SiliconFlow），七段式细颗粒进度。详见 [`docs/VIDEO_TRANSCRIPTION.md`](docs/VIDEO_TRANSCRIPTION.md)
-- [ ] 订阅制（免配置 API Key，走云端代理）
-- [ ] 端到端加密多端同步（可选）
-- [ ] 全局快捷键（Cmd+K 搜索）
-- [ ] 智能集合（规则自动归类）
-- [ ] 扫描 PDF OCR 支持
-- [ ] 上架 Chrome Web Store
 
 ---
 
