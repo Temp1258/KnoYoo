@@ -1321,8 +1321,7 @@ pub fn get_app_status() -> Result<AppStatus, String> {
         .query_row("SELECT COUNT(*) FROM web_clips WHERE deleted_at IS NULL", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
     let ai_configured = crate::db::read_ai_config(&conn)
-        .map(|cfg| AiClientConfig::from_map(&cfg).is_ok())
-        .unwrap_or(false);
+        .map_or(false, |cfg| AiClientConfig::from_map(&cfg).is_ok());
     let has_collections: bool = conn
         .query_row("SELECT COUNT(*) > 0 FROM collections", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;

@@ -624,8 +624,7 @@ pub fn check_db_health() -> Result<String, String> {
 pub fn get_database_info() -> Result<(String, u64), String> {
     let path = app_db_path()?;
     let size = std::fs::metadata(&path)
-        .map(|m| m.len())
-        .unwrap_or(0);
+        .map_or(0, |m| m.len());
     Ok((path.to_string_lossy().to_string(), size))
 }
 

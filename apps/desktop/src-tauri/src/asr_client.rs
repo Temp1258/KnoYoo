@@ -25,7 +25,7 @@ use crate::error::AppError;
 /// length, so 5 minutes is a sane upper bound for a ~25MB chunk. We split
 /// longer audio into multiple requests upstream, so this doesn't need to
 /// cover "1 hour video in one shot".
-const ASR_TIMEOUT: Duration = Duration::from_secs(300);
+const ASR_TIMEOUT: Duration = Duration::from_mins(5);
 
 /// Response-body ceiling for ASR endpoints. Transcripts are text — even a
 /// maximum-size chunk produces well under 2 MB of JSON.
@@ -409,8 +409,7 @@ fn random_boundary_token() -> String {
         // Extremely unlikely: fall back to a timestamp-based token.
         let ts = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+            .map_or(0, |d| d.as_nanos());
         return format!("fallback-{ts:032x}");
     }
     let mut out = String::with_capacity(32);

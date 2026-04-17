@@ -100,8 +100,7 @@ fn run_pipeline_inner(
             "clip_{clip_id}_{}",
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis())
-                .unwrap_or(0)
+                .map_or(0, |d| d.as_millis())
         ));
     std::fs::create_dir_all(&work_dir)
         .map_err(|e| AppError::io(format!("创建工作目录失败: {e}")))?;
@@ -335,8 +334,7 @@ fn run_asr(path: &Path) -> Result<(String, String), AppError> {
     let provider = asr_client::build_provider(&cfg)?;
 
     let size = std::fs::metadata(path)
-        .map(|m| usize::try_from(m.len()).unwrap_or(usize::MAX))
-        .unwrap_or(0);
+        .map_or(0, |m| usize::try_from(m.len()).unwrap_or(usize::MAX));
     if size > provider.max_file_bytes() {
         return Err(AppError::validation(format!(
             "音频 {:.1} MB，超过 {} 单次上传上限 {:.1} MB。长视频分片将在后续版本接入。",

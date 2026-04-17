@@ -48,7 +48,7 @@ impl AiClientConfig {
 }
 
 /// Default timeout for AI HTTP requests.
-const AI_TIMEOUT: Duration = Duration::from_secs(60);
+const AI_TIMEOUT: Duration = Duration::from_mins(1);
 
 /// Maximum response body size (2 MB) to prevent OOM from malicious/misconfigured servers.
 const MAX_RESPONSE_BYTES: u64 = 2 * 1024 * 1024;
