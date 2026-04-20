@@ -504,23 +504,6 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
         buf
     };
 
-    // Gather collections
-    let collections_ctx: String = {
-        let mut stmt = conn
-            .prepare("SELECT name FROM collections ORDER BY updated_at DESC LIMIT 10")
-            .map_err(|e| e.to_string())?;
-        let names: Vec<String> = stmt
-            .query_map([], |r| r.get::<_, String>(0))
-            .map_err(|e| e.to_string())?
-            .flatten()
-            .collect();
-        if names.is_empty() {
-            String::new()
-        } else {
-            format!("\n## 用户的知识集合\n{}\n", names.join(", "))
-        }
-    };
-
     // Gather recent notes
     let notes_ctx: String = {
         let mut stmt = conn
@@ -550,13 +533,12 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
         **重要规则：回答问题时必须优先基于智库中的内容。**\n\
         - 如果智库中有相关信息，直接引用并回答，使用 [ID:数字] 格式标注来源\n\
         - 如果智库中没有相关信息，再用你自己的知识补充，并说明这不是来自用户的智库\n\n\
-        ## 用户智库\n{}{}{}",
+        ## 用户智库\n{}{}",
         if clips_ctx.is_empty() {
             "（智库暂无内容）\n"
         } else {
             &clips_ctx
         },
-        collections_ctx,
         notes_ctx,
     );
 
@@ -681,7 +663,9 @@ pub fn ai_suggest_actions() -> Result<Vec<AiSuggestion>, String> {
         });
     }
 
-    // Check tag clusters that could become collections
+    // Surface tags the user has been stacking up on — companions to the
+    // tag_depth milestone ladder. Suggestion type is `focus_tag`; no command
+    // dispatch on the frontend, it's pure display.
     let mut stmt = conn
         .prepare("SELECT tags FROM web_clips WHERE tags != '[]' AND deleted_at IS NULL")
         .map_err(|e| e.to_string())?;
@@ -698,9 +682,9 @@ pub fn ai_suggest_actions() -> Result<Vec<AiSuggestion>, String> {
     for (tag, count) in &tag_counts {
         if *count >= 5 {
             suggestions.push(AiSuggestion {
-                suggestion_type: "create_collection".to_string(),
-                title: format!("关于「{tag}」的收藏已有 {count} 条"),
-                description: "是否要创建一个专题集合？".to_string(),
+                suggestion_type: "focus_tag".to_string(),
+                title: format!("你在「{tag}」上积累了 {count} 条"),
+                description: "继续收藏会触发更高阶的话题深度里程碑".to_string(),
             });
         }
     }

@@ -8,6 +8,19 @@ use crate::db::open_db;
 static AI_BACKGROUND_TASKS: AtomicUsize = AtomicUsize::new(0);
 const MAX_AI_BACKGROUND_TASKS: usize = 8;
 
+/// RAII guard: decrements `AI_BACKGROUND_TASKS` on drop — guarantees the counter returns
+/// to zero whether the task closure completes normally or panics. Without
+/// this guard a panicking AI task would leak a slot permanently; eight
+/// panics would fill the queue and silently starve every subsequent clip's
+/// auto-tag / AI-cleanup pipeline.
+struct AiTaskSlot;
+
+impl Drop for AiTaskSlot {
+    fn drop(&mut self) {
+        AI_BACKGROUND_TASKS.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
 pub(crate) fn try_spawn_ai_task<F: FnOnce() + Send + 'static>(label: &str, f: F) -> bool {
     let prev = AI_BACKGROUND_TASKS.fetch_add(1, Ordering::Relaxed);
     if prev >= MAX_AI_BACKGROUND_TASKS {
@@ -16,8 +29,8 @@ pub(crate) fn try_spawn_ai_task<F: FnOnce() + Send + 'static>(label: &str, f: F)
         return false;
     }
     std::thread::spawn(move || {
+        let _slot = AiTaskSlot;
         f();
-        AI_BACKGROUND_TASKS.fetch_sub(1, Ordering::Relaxed);
     });
     true
 }
@@ -224,7 +237,15 @@ pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
         if let Err(e) = auto_tag_clip_inner(clip_id) {
             tracing::warn!("Auto-tag clip {} failed: {}", clip_id, e);
         }
+        // Re-evaluate tag_depth AFTER auto-tag so milestones reflect the
+        // post-AI tag set, not the empty tags at initial insert time.
+        crate::milestones::evaluate_async();
     });
+
+    // Also kick off an immediate evaluation for kinds that don't depend on
+    // the AI pipeline (clip_count, consecutive_days). This way a user who
+    // hasn't configured AI still sees their 100-clip celebration.
+    crate::milestones::evaluate_async();
 
     Ok(row)
 }
@@ -370,6 +391,13 @@ pub fn list_web_clips(
 }
 
 /// Full-text search web clips with pagination support.
+///
+/// Dispatches between FTS5 (trigram) and LIKE based on the shortest user
+/// token: trigram needs ≥3-char inputs to actually use the index, so short
+/// CJK queries like "爸爸" / "穷" would otherwise either return empty or
+/// force a full FTS scan (hence the Clips page typing lag the user hit).
+/// LIKE against the base columns covers those with correct substring
+/// semantics at acceptable cost for a personal-scale library.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn search_web_clips(
@@ -387,25 +415,68 @@ pub fn search_web_clips(
     let size = pageSize.unwrap_or(20).min(100);
     let offset = (page.unwrap_or(1).max(1) - 1) * size;
 
-    // FTS5 query: wrap each token with *
-    let fts_q: String = q
-        .split_whitespace()
-        .map(|w| format!("\"{}\"*", w.replace('"', "")))
-        .collect::<Vec<_>>()
-        .join(" ");
+    let trimmed = q.trim();
+    let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+    let use_fts = !tokens.is_empty()
+        && tokens.iter().all(|t| t.chars().count() >= 3);
 
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.* FROM web_clips c
-             JOIN web_clips_fts f ON c.id = f.rowid
-             WHERE web_clips_fts MATCH ?1 AND c.deleted_at IS NULL
-             ORDER BY rank
-             LIMIT ?2 OFFSET ?3",
-        )
-        .map_err(|e| e.to_string())?;
+    if use_fts {
+        // FTS5 trigram tokenizer: wrap each token in quotes, AND-joined.
+        let fts_q: String = tokens
+            .iter()
+            .map(|w| format!("\"{}\"", w.replace('"', "")))
+            .collect::<Vec<_>>()
+            .join(" ");
 
+        let mut stmt = conn
+            .prepare(
+                "SELECT c.* FROM web_clips c
+                 JOIN web_clips_fts f ON c.id = f.rowid
+                 WHERE web_clips_fts MATCH ?1 AND c.deleted_at IS NULL
+                 ORDER BY rank
+                 LIMIT ?2 OFFSET ?3",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![fts_q, size, offset], row_to_clip)
+            .map_err(|e| e.to_string())?;
+
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r.map_err(|e| e.to_string())?);
+        }
+        return Ok(out);
+    }
+
+    // LIKE fallback for short-token queries. AND across tokens; each token
+    // must appear in at least one of title/content/summary/tags. Reuses
+    // the module-level `escape_like` (defined near the top of clips.rs).
+    let mut sql = String::from(
+        "SELECT * FROM web_clips WHERE deleted_at IS NULL",
+    );
+    let mut params: Vec<String> = Vec::new();
+    for tok in &tokens {
+        sql.push_str(
+            " AND (title LIKE ? ESCAPE '\\' OR content LIKE ? ESCAPE '\\' \
+                   OR summary LIKE ? ESCAPE '\\' OR tags LIKE ? ESCAPE '\\')",
+        );
+        let pat = format!("%{}%", escape_like(tok));
+        for _ in 0..4 {
+            params.push(pat.clone());
+        }
+    }
+    sql.push_str(" ORDER BY updated_at DESC LIMIT ? OFFSET ?");
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut all_params: Vec<String> = params;
+    all_params.push(size.to_string());
+    all_params.push(offset.to_string());
     let rows = stmt
-        .query_map(rusqlite::params![fts_q, size, offset], row_to_clip)
+        .query_map(
+            rusqlite::params_from_iter(all_params.iter()),
+            row_to_clip,
+        )
         .map_err(|e| e.to_string())?;
 
     let mut out = Vec::new();
@@ -759,11 +830,15 @@ pub(crate) fn ai_clean_clip_inner(clip_id: i64) -> Result<(), String> {
 pub(crate) fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
     let conn = open_db()?;
 
-    let (title, content): (String, String) = conn
+    // Pull `source_type` alongside the text so we can preserve file-origin
+    // types (`audio` / `local_video`) when the AI tries to reclassify. These
+    // aren't content categories the AI can judge — they reflect HOW the clip
+    // was imported, which is immutable after insert.
+    let (title, content, original_source_type): (String, String, String) = conn
         .query_row(
-            "SELECT title, content FROM web_clips WHERE id = ?1",
+            "SELECT title, content, source_type FROM web_clips WHERE id = ?1",
             [clip_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .map_err(|e| e.to_string())?;
 
@@ -848,13 +923,28 @@ pub(crate) fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
             })
             .unwrap_or_default();
 
-        // source_type: whitelist. Anything unexpected falls back to "article".
-        const ALLOWED_SOURCE_TYPES: &[&str] = &["article", "video", "tweet", "code", "doc"];
-        let st_raw = parsed["source_type"].as_str().unwrap_or("article");
-        let source_type = if ALLOWED_SOURCE_TYPES.contains(&st_raw) {
-            st_raw.to_string()
+        // source_type: file-origin types are immutable — the AI cannot
+        // reclassify a local audio / local video into "article". Everything
+        // else is whitelisted; unknown AI output falls back to "article".
+        const FILE_ORIGIN_TYPES: &[&str] = &["audio", "local_video"];
+        const ALLOWED_SOURCE_TYPES: &[&str] = &[
+            "article",
+            "video",
+            "audio",
+            "local_video",
+            "tweet",
+            "code",
+            "doc",
+        ];
+        let source_type = if FILE_ORIGIN_TYPES.contains(&original_source_type.as_str()) {
+            original_source_type.clone()
         } else {
-            "article".to_string()
+            let st_raw = parsed["source_type"].as_str().unwrap_or("article");
+            if ALLOWED_SOURCE_TYPES.contains(&st_raw) {
+                st_raw.to_string()
+            } else {
+                "article".to_string()
+            }
         };
 
         let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
@@ -1195,6 +1285,9 @@ pub fn list_web_clips_advanced(
 
 /// Get all unique domains from clips (for domain filter).
 /// Extracts host from URL in SQL to avoid loading all URLs into memory.
+/// Local media synthetic URLs (audio-local://<hash>, local-video://<hash>)
+/// are excluded — otherwise their sha256 would appear in the domain filter
+/// dropdown as a giant hex string.
 #[tauri::command]
 pub fn list_clip_domains() -> Result<Vec<String>, String> {
     let conn = open_db()?;
@@ -1212,7 +1305,9 @@ pub fn list_clip_domains() -> Result<Vec<String>, String> {
                  'www.', ''
                ) AS domain
              FROM web_clips
-             WHERE INSTR(url, '://') > 0 AND deleted_at IS NULL
+             WHERE INSTR(url, '://') > 0
+               AND deleted_at IS NULL
+               AND source_type NOT IN ('audio', 'local_video')
              ORDER BY domain",
         )
         .map_err(|e| e.to_string())?;
@@ -1309,7 +1404,6 @@ pub fn ai_weekly_clip_summary() -> Result<String, String> {
 pub struct AppStatus {
     pub clip_count: i64,
     pub ai_configured: bool,
-    pub has_collections: bool,
     pub has_notes: bool,
     pub onboarding_complete: bool,
 }
@@ -1322,9 +1416,6 @@ pub fn get_app_status() -> Result<AppStatus, String> {
         .map_err(|e| e.to_string())?;
     let ai_configured = crate::db::read_ai_config(&conn)
         .is_ok_and(|cfg| AiClientConfig::from_map(&cfg).is_ok());
-    let has_collections: bool = conn
-        .query_row("SELECT COUNT(*) > 0 FROM collections", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
     let has_notes: bool = conn
         .query_row("SELECT COUNT(*) > 0 FROM clip_notes", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
@@ -1333,7 +1424,6 @@ pub fn get_app_status() -> Result<AppStatus, String> {
     Ok(AppStatus {
         clip_count,
         ai_configured,
-        has_collections,
         has_notes,
         onboarding_complete,
     })
@@ -1520,7 +1610,6 @@ pub struct WeeklyStats {
     pub top_domains: Vec<(String, i64)>,
     pub total_clips: i64,
     pub total_notes: i64,
-    pub total_collections: i64,
 }
 
 /// Get lightweight weekly stats (no AI call).
@@ -1560,8 +1649,9 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
         .flatten()
         .collect();
 
-    // Top domains — extract host from URL in SQL
-    // SQLite doesn't have a built-in host extractor, so we use SUBSTR + INSTR
+    // Top domains — extract host from URL in SQL.
+    // SQLite doesn't have a built-in host extractor, so we use SUBSTR + INSTR.
+    // Local media synthetic URLs excluded (see `list_clip_domains` rationale).
     let mut dom_stmt = conn
         .prepare(
             "SELECT
@@ -1577,7 +1667,9 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
                ) AS domain,
                COUNT(*) AS cnt
              FROM web_clips
-             WHERE INSTR(url, '://') > 0 AND deleted_at IS NULL
+             WHERE INSTR(url, '://') > 0
+               AND deleted_at IS NULL
+               AND source_type NOT IN ('audio', 'local_video')
              GROUP BY domain
              ORDER BY cnt DESC
              LIMIT 10",
@@ -1595,9 +1687,6 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
     let total_notes: i64 = conn
         .query_row("SELECT COUNT(*) FROM clip_notes", [], |r| r.get(0))
         .map_err(|e| e.to_string())?;
-    let total_collections: i64 = conn
-        .query_row("SELECT COUNT(*) FROM collections", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
 
     Ok(WeeklyStats {
         daily_counts,
@@ -1605,7 +1694,6 @@ pub fn get_weekly_stats() -> Result<WeeklyStats, String> {
         top_domains,
         total_clips,
         total_notes,
-        total_collections,
     })
 }
 

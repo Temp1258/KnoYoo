@@ -16,9 +16,17 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter};
+
+/// Monotonic counter for unique `work_dir` suffixes. Replaces the old
+/// millisecond-timestamp naming which could collide when two pipeline runs
+/// for the same `clip_id` spawned within the same millisecond (double-click
+/// on the "retry" button) — two `WorkDirGuard`s would then delete each
+/// other's directory out from under the pipeline.
+static WORK_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use crate::asr_client::{self, AsrConfig, AudioInput};
 use crate::db::{app_temp_media_dir, kv_get, open_db};
@@ -94,14 +102,12 @@ fn run_pipeline_inner(
 ) -> Result<String, AppError> {
     // Dedicated scratch dir per invocation so yt-dlp output files don't
     // collide across concurrent pipelines, and cleanup is a single rmdir.
+    // Suffix comes from a process-wide atomic counter (was a ms timestamp —
+    // fast retries in the same tick collided).
+    let seq = WORK_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
     let work_dir = app_temp_media_dir()
         .map_err(AppError::io)?
-        .join(format!(
-            "clip_{clip_id}_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_millis())
-        ));
+        .join(format!("clip_{clip_id}_{seq}"));
     std::fs::create_dir_all(&work_dir)
         .map_err(|e| AppError::io(format!("创建工作目录失败: {e}")))?;
     let _cleanup = WorkDirGuard(work_dir.clone());
@@ -307,6 +313,71 @@ fn run_auto_tag(clip_id: i64) {
             clip_id,
             "auto-tag skipped: {}",
             e
+        );
+    }
+}
+
+/// Shared entry point for the LOCAL-FILE ASR pipeline. Used by
+/// `audio::import_audio_file` (podcasts / recordings). Skips all the
+/// network-shaped work of `run_pipeline` (metadata probe, subtitle ladder,
+/// yt-dlp download) and starts straight at transcription since the file is
+/// already on disk.
+///
+/// Emits the same `transcribe://progress` events the UI already listens to —
+/// audio import reuses the existing progress bar component without special
+/// casing.
+pub fn run_audio_pipeline(app: AppHandle, clip_id: i64, audio_path: std::path::PathBuf) {
+    set_status(clip_id, "transcribing", "", None);
+    match run_audio_pipeline_inner(&app, clip_id, &audio_path) {
+        Ok(provider_id) => {
+            set_status(clip_id, "completed", "", Some(&provider_id));
+            emit(&app, clip_id, Stage::Summarize, 100, Some("完成"));
+        }
+        Err(e) => {
+            tracing::error!(target = "transcribe", clip_id, "audio pipeline failed: {}", e);
+            set_status(clip_id, "failed", &e.message, None);
+        }
+    }
+}
+
+fn run_audio_pipeline_inner(
+    app: &AppHandle,
+    clip_id: i64,
+    audio_path: &Path,
+) -> Result<String, AppError> {
+    emit(app, clip_id, Stage::Asr, 45, Some("正在转录"));
+    let (transcript, provider_id) = run_asr(audio_path)?;
+    emit(
+        app,
+        clip_id,
+        Stage::Asr,
+        80,
+        Some(&format!("转录完成 · {} 字", transcript.chars().count())),
+    );
+
+    set_status(clip_id, "cleaning", "", None);
+    save_raw_transcript(clip_id, &transcript)?;
+    emit(app, clip_id, Stage::Clean, 82, Some("AI 清洗为可读版"));
+    run_ai_cleanup(clip_id);
+    emit(app, clip_id, Stage::Clean, 93, Some("清洗完成"));
+
+    emit(app, clip_id, Stage::Summarize, 96, Some("生成摘要与标签"));
+    run_auto_tag(clip_id);
+    enforce_audio_source_type(clip_id);
+
+    Ok(provider_id)
+}
+
+/// Mirror of `enforce_video_source_type` — `auto_tag` can reclassify based on
+/// content, but a local audio file is forever an audio clip regardless of
+/// what topic the transcript covers.
+fn enforce_audio_source_type(clip_id: i64) {
+    if let Ok(conn) = open_db() {
+        let _ = conn.execute(
+            "UPDATE web_clips SET source_type = 'audio',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id = ?1",
+            [clip_id],
         );
     }
 }

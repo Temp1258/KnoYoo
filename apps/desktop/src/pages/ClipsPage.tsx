@@ -1,4 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { useSearchParams } from "react-router";
+import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import {
   Search,
   Star,
@@ -14,6 +16,7 @@ import {
   SlidersHorizontal,
   MoreHorizontal,
   Video,
+  Headphones,
 } from "lucide-react";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 import type { WebClip, AiFullConfig } from "../types";
@@ -34,6 +37,16 @@ import { useSearchHistory } from "../hooks/useSearchHistory";
 type TimeRange = "all" | "week" | "month" | "quarter";
 
 const UNDO_WINDOW_MS = 15_000;
+
+/** Source types owned by the Media page now that `集合 → 影音` shipped. We
+ *  filter these out of the Clips page results so local media doesn't
+ *  leak into the article/video list. Backend pagination still counts the
+ *  raw rows; `hasMore` stays accurate off the pre-filter length. */
+const MEDIA_SOURCE_TYPES = new Set(["audio", "local_video"]);
+
+function excludeMedia(clips: WebClip[]): WebClip[] {
+  return clips.filter((c) => !MEDIA_SOURCE_TYPES.has(c.source_type));
+}
 
 const TIME_RANGES: { value: TimeRange; label: string }[] = [
   { value: "all", label: "全部" },
@@ -106,6 +119,34 @@ export default function ClipsPage() {
     Map<number, { timer: ReturnType<typeof setTimeout>; clip: WebClip }>
   >(new Map());
 
+  // Quick-search deep link: `?openClip=<id>` fetches that clip and opens its
+  // detail view. Handoff from QuickSearchApp → useQuickSearchNavigation →
+  // here. We clear the param after opening so browser-back doesn't re-trigger.
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const idRaw = searchParams.get("openClip");
+    if (!idRaw) return;
+    const id = Number(idRaw);
+    if (!Number.isFinite(id) || id <= 0) return;
+    let stale = false;
+    tauriInvoke<WebClip>("get_clip", { id })
+      .then((clip) => {
+        if (!stale) setSelectedClip(clip);
+      })
+      .catch((e) => console.error("get_clip from quick-search failed:", e))
+      .finally(() => {
+        if (!stale) {
+          // Strip the param without pushing a new history entry.
+          const next = new URLSearchParams(searchParams);
+          next.delete("openClip");
+          setSearchParams(next, { replace: true });
+        }
+      });
+    return () => {
+      stale = true;
+    };
+  }, [searchParams, setSearchParams]);
+
   // Search debounce
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -167,13 +208,22 @@ export default function ClipsPage() {
               description: f.query,
             });
             if (currentRequestId !== requestIdRef.current) return;
-            if (aiResults.length > 0) {
-              setFuzzyResults(aiResults);
+            // AI fuzzy search searches over ALL clips server-side; we must
+            // apply the same media exclusion as the FTS path, otherwise
+            // audio / local_video rows leak onto the Clips page.
+            const filtered = excludeMedia(aiResults);
+            if (filtered.length > 0) {
+              setFuzzyResults(filtered);
             }
           } catch {
             // AI search failed silently — show empty FTS results
           }
-          setFuzzyLoading(false);
+          // Guard the loading-flag release too: an in-flight new request
+          // has already set its own spinner, and clearing it from a stale
+          // request would make the UI drop the new spinner prematurely.
+          if (currentRequestId === requestIdRef.current) {
+            setFuzzyLoading(false);
+          }
         }
       } else {
         const dateFrom = getDateFrom(f.timeRange);
@@ -189,9 +239,14 @@ export default function ClipsPage() {
       }
       // Discard stale response if a newer request was started
       if (currentRequestId !== requestIdRef.current) return;
-      setClips(results);
+      // Pagination heuristic uses raw row count so excluded media doesn't
+      // kill the "has more" signal prematurely.
       setHasMore(results.length >= 20);
+      setClips(excludeMedia(results));
       const count = await tauriInvoke<number>("count_web_clips");
+      // Re-check after the second await — a fresh filter change could have
+      // fired during count fetch. Writing the old total would briefly show
+      // a wrong number before self-correcting, which looks like a bug.
       if (currentRequestId !== requestIdRef.current) return;
       setTotal(count);
     } catch (e) {
@@ -233,11 +288,12 @@ export default function ClipsPage() {
       }
       if (snapshotId !== requestIdRef.current) return;
       if (results.length < 20) setHasMore(false);
-      if (results.length > 0) {
+      const fresh = excludeMedia(results);
+      if (fresh.length > 0) {
         setClips((prev) => {
           const existingIds = new Set(prev.map((c) => c.id));
-          const fresh = results.filter((c) => !existingIds.has(c.id));
-          return fresh.length > 0 ? [...prev, ...fresh] : prev;
+          const unique = fresh.filter((c) => !existingIds.has(c.id));
+          return unique.length > 0 ? [...prev, ...unique] : prev;
         });
       }
     } catch (e) {
@@ -508,6 +564,37 @@ export default function ClipsPage() {
     setTimeout(() => setTokenCopied(false), 2000);
   };
 
+  // Local audio file → clip. Opens the OS file picker, then hands the path
+  // to `import_audio_file` which kicks off the ASR pipeline in the Rust
+  // background. On success we open the detail drawer immediately so the
+  // user can watch `transcribe://progress` events land.
+  const handleImportAudio = async () => {
+    try {
+      const selected = await openFileDialog({
+        multiple: false,
+        filters: [
+          {
+            name: "音频文件",
+            extensions: ["mp3", "m4a", "wav", "flac", "opus", "ogg", "aac", "webm"],
+          },
+        ],
+      });
+      if (!selected) return;
+      const filePath = typeof selected === "string" ? selected : selected;
+      if (!filePath) return;
+      const clipId = await tauriInvoke<number>("import_audio_file", { filePath });
+      try {
+        const clip = await tauriInvoke<WebClip>("get_clip", { id: clipId });
+        setSelectedClip(clip);
+        loadClips();
+      } catch (e) {
+        console.warn("get_clip after import_audio_file failed:", e);
+      }
+    } catch (e) {
+      showToast(`音频导入失败：${String(e)}`, "error");
+    }
+  };
+
   const handleAISearch = async (searchQuery: string) => {
     if (!searchQuery.trim()) return;
     setFuzzyLoading(true);
@@ -761,6 +848,16 @@ export default function ClipsPage() {
                     >
                       <Video size={13} />
                       导入视频
+                    </button>
+                    <button
+                      onClick={() => {
+                        setMoreMenuOpen(false);
+                        handleImportAudio();
+                      }}
+                      className="w-full text-left px-3 py-2 text-[12px] text-text hover:bg-bg-tertiary transition-colors cursor-pointer flex items-center gap-2"
+                    >
+                      <Headphones size={13} />
+                      导入音频
                     </button>
                     <button
                       onClick={() => {

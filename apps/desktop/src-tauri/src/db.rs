@@ -90,27 +90,6 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         VALUES (new.id, new.title, new.content, new.summary, new.tags);
     END;
 
-    -- Collections for organizing clips
-    CREATE TABLE IF NOT EXISTS collections (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      name        TEXT NOT NULL,
-      description TEXT NOT NULL DEFAULT '',
-      icon        TEXT NOT NULL DEFAULT 'folder',
-      color       TEXT NOT NULL DEFAULT '#6b7280',
-      created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-      updated_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-    );
-
-    CREATE TABLE IF NOT EXISTS collection_clips (
-      collection_id INTEGER NOT NULL,
-      clip_id       INTEGER NOT NULL,
-      sort_order    INTEGER NOT NULL DEFAULT 0,
-      added_at      TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
-      PRIMARY KEY (collection_id, clip_id),
-      FOREIGN KEY (collection_id) REFERENCES collections(id) ON DELETE CASCADE,
-      FOREIGN KEY (clip_id) REFERENCES web_clips(id) ON DELETE CASCADE
-    );
-
     -- Weekly reports
     CREATE TABLE IF NOT EXISTS weekly_reports (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -244,12 +223,11 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     )
     .ok();
 
-    // Migration: smart collection filter rules
-    conn.execute(
-        "ALTER TABLE collections ADD COLUMN filter_rule TEXT NOT NULL DEFAULT ''",
-        [],
-    )
-    .ok();
+    // Migration: drop the Collections feature. Removed in the UI reshuffle
+    // (集合 → 影音). Dropping in child→parent order avoids FK constraint
+    // complaints when `PRAGMA foreign_keys = ON`.
+    conn.execute("DROP TABLE IF EXISTS collection_clips", []).ok();
+    conn.execute("DROP TABLE IF EXISTS collections", []).ok();
 
     // Migration: books library ("书籍")
     // NOTE: file_hash uses a PARTIAL unique index (below) rather than an inline UNIQUE,
@@ -391,6 +369,117 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
     conn.execute(
         "UPDATE books SET ai_status = 'ok' WHERE ai_status = 'pending' AND title <> ''",
         [],
+    )
+    .ok();
+
+    // Migration: full-text indexes for unified cross-content search.
+    //
+    // Uses FTS5's `trigram` tokenizer (SQLite >= 3.34) which generates 3-char
+    // substrings as tokens. Critical for CJK: the default `unicode61`
+    // tokenizer treats contiguous CJK as a single token, so searching
+    // "爸爸" wouldn't match a clip titled "富爸爸穷爸爸" (prefix match must
+    // start at a token boundary). Trigram's substring-matching behaviour
+    // makes any 2+ char fragment discoverable.
+    //
+    // Tokenizer switch is one-time + guarded by `fts_tokenizer_version` kv.
+    // Earlier installs created these tables with unicode61; we rebuild them
+    // exactly once per upgrade. Subsequent starts short-circuit.
+    let tokenizer_version = kv_get(conn, "fts_tokenizer_version")?.unwrap_or_default();
+    let needs_rebuild = tokenizer_version != "trigram-v1";
+
+    if needs_rebuild {
+        tracing::info!("Rebuilding FTS indexes with trigram tokenizer");
+        // web_clips_fts — drop old, recreate with trigram, re-seed.
+        conn.execute_batch(
+            r"
+            DROP TRIGGER IF EXISTS web_clips_ai;
+            DROP TRIGGER IF EXISTS web_clips_ad;
+            DROP TRIGGER IF EXISTS web_clips_au;
+            DROP TABLE IF EXISTS web_clips_fts;
+            CREATE VIRTUAL TABLE web_clips_fts USING fts5(
+                title, content, summary, tags,
+                content='web_clips', content_rowid='id',
+                tokenize='trigram'
+            );
+            CREATE TRIGGER web_clips_ai AFTER INSERT ON web_clips BEGIN
+              INSERT INTO web_clips_fts(rowid, title, content, summary, tags)
+                VALUES (new.id, new.title, new.content, new.summary, new.tags);
+            END;
+            CREATE TRIGGER web_clips_au AFTER UPDATE ON web_clips BEGIN
+              INSERT INTO web_clips_fts(web_clips_fts, rowid, title, content, summary, tags)
+                VALUES('delete', old.id, old.title, old.content, old.summary, old.tags);
+              INSERT INTO web_clips_fts(rowid, title, content, summary, tags)
+                VALUES (new.id, new.title, new.content, new.summary, new.tags);
+            END;
+            INSERT INTO web_clips_fts(web_clips_fts) VALUES('rebuild');
+            ",
+        )
+        .map_err(|e| format!("web_clips_fts trigram rebuild failed: {e}"))?;
+
+        // books_fts — same treatment.
+        conn.execute_batch(
+            r"
+            DROP TRIGGER IF EXISTS books_ai;
+            DROP TRIGGER IF EXISTS books_ad;
+            DROP TRIGGER IF EXISTS books_au;
+            DROP TABLE IF EXISTS books_fts;
+            CREATE VIRTUAL TABLE books_fts USING fts5(
+                title, author, publisher, description,
+                content='books', content_rowid='id',
+                tokenize='trigram'
+            );
+            CREATE TRIGGER books_ai AFTER INSERT ON books BEGIN
+              INSERT INTO books_fts(rowid, title, author, publisher, description)
+                VALUES (new.id, new.title, new.author, new.publisher, new.description);
+            END;
+            CREATE TRIGGER books_ad AFTER DELETE ON books BEGIN
+              INSERT INTO books_fts(books_fts, rowid, title, author, publisher, description)
+                VALUES('delete', old.id, old.title, old.author, old.publisher, old.description);
+            END;
+            CREATE TRIGGER books_au AFTER UPDATE ON books BEGIN
+              INSERT INTO books_fts(books_fts, rowid, title, author, publisher, description)
+                VALUES('delete', old.id, old.title, old.author, old.publisher, old.description);
+              INSERT INTO books_fts(rowid, title, author, publisher, description)
+                VALUES (new.id, new.title, new.author, new.publisher, new.description);
+            END;
+            INSERT INTO books_fts(books_fts) VALUES('rebuild');
+            ",
+        )
+        .map_err(|e| format!("books_fts trigram rebuild failed: {e}"))?;
+
+        set_kv(conn, "fts_tokenizer_version", "trigram-v1")?;
+        tracing::info!("FTS trigram rebuild complete");
+    }
+
+    // Migration: milestones ("里程碑与仪式感")
+    //
+    // Tracks ceremonial achievements ("收藏突破 100 条", "连续 30 天有新输入",
+    // "完成第 10 本书") so the Discover page can surface a celebration card and
+    // the user feels their knowledge base growing.
+    //
+    // UNIQUE(kind, value, meta_json) + INSERT OR IGNORE guarantees each
+    // threshold fires exactly once. meta_json is structured JSON so future
+    // milestone types (goal completion, streaks, etc.) can carry payloads
+    // without another migration.
+    //
+    // `acknowledged` is 0/1. First-run backfill marks all currently-met
+    // thresholds as acknowledged so upgrading users don't get blasted with a
+    // queue of retroactive achievements.
+    conn.execute_batch(
+        r"
+        CREATE TABLE IF NOT EXISTS milestones (
+          id             INTEGER PRIMARY KEY AUTOINCREMENT,
+          kind           TEXT NOT NULL,
+          value          INTEGER NOT NULL,
+          meta_json      TEXT NOT NULL DEFAULT '{}',
+          achieved_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+          acknowledged   INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_milestones_kind_value_meta
+          ON milestones(kind, value, meta_json);
+        CREATE INDEX IF NOT EXISTS idx_milestones_unacked
+          ON milestones(acknowledged, achieved_at DESC);
+        ",
     )
     .ok();
 
@@ -626,6 +715,14 @@ pub fn get_database_info() -> Result<(String, u64), String> {
     let size = std::fs::metadata(&path)
         .map_or(0, |m| m.len());
     Ok((path.to_string_lossy().to_string(), size))
+}
+
+/// Relaunch the app. Used after `import_full_database` so the user doesn't
+/// see stale in-memory state (milestones, clip counts, etc.) derived from
+/// the old DB. Called from Settings → Data → "导入备份" → success dialog.
+#[tauri::command]
+pub fn restart_app(app: tauri::AppHandle) {
+    app.restart();
 }
 
 #[cfg(test)]

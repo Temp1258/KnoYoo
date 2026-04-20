@@ -16,3 +16,23 @@ export function isSafeUrl(url: string): boolean {
     return false;
   }
 }
+
+/**
+ * Human-facing "domain" label for a clip URL. Keeps synthetic schemes
+ * (audio-local://, local-video://, file://) from leaking raw sha256 hashes
+ * into the UI, and strips `www.` from real hostnames.
+ *
+ * Shared by ClipCard + ClipDetail so the mapping stays in one place —
+ * previously the two components had copy-pasted logic that drifted
+ * (ClipDetail still showed the full hash because it had not been updated).
+ */
+export function formatClipDomain(url: string): string {
+  if (url.startsWith("audio-local://")) return "本地音频";
+  if (url.startsWith("local-video://")) return "本地视频";
+  if (url.startsWith("file://")) return "本地文件";
+  try {
+    return new URL(url).hostname.replace("www.", "");
+  } catch {
+    return url;
+  }
+}

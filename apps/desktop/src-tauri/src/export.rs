@@ -46,31 +46,6 @@ fn clip_to_markdown(clip: &WebClip, note: Option<&str>) -> String {
     md
 }
 
-fn sanitize_filename(name: &str) -> String {
-    let cleaned: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric()
-                || c == '-'
-                || c == '_'
-                || c == ' '
-                || ('\u{4e00}'..='\u{9fff}').contains(&c) // CJK Unified Ideographs
-                || ('\u{3400}'..='\u{4dbf}').contains(&c) // CJK Extension A
-                || ('\u{3000}'..='\u{303f}').contains(&c) // CJK Symbols
-            {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect::<String>()
-        .trim()
-        .chars()
-        .take(80)
-        .collect();
-    if cleaned.is_empty() { "untitled".to_string() } else { cleaned }
-}
-
 /// Validate that a path is a regular file target (not a symlink to sensitive location).
 fn validate_export_path(path: &std::path::Path) -> Result<(), String> {
     if path.file_name().is_none() {
@@ -104,70 +79,6 @@ pub fn export_clip_to_file(id: i64, path: String) -> Result<(), String> {
 
     let md = clip_to_markdown(&clip, note.as_deref());
     std::fs::write(dest, md).map_err(|_| "导出失败：无法写入文件".to_string())
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-pub fn export_collection_to_dir(collectionId: i64, dirPath: String) -> Result<u32, String> {
-    let conn = open_db()?;
-    std::fs::create_dir_all(&dirPath).map_err(|e| e.to_string())?;
-
-    let mut stmt = conn
-        .prepare(
-            "SELECT w.* FROM web_clips w
-             JOIN collection_clips cc ON w.id = cc.clip_id
-             WHERE cc.collection_id = ?1
-             ORDER BY cc.sort_order ASC, cc.added_at DESC",
-        )
-        .map_err(|e| e.to_string())?;
-    let rows = stmt
-        .query_map([collectionId], row_to_clip)
-        .map_err(|e| e.to_string())?;
-
-    let mut count = 0u32;
-    for r in rows {
-        let clip = r.map_err(|e| e.to_string())?;
-        let note: Option<String> = conn
-            .query_row(
-                "SELECT content FROM clip_notes WHERE clip_id = ?1",
-                [clip.id],
-                |r| r.get(0),
-            )
-            .optional()
-            .map_err(|e| e.to_string())?;
-
-        let md = clip_to_markdown(&clip, note.as_deref());
-        let base = sanitize_filename(&clip.title);
-        let mut filename = format!("{base}.md");
-        let mut counter = 1;
-        // Use create_new to atomically avoid TOCTOU race
-        let dir = std::path::Path::new(&dirPath);
-        loop {
-            let filepath = dir.join(&filename);
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&filepath)
-            {
-                Ok(mut file) => {
-                    use std::io::Write;
-                    file.write_all(md.as_bytes())
-                        .map_err(|_| "导出失败：无法写入文件".to_string())?;
-                    break;
-                }
-                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                    filename = format!("{base}_{counter}.md");
-                    counter += 1;
-                    if counter > 1000 {
-                        return Err("导出失败：文件名冲突过多".to_string());
-                    }
-                }
-                Err(_) => return Err("导出失败：无法创建文件".to_string()),
-            }
-        }
-        count += 1;
-    }
-    Ok(count)
 }
 
 /// Export full database as a backup file using `SQLite`'s online backup API.

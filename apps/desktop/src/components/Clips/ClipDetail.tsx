@@ -17,18 +17,17 @@ import {
   BookOpenCheck,
   NotebookPen,
   Trash2,
-  FolderPlus,
   Download,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { WebClip, ClipNote } from "../../types";
-import { isSafeUrl } from "../../utils/url";
+import { formatClipDomain, isSafeUrl } from "../../utils/url";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import Button from "../ui/Button";
-import AddToCollectionDialog from "../Collections/AddToCollectionDialog";
 import TranscribeProgress from "./TranscribeProgress";
 import { useExport } from "../../hooks/useExport";
+import { useToast } from "../common/toast-context";
 
 type Props = {
   clip: WebClip;
@@ -119,9 +118,7 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
 
   // Export
   const { exportClip } = useExport();
-
-  // Collections dialog
-  const [showCollections, setShowCollections] = useState(false);
+  const { showToast } = useToast();
 
   // Related clips
   const [relatedClips, setRelatedClips] = useState<WebClip[]>([]);
@@ -216,6 +213,20 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
     return s === "pending" || s === "downloading" || s === "transcribing" || s === "cleaning";
   })();
   const articleActive = !videoActive && !clip.summary && clip.source_type !== "video";
+  // Hold onUpdate in a ref so the polling useEffect below doesn't reset its
+  // 4s interval every time the parent re-renders (which happens on every
+  // keystroke, hover, etc). Without this, the interval got torn down and
+  // rebuilt multiple times per second, missing status transitions and
+  // looking like a stuck "transcoding" UI even after the backend finished.
+  //
+  // Ref assignment goes in an effect (not directly in render) to satisfy
+  // the react-hooks/refs rule — this effect runs after every render, so by
+  // the time any polling tick reads `onUpdateRef.current` the ref is
+  // guaranteed up to date.
+  const onUpdateRef = useRef(onUpdate);
+  useEffect(() => {
+    onUpdateRef.current = onUpdate;
+  });
   useEffect(() => {
     if (!videoActive && !articleActive) return;
     let cancelled = false;
@@ -232,7 +243,7 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
           (!fresh.summary && fresh.source_type !== "video");
         // Always notify parent on change so failed/completed states render.
         if (fresh.updated_at !== clip.updated_at) {
-          onUpdate?.(fresh);
+          onUpdateRef.current?.(fresh);
         }
         if (!stillActive) clearInterval(interval);
       } catch {
@@ -246,15 +257,9 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
       clearInterval(interval);
       clearTimeout(stopTimer);
     };
-  }, [clip.id, clip.updated_at, videoActive, articleActive, onUpdate]);
+  }, [clip.id, clip.updated_at, videoActive, articleActive]);
 
-  const domain = (() => {
-    try {
-      return new URL(clip.url).hostname.replace("www.", "");
-    } catch {
-      return clip.url;
-    }
-  })();
+  const domain = formatClipDomain(clip.url);
 
   const saveSummary = async () => {
     setSaving(true);
@@ -355,9 +360,6 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
                 </button>
               )}
             </div>
-            <Button variant="ghost" size="sm" onClick={() => setShowCollections(true)}>
-              <FolderPlus size={14} />
-            </Button>
             <Button
               variant="ghost"
               size="sm"
@@ -631,8 +633,15 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
                 </button>
                 <button
                   onClick={async () => {
-                    await tauriInvoke("delete_clip_note", { clipId: clip.id });
-                    setNote(null);
+                    try {
+                      await tauriInvoke("delete_clip_note", { clipId: clip.id });
+                      setNote(null);
+                    } catch (e) {
+                      // Without this catch, a failed delete still flipped
+                      // setNote(null) — UI lied about success and the note
+                      // reappeared on next open.
+                      showToast(`删除笔记失败：${String(e)}`, "error");
+                    }
                   }}
                   className="p-1 rounded-md text-text-tertiary hover:text-danger hover:bg-danger-light transition-colors cursor-pointer"
                   title="删除笔记"
@@ -801,13 +810,6 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
           </div>
         </div>
       )}
-
-      {/* Add to Collection Dialog */}
-      <AddToCollectionDialog
-        open={showCollections}
-        clipId={clip.id}
-        onClose={() => setShowCollections(false)}
-      />
     </div>
   );
 }

@@ -6,6 +6,9 @@ import ApiConfigPanel from "../components/Settings/ApiConfigPanel";
 import ResetApiKeysCard from "../components/Settings/ResetApiKeysCard";
 import BookmarkImportDialog from "../components/Import/BookmarkImportDialog";
 import ThemePicker from "../components/Settings/ThemePicker";
+import ShortcutSettings from "../components/Settings/ShortcutSettings";
+import Dialog from "../components/ui/Dialog";
+import Button from "../components/ui/Button";
 import { useTheme } from "../hooks/useTheme";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
 
@@ -36,6 +39,10 @@ export default function SettingsPage() {
   const [dataLoading, setDataLoading] = useState(false);
   const [backupStatus, setBackupStatus] = useState<string | null>(null);
   const [importConfirm, setImportConfirm] = useState(false);
+  // Post-import restart modal. Blocks the UI so the user can't silently
+  // continue on stale in-memory state (milestones / clip lists loaded from
+  // the old DB). Without this, "请重启" was just a toast many users missed.
+  const [restartPromptOpen, setRestartPromptOpen] = useState(false);
 
   const loadDataInfo = useCallback(async () => {
     setDataLoading(true);
@@ -82,13 +89,23 @@ export default function SettingsPage() {
     setBackupStatus(null);
     try {
       await tauriInvoke("import_full_database", { path });
-      setBackupStatus(
-        "备份导入成功，请重启应用以生效。注意：API Key 不随备份迁移，请到「AI 配置」和「视频转录」重新填写。",
-      );
       setImportConfirm(false);
-      loadDataInfo();
+      // Don't even try to refresh the panel — in-memory state is stale.
+      // Block the UI with a modal that forces the user through a restart.
+      setRestartPromptOpen(true);
     } catch (e) {
       setBackupStatus(`导入失败: ${e}`);
+    }
+  };
+
+  const handleRestartNow = async () => {
+    try {
+      await tauriInvoke("restart_app");
+    } catch (e) {
+      // Very unusual — Tauri restart should not fail. Surface the reason so
+      // the user can at least manually quit + reopen.
+      setBackupStatus(`重启失败: ${e}。请手动退出并重新打开 KnoYoo。`);
+      setRestartPromptOpen(false);
     }
   };
 
@@ -140,6 +157,8 @@ export default function SettingsPage() {
             </div>
             <ThemePicker />
           </div>
+
+          <ShortcutSettings />
         </div>
       )}
 
@@ -250,7 +269,7 @@ export default function SettingsPage() {
             <div className="space-y-2 text-[12px] text-text-secondary">
               <div className="flex justify-between">
                 <span>版本</span>
-                <span className="text-text-tertiary">2.0.0</span>
+                <span className="text-text-tertiary">2.0.4</span>
               </div>
               <div className="flex justify-between">
                 <span>技术栈</span>
@@ -274,6 +293,32 @@ export default function SettingsPage() {
           </p>
         </div>
       )}
+
+      {/* Blocking post-restore modal. Keeps the user on a clean path: they
+          either restart now and see the imported data, or postpone and are
+          warned that the current view is stale. */}
+      <Dialog
+        open={restartPromptOpen}
+        onClose={() => setRestartPromptOpen(false)}
+        title="备份已恢复，需要重启 KnoYoo"
+        actions={
+          <>
+            <Button variant="ghost" onClick={() => setRestartPromptOpen(false)}>
+              稍后重启
+            </Button>
+            <Button variant="primary" onClick={handleRestartNow}>
+              立即重启
+            </Button>
+          </>
+        }
+      >
+        <div className="space-y-2 text-[13px] text-text-secondary leading-relaxed">
+          <p className="m-0">导入成功。现在屏幕上显示的数据来自旧数据库，需要重启让新数据生效。</p>
+          <p className="m-0 text-[12px] text-text-tertiary">
+            提醒：API Key 不随备份迁移，重启后请到「AI 配置」和「视频转录」重新填写。
+          </p>
+        </div>
+      </Dialog>
     </div>
   );
 }

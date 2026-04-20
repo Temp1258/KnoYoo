@@ -28,4 +28,24 @@ export default defineConfig(async () => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+  build: {
+    // Split large third-party deps into their own chunks so the main bundle
+    // stays lean and the browser can cache them independently of app code.
+    // Without this, react-markdown + remark-gfm alone pushed the single
+    // index chunk past 500 KB and triggered Vite's size warning.
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "vendor-react": ["react", "react-dom", "react-router"],
+          "vendor-markdown": ["react-markdown", "remark-gfm"],
+          "vendor-icons": ["lucide-react"],
+          "vendor-tauri": [
+            "@tauri-apps/api",
+            "@tauri-apps/plugin-dialog",
+            "@tauri-apps/plugin-opener",
+          ],
+        },
+      },
+    },
+  },
 }));

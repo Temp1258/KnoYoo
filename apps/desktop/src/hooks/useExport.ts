@@ -1,4 +1,4 @@
-import { save, open } from "@tauri-apps/plugin-dialog";
+import { save } from "@tauri-apps/plugin-dialog";
 import { tauriInvoke } from "./useTauriInvoke";
 
 export function useExport() {
@@ -11,15 +11,5 @@ export function useExport() {
     await tauriInvoke("export_clip_to_file", { id: clipId, path });
   };
 
-  const exportCollection = async (collectionId: number, name: string) => {
-    const dir = await open({ directory: true, title: `导出集合: ${name}` });
-    if (!dir) return;
-    const count = await tauriInvoke<number>("export_collection_to_dir", {
-      collectionId,
-      dirPath: dir,
-    });
-    return count;
-  };
-
-  return { exportClip, exportCollection };
+  return { exportClip };
 }

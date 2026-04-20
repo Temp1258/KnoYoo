@@ -1,6 +1,6 @@
 [package]
 name = "desktop"
-version = "2.0.3"
+version = "2.0.4"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -72,10 +72,15 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 ureq = { version = "2.9", features = ["json"] }
-tauri = { version = "2", features = ["tray-icon"] }
+# macos-private-api enables transparent/blurred windows — required by the
+# quick-search overlay on macOS. Safe here because KnoYoo ships via direct
+# download, not the App Store (which rejects apps using these Apple-private
+# window APIs).
+tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-shell = "2"
+tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.31", features = ["bundled", "unlock_notify", "backup"] }

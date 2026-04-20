@@ -137,18 +137,6 @@ export type AsrSetConfig = {
   asr_model?: string;
 };
 
-export type Collection = {
-  id: number;
-  name: string;
-  description: string;
-  icon: string;
-  color: string;
-  filter_rule: string;
-  clip_count: number;
-  created_at: string;
-  updated_at: string;
-};
-
 export type ClipNote = {
   id: number;
   clip_id: number;
@@ -163,4 +151,59 @@ export type ChatSession = {
   messages: ChatMessage[];
   created_at: string;
   updated_at: string;
+};
+
+/** Unified search scope. `all` searches every indexed content type;
+ *  narrowed scopes map to the `parse_scope` switch on the Rust side.
+ *  - `clips` — article-type web clips
+ *  - `videos` — online videos (YouTube / Bilibili)
+ *  - `books` — library entries
+ *  - `media` — local audio + local video */
+export type SearchScope = "all" | "clips" | "videos" | "books" | "media";
+
+/** Result kinds returned by `unified_search`. Frontend uses this to pick
+ *  which card component to render and which route to navigate to.
+ *  `media` covers local audio + local video (the Media page). */
+export type SearchHitKind = "clip" | "book" | "video" | "media";
+
+/** Unified cross-content search result. Fields that don't apply to a given
+ *  kind are returned as empty strings (never null) so React code can treat
+ *  the list uniformly. `score` is already normalized to [0, 1]; higher is
+ *  better. `id` references the primary key of the source table
+ *  (web_clips.id / books.id). */
+export type SearchHit = {
+  kind: SearchHitKind;
+  id: number;
+  title: string;
+  snippet: string;
+  score: number;
+  /** For clip/video: canonical URL. Empty for books. */
+  url: string;
+  /** For clip/video: favicon URL. Empty for books. */
+  favicon: string;
+  /** For books: relative cover path. Empty for clip/video. */
+  cover_path: string;
+  /** ISO timestamp (clips: created_at, books: added_at). */
+  created_at: string;
+};
+
+/** Milestone kinds. Kept as a string union so Rust can add new kinds
+ *  without breaking compilation — the default branch in formatMilestone()
+ *  renders a safe fallback. */
+export type MilestoneKind =
+  | "clip_count"
+  | "consecutive_days"
+  | "tag_depth"
+  | "books_read"
+  | (string & {});
+
+export type Milestone = {
+  id: number;
+  kind: MilestoneKind;
+  value: number;
+  /** Structured JSON payload. `tag_depth` carries `{"tag": "rust"}`;
+   *  other kinds use `{}`. */
+  meta_json: string;
+  achieved_at: string;
+  acknowledged: boolean;
 };

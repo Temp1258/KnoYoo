@@ -67,6 +67,20 @@ body {
   height: 100%;
 }
 
+/* === Quick-search overlay window ==========================================
+   Tauri gives this window `transparent: true` + `decorations: false`, so the
+   OS draws nothing behind us. The content can then render its own rounded
+   card with blur/shadow — but only if html/body themselves are transparent.
+   Without this override the theme's `--color-bg` paints a full opaque
+   rectangle, and the card's `rounded-2xl` appears cut off at the window
+   edges (matching the "尖尖的 90 度角" the user reported).
+*/
+html.window-quick-search,
+html.window-quick-search body,
+html.window-quick-search #root {
+  background: transparent !important;
+}
+
 /* === Dark Mode (baseline for all dark themes) === */
 .dark {
   --color-bg: #111113;

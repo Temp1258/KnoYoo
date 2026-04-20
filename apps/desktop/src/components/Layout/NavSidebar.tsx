@@ -1,12 +1,23 @@
-import { Library, Compass, Settings, FolderOpen, Trash2, BookMarked } from "lucide-react";
+import {
+  Home,
+  Library,
+  Compass,
+  Settings,
+  Trash2,
+  BookMarked,
+  Headphones,
+  Trophy,
+} from "lucide-react";
 import { NavLink, useLocation } from "react-router";
 import KnoYooLogo from "./KnoYooLogo";
 
 const navItems = [
-  { to: "/", icon: Library, label: "智库", exact: true },
+  { to: "/", icon: Home, label: "主页", exact: true },
+  { to: "/clips", icon: Library, label: "智库", exact: false },
   { to: "/books", icon: BookMarked, label: "书籍", exact: false },
-  { to: "/collections", icon: FolderOpen, label: "集合", exact: false },
+  { to: "/media", icon: Headphones, label: "影音", exact: false },
   { to: "/discover", icon: Compass, label: "发现", exact: false },
+  { to: "/achievements", icon: Trophy, label: "成就", exact: false },
   { to: "/trash", icon: Trash2, label: "乐色", exact: false },
   { to: "/settings", icon: Settings, label: "设置", exact: false },
 ];

@@ -2,8 +2,10 @@ import { Outlet } from "react-router";
 import NavSidebar from "./NavSidebar";
 import ChatDrawer from "../AI/ChatDrawer";
 import { ErrorBoundary } from "../common/ErrorBoundary";
+import { useQuickSearchNavigation } from "../../hooks/useQuickSearchNavigation";
 
 export default function AppShell() {
+  useQuickSearchNavigation();
   return (
     <div className="flex h-screen overflow-hidden bg-bg">
       {/* Navigation Sidebar */}

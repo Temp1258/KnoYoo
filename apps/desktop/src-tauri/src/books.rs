@@ -590,6 +590,11 @@ pub fn add_book(file_path: String) -> Result<Book, String> {
         }
     });
 
+    // Evaluating on add_book is a no-op for books_read (status defaults to
+    // 'want'), but we run it anyway so the call site stays symmetric with
+    // add_web_clip — the UNIQUE index absorbs redundant evaluations cheaply.
+    crate::milestones::evaluate_async();
+
     Ok(book)
 }
 
@@ -791,6 +796,7 @@ pub fn update_book(id: i64, patch: BookPatch) -> Result<Book, String> {
         set_field!("tags", json);
     }
 
+    let mut became_read = false;
     if let Some(new_status) = patch.status {
         set_field!("status", new_status.clone());
 
@@ -811,6 +817,7 @@ pub fn update_book(id: i64, patch: BookPatch) -> Result<Book, String> {
                 [id],
             )
             .map_err(|e| e.to_string())?;
+            became_read = true;
         }
     }
 
@@ -818,6 +825,14 @@ pub fn update_book(id: i64, patch: BookPatch) -> Result<Book, String> {
         .query_row("SELECT * FROM books WHERE id = ?1", [id], row_to_book)
         .map_err(|e| e.to_string())?;
     tx.commit().map_err(|e| e.to_string())?;
+
+    // Only re-evaluate on the transition to 'read' — the milestone kind that
+    // can change from a book edit. Skipping the other edits keeps frequent
+    // progress/rating updates from scanning the whole web_clips table.
+    if became_read {
+        crate::milestones::evaluate_async();
+    }
+
     Ok(book)
 }
 

@@ -128,13 +128,22 @@ fn validate_url_safe(url: &str) -> Result<(), String> {
         _ => {}
     }
 
-    // Block common internal TLDs. `host_lower` is already lowercased, so
-    // suffix matching is effectively case-insensitive — clippy can't prove
-    // that and flags it as a file-extension check.
+    // Block common internal TLDs + RFC 2606 reserved TLDs. NOT blocking
+    // `.dev` or `.app` — those are real Google-registered TLDs with many
+    // legitimate sites; IP-level validation in `safe_resolve` (which
+    // resolves and re-checks the IP after DNS lookup) is the enforcement
+    // point for "domain-points-to-localhost" attacks.
+    //
+    // `host_lower` is already lowercased, so suffix matching is effectively
+    // case-insensitive — clippy can't prove that and flags it as a
+    // file-extension check.
     #[allow(clippy::case_sensitive_file_extension_comparisons)]
     if host_lower.ends_with(".local")
         || host_lower.ends_with(".internal")
         || host_lower.ends_with(".localhost")
+        || host_lower.ends_with(".test")
+        || host_lower.ends_with(".example")
+        || host_lower.ends_with(".invalid")
     {
         return Err(format!("Blocked internal hostname: {host}"));
     }

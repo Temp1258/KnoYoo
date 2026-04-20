@@ -13,6 +13,7 @@ import { tauriInvoke } from "../hooks/useTauriInvoke";
 import type { WebClip } from "../types";
 import ClipCard from "../components/Clips/ClipCard";
 import ClipDetail from "../components/Clips/ClipDetail";
+import MilestoneBanner from "../components/Milestones/MilestoneBanner";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 
@@ -22,7 +23,6 @@ type WeeklyStats = {
   top_domains: [string, number][];
   total_clips: number;
   total_notes: number;
-  total_collections: number;
 };
 
 const TAG_COLORS = [
@@ -196,6 +196,9 @@ export default function DiscoverPage() {
       <div className={splitView ? "w-2/5 order-1 overflow-y-auto px-4 py-4" : ""}>
         <h1 className="text-[28px] font-bold tracking-tight mb-6">发现</h1>
 
+        {/* ── Milestones (unacknowledged celebrations) ── */}
+        <MilestoneBanner />
+
         {/* ── Weekly Summary ── */}
         <section className="mb-8">
           {weeklySummary ? (
@@ -243,11 +246,10 @@ export default function DiscoverPage() {
             <h2 className="text-[16px] font-semibold text-text mb-4">知识画像</h2>
 
             {/* Overview counters */}
-            <div className="grid grid-cols-3 gap-3 mb-4">
+            <div className="grid grid-cols-2 gap-3 mb-4">
               {[
                 { label: "总收藏", value: stats.total_clips },
                 { label: "笔记", value: stats.total_notes },
-                { label: "集合", value: stats.total_collections },
               ].map((item) => (
                 <div
                   key={item.label}

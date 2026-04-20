@@ -111,11 +111,23 @@ fn handle_connection(mut stream: std::net::TcpStream) -> Result<(), String> {
         .read_line(&mut request_line)
         .map_err(|e| e.to_string())?;
 
-    // Parse headers
+    // Parse headers. Cap both the count and the cumulative byte size so a
+    // malicious local process can't OOM the server by pumping unbounded
+    // header lines. 64 headers × 8 KB each is generous enough for every
+    // real client (the extension sends ~5).
+    const MAX_HEADERS: usize = 64;
+    const MAX_HEADER_BYTES: usize = 64 * 1024;
     let mut headers = std::collections::HashMap::new();
+    let mut header_bytes: usize = 0;
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        let n = reader.read_line(&mut line).map_err(|e| e.to_string())?;
+        header_bytes = header_bytes.saturating_add(n);
+        if header_bytes > MAX_HEADER_BYTES || headers.len() >= MAX_HEADERS {
+            send_json_response(&mut stream, 431, r#"{"error":"headers too large"}"#)
+                .ok();
+            return Ok(());
+        }
         let trimmed = line.trim();
         if trimmed.is_empty() {
             break;

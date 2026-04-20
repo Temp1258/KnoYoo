@@ -10,12 +10,14 @@ import {
   MessageCircle,
   Code,
   Camera,
+  Headphones,
+  Film,
   Loader2,
   AlertCircle,
   type LucideIcon,
 } from "lucide-react";
 import type { TranscriptionStatus, WebClip } from "../../types";
-import { isSafeUrl } from "../../utils/url";
+import { formatClipDomain, isSafeUrl } from "../../utils/url";
 import HighlightText from "./HighlightText";
 
 const SOURCE_CONFIG: Record<
@@ -24,6 +26,18 @@ const SOURCE_CONFIG: Record<
 > = {
   article: { icon: FileText, color: "text-blue-500", border: "border-l-blue-500", label: "文章" },
   video: { icon: Play, color: "text-red-500", border: "border-l-red-500", label: "视频" },
+  audio: {
+    icon: Headphones,
+    color: "text-accent",
+    border: "border-l-accent",
+    label: "音频",
+  },
+  local_video: {
+    icon: Film,
+    color: "text-rose-500",
+    border: "border-l-rose-500",
+    label: "本地视频",
+  },
   tweet: { icon: MessageCircle, color: "text-sky-400", border: "border-l-sky-400", label: "推文" },
   code: { icon: Code, color: "text-green-500", border: "border-l-green-500", label: "代码" },
   screenshot: {
@@ -63,13 +77,7 @@ export default function ClipCard({
 }: Props) {
   const [starBounce, setStarBounce] = useState(false);
 
-  const domain = (() => {
-    try {
-      return new URL(clip.url).hostname.replace("www.", "");
-    } catch {
-      return clip.url;
-    }
-  })();
+  const domain = formatClipDomain(clip.url);
 
   const st = SOURCE_CONFIG[clip.source_type] || SOURCE_CONFIG.article;
   const SourceIcon = st.icon;
@@ -150,8 +158,10 @@ export default function ClipCard({
         </div>
       </div>
 
-      {/* Meta line */}
-      <div className="text-[11px] text-text-tertiary mb-2 ml-[34px]">
+      {/* Meta line — truncate guards against pathological hostnames (and the
+          legacy case where a pre-fix build let `audio-local://<sha256>` slip
+          into this slot). */}
+      <div className="text-[11px] text-text-tertiary mb-2 ml-[34px] truncate">
         {domain} &middot; {new Date(clip.created_at).toLocaleDateString("zh-CN")}
       </div>
 

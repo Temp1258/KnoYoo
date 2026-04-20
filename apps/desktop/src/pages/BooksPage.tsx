@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { BookOpen, Plus } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open } from "@tauri-apps/plugin-dialog";
@@ -30,16 +31,40 @@ export default function BooksPage() {
   } = useBooks();
   const { showToast } = useToast();
   const [dragging, setDragging] = useState(false);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
   const uploadingRef = useRef(false);
+
+  // URL-driven drawer selection. `?openBook=<id>` is BOTH the quick-search
+  // deep-link handoff AND the in-page click target, so there's no mirroring
+  // of URL → local state (which would trigger React's "setState in effect"
+  // lint and invite drift). Click ⇒ push param; close ⇒ drop it.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const selectedId = (() => {
+    const raw = searchParams.get("openBook");
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  })();
 
   // Keep the drawer's book reference in sync with list updates
   const selected = useMemo(
     () => (selectedId == null ? null : (books.find((b) => b.id === selectedId) ?? null)),
     [books, selectedId],
   );
-  const openBook = (b: Book) => setSelectedId(b.id);
-  const closeDrawer = () => setSelectedId(null);
+  const openBook = useCallback(
+    (b: Book) => {
+      const next = new URLSearchParams(searchParams);
+      next.set("openBook", String(b.id));
+      // replace: true so in-page clicks don't inflate history (Back from a
+      // book detail should leave /books entirely, not cycle through drawers).
+      setSearchParams(next, { replace: true });
+    },
+    [searchParams, setSearchParams],
+  );
+  const closeDrawer = useCallback(() => {
+    const next = new URLSearchParams(searchParams);
+    next.delete("openBook");
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const grouped = useMemo(() => {
     const by = { reading: [], want: [], read: [], dropped: [] } as Record<
