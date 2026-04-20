@@ -23,16 +23,13 @@
 
 ---
 
-## v2.0.4 亮点
+## v2.0.5 亮点
 
-- 🏠 **新主页**：Google 风格的统一搜索落地页，拖入文件自动按类型分发（书籍 / 音频 / 视频）
-- 🎧 **影音页**：本地音频 + 本地视频一键导入，ffmpeg 自动抽音频走 ASR 管道
-- 🏆 **成就系统**：斐波那契阶梯（1 / 2 / 3 / 5 / 8 / 13 / 21 / …），每一步积累都被看见
-- ⌨️ **全局快捷键 QuickSearch**：Cmd+Shift+K / Ctrl+Shift+K 任意位置召唤 Spotlight 风格浮窗，可在设置里自定义
-- 🔎 **搜索层重构**：FTS5 trigram 分词器原生支持中文短词检索，跨内容混合结果按相关性合并
-- 🛡️ **SSRF / DoS 硬化**：本机 HTTP 服务 header cap 64、RFC 2606 保留 TLD 黑名单、FFmpeg/ASR 临时文件 RAII 清理
+- 🎙️ **长音频自动分片**：超过 ASR 供应商单次上传上限（Whisper 25MB / Deepgram 100MB / SiliconFlow 20MB）时 ffmpeg 按时长切片、串行上传、拼接转写；分片时长在设置里可调（60–900 秒，默认 300）
+- 🌐 **双语字幕**：视频/音频转录完成后 AI 一次调用同时识别源语言并生成简体中文译文，详情页一键切换「可读版 / 原始 / 中文译文」；源语言已是中文时 AI 短路节省 tokens
+- 📱 **窄窗口友好**：AI Chat Drawer 在 <768px 窗口（iPad Slide Over / Tauri 分屏）改为全宽 overlay
 
-完整更新日志详见 [v2.0.4 Release](https://github.com/Temp1258/KnoYoo/releases/tag/v2.0.4)。
+完整更新日志详见 [v2.0.5 Release](https://github.com/Temp1258/KnoYoo/releases/tag/v2.0.5)。
 
 ---
 
@@ -42,9 +39,9 @@
 
 - **网页**：浏览器扩展一键收藏，三阶段 AI 管道 → 原文保留 → 清洗为可读 Markdown → 生成摘要和标签
 - **书籍**：拖入 EPUB / PDF，AI 通读正文自动填充书名、作者、简介、标签
-- **在线视频**：YouTube / Bilibili 链接导入，字幕优先 + ASR 兜底，自动转为可搜索文字
-- **本地音频**：拖入 mp3 / m4a / wav / flac / opus 等，ASR 直接转写
-- **本地视频**：拖入 mp4 / mov / mkv 等，ffmpeg 抽音频后走 ASR 管道
+- **在线视频**：YouTube / Bilibili 链接导入，字幕优先 + ASR 兜底；非中文内容 AI 自动生成简体中文译文
+- **本地音频**：拖入 mp3 / m4a / wav / flac / opus 等，ASR 直接转写；超过供应商单次上限时按时长分片串行转写
+- **本地视频**：拖入 mp4 / mov / mkv 等，ffmpeg 抽音频后走 ASR 管道（同样支持长视频自动分片）
 - **书签批量导入**：Chrome / Firefox / Edge 的 Netscape 格式书签
 
 ### 智能检索 + AI 对话
@@ -156,7 +153,8 @@
 | `clips.rs` | 网页剪藏 CRUD + 三阶段 AI 管道 + AI_BACKGROUND_TASKS RAII 槽位管理 |
 | `books.rs` | 图书 CRUD + 封面/页数 + AI 元数据抽取（带 `ai_status` 状态机） |
 | `audio.rs` | 本地音频/视频导入（流式 sha256 + ffmpeg 抽音频 + TempFileGuard） |
-| `transcribe.rs` | ASR 管道编排（字幕优先 → 音频下载 → 云 ASR → AI 清洗 → 标签） |
+| `audio_split.rs` | ffmpeg 按时长切片长音频（解决 ASR 单次上传上限） |
+| `transcribe.rs` | ASR 管道编排（字幕优先 → 音频下载 → 按需分片 → 云 ASR → AI 清洗 → 摘要标签 → 双语翻译） |
 | `asr_client.rs` | `AsrProvider` trait + OpenAI Whisper / Deepgram / SiliconFlow 实现 |
 | `search.rs` | 跨内容统一搜索（FTS trigram + LIKE 兜底 + bm25 归一化 + 分页） |
 | `milestones.rs` | 斐波那契里程碑阶梯（clip_count / consecutive_days / tag_depth / books_read） |
@@ -209,7 +207,7 @@ utils/url.ts                # isSafeUrl / formatClipDomain
 
 | 表 | 作用 |
 |---|---|
-| `web_clips` | 剪藏主表（`content` = 清洗可读版；`raw_content` = 原始 body；`source_type` 含 article/video/audio/local_video；`transcription_status` 状态机；软删除 `deleted_at`） |
+| `web_clips` | 剪藏主表（`content` = 清洗可读版；`raw_content` = 原始 body；`source_type` 含 article/video/audio/local_video；`transcription_status` 状态机；`source_language` + `translated_content` 承载双语字幕；软删除 `deleted_at`） |
 | `web_clips_fts` | FTS5 trigram 全文索引 |
 | `books` | 图书（`ai_status` / `ai_error` 状态追踪 · `file_hash` 唯一去重） |
 | `books_fts` | 书籍 FTS5 trigram 索引 |
