@@ -321,6 +321,34 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
     setSaving(false);
   };
 
+  // AI translation trigger. Calls the backend `ai_translate_clip` command,
+  // which detects the source language and writes a Chinese Markdown
+  // translation to `translated_content`. The backend is idempotent —
+  // re-running overwrites the prior translation, so this doubles as both
+  // "生成译文" (first time) and "重新翻译" (retry / refresh).
+  const [translating, setTranslating] = useState(false);
+  const handleRetranslate = async () => {
+    if (translating) return;
+    setTranslating(true);
+    try {
+      await tauriInvoke("ai_translate_clip", { id: clip.id });
+      const fresh = await tauriInvoke<WebClip>("get_clip", { id: clip.id });
+      onUpdate?.(fresh);
+      if (fresh.translated_content) {
+        const from = fresh.source_language ? ` ${fresh.source_language.toUpperCase()} →` : "";
+        showToast(`已生成${from} 中文译文`, "success");
+      } else if (fresh.source_language === "zh") {
+        showToast("检测为简体中文，已跳过翻译", "info");
+      } else {
+        showToast("AI 未返回有效译文，请稍后重试", "error");
+      }
+    } catch (e) {
+      showToast(`翻译失败：${String(e)}`, "error");
+    } finally {
+      setTranslating(false);
+    }
+  };
+
   const addTag = () => {
     const tag = newTag.trim();
     if (tag && !tagsDraft.includes(tag)) {
@@ -715,10 +743,12 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
         </div>
       )}
 
-      {/* Content view toggle. Shown whenever any alternate view exists —
-          raw dump (clips from the 3-stage pipeline) or translation
-          (non-Chinese clips that the AI translate stage processed). */}
-      {(hasRaw || hasTranslated) && (
+      {/* Content view toggle + translate action. Shown whenever any
+          alternate view exists (raw dump / existing translation) or the
+          clip has enough content to translate (≥ 50 chars — matches the
+          backend threshold, so an empty/thin clip doesn't offer an
+          action that would immediately no-op). */}
+      {(hasRaw || hasTranslated || (clip.content?.trim().length ?? 0) >= 50) && (
         <div className="flex items-center gap-1 mb-3 text-[12px]">
           <button
             onClick={() => setViewMode("readable")}
@@ -763,6 +793,19 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
           )}
           {!clip.summary && (
             <span className="ml-2 text-[11px] text-text-tertiary italic">AI 正在清洗和总结…</span>
+          )}
+          {(clip.content?.trim().length ?? 0) >= 50 && (
+            <button
+              onClick={handleRetranslate}
+              disabled={translating}
+              className="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded-md text-text-tertiary hover:text-accent hover:bg-bg-tertiary transition-colors cursor-pointer disabled:opacity-50"
+              title={
+                hasTranslated ? "用 AI 重新翻译（覆盖当前译文）" : "AI 检测语言并翻译为简体中文"
+              }
+            >
+              <RotateCcw size={11} className={translating ? "animate-spin" : ""} />
+              {translating ? "翻译中…" : hasTranslated ? "重新翻译" : "AI 翻译"}
+            </button>
           )}
         </div>
       )}
