@@ -1,14 +1,19 @@
-//! Video → transcript pipeline.
+//! Video / audio → transcript pipeline.
 //!
-//! MVP vertical slice — only the ASR path is wired end-to-end:
-//! `yt-dlp audio download → cloud ASR → raw transcript stored on the clip`.
+//! Full pipeline, end-to-end:
+//! `metadata → subtitle-or-ASR → (split if > provider cap) → cloud ASR →
+//!   AI cleanup → summary + tags`.
 //!
-//! Deferred to later slices:
-//! - subtitle-first branching (uses yt-dlp `--write-subs` when available)
-//! - ffmpeg splitting for audio larger than the provider cap
-//! - AI cleanup → readable Markdown (the existing `ai_clean_clip_inner`
-//!   pipeline in `clips.rs` will run on `raw_content` once we chain it in)
-//! - AI summary + tags
+//! Entry points:
+//! - `run_pipeline` — `YouTube` / Bilibili URLs (yt-dlp + subtitle ladder +
+//!   ASR fallback).
+//! - `run_audio_pipeline` — local audio / extracted-video audio (skips the
+//!   network-shaped prelude, starts at ASR).
+//!
+//! Long-audio handling: files above a provider's single-upload cap
+//! (Whisper 25MB / Deepgram 100MB / `SiliconFlow` 20MB) are transparently
+//! split by `audio_split::split_audio_by_duration` and uploaded serially;
+//! transcripts are concatenated in order.
 //!
 //! Progress contract: a single Tauri event `transcribe://progress` carrying
 //! `{clip_id, stage, percent, detail?}`. The frontend subscribes once and
@@ -29,6 +34,7 @@ use tauri::{AppHandle, Emitter};
 static WORK_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
 
 use crate::asr_client::{self, AsrConfig, AudioInput};
+use crate::audio_split;
 use crate::db::{app_temp_media_dir, kv_get, open_db};
 use crate::error::AppError;
 use crate::secrets;
@@ -45,15 +51,14 @@ pub const PROGRESS_EVENT: &str = "transcribe://progress";
 /// string values without importing Rust types.
 #[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-#[allow(dead_code)] // Split / Clean / Summarize land in upcoming slices.
 pub enum Stage {
     Metadata,       // 0-5
     SubtitleProbe,  // 5-10
     Download,       // 10-40 (or 10-20 on the subtitle path)
-    Split,          // 40-45 (deferred)
+    Split,          // 40-45 (only when audio exceeds provider cap)
     Asr,            // 45-80
-    Clean,          // 80-95 (deferred)
-    Summarize,      // 95-100 (deferred)
+    Clean,          // 80-95
+    Summarize,      // 95-100
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -144,6 +149,13 @@ fn run_pipeline_inner(
     // auto_tag re-classifies source_type from the AI reply. Transcripts
     // always come from video — force the label back regardless of guess.
     enforce_video_source_type(clip_id);
+
+    // ── Stage 8 (optional): 译文 ─────────────────────────────────────────
+    // Reuses the Summarize stage label so we don't have to add a new
+    // variant just for translation. The UI shows the detail string
+    // ("生成译文") which is what users actually read.
+    emit(app, clip_id, Stage::Summarize, 98, Some("生成译文"));
+    run_ai_translate(clip_id);
 
     Ok(source_id)
 }
@@ -281,7 +293,7 @@ fn run_asr_path(
 
     set_status(clip_id, "transcribing", "", None);
     emit(app, clip_id, Stage::Asr, 45, Some("正在转录"));
-    let (transcript, provider_id) = run_asr(&audio_path)?;
+    let (transcript, provider_id) = run_asr(app, clip_id, &audio_path)?;
     emit(
         app,
         clip_id,
@@ -317,6 +329,20 @@ fn run_auto_tag(clip_id: i64) {
     }
 }
 
+/// Optional translation pass. Best-effort like cleanup/auto-tag — if AI
+/// isn't configured or the call fails, the clip keeps its original content
+/// and the UI simply doesn't offer a translation toggle.
+fn run_ai_translate(clip_id: i64) {
+    if let Err(e) = crate::clips::ai_translate_clip_inner(clip_id) {
+        tracing::warn!(
+            target = "transcribe",
+            clip_id,
+            "AI translate skipped: {}",
+            e
+        );
+    }
+}
+
 /// Shared entry point for the LOCAL-FILE ASR pipeline. Used by
 /// `audio::import_audio_file` (podcasts / recordings). Skips all the
 /// network-shaped work of `run_pipeline` (metadata probe, subtitle ladder,
@@ -346,7 +372,7 @@ fn run_audio_pipeline_inner(
     audio_path: &Path,
 ) -> Result<String, AppError> {
     emit(app, clip_id, Stage::Asr, 45, Some("正在转录"));
-    let (transcript, provider_id) = run_asr(audio_path)?;
+    let (transcript, provider_id) = run_asr(app, clip_id, audio_path)?;
     emit(
         app,
         clip_id,
@@ -364,6 +390,9 @@ fn run_audio_pipeline_inner(
     emit(app, clip_id, Stage::Summarize, 96, Some("生成摘要与标签"));
     run_auto_tag(clip_id);
     enforce_audio_source_type(clip_id);
+
+    emit(app, clip_id, Stage::Summarize, 98, Some("生成译文"));
+    run_ai_translate(clip_id);
 
     Ok(provider_id)
 }
@@ -399,29 +428,136 @@ fn enforce_video_source_type(clip_id: i64) {
 // ASR call
 // ---------------------------------------------------------------------------
 
-fn run_asr(path: &Path) -> Result<(String, String), AppError> {
+/// Monotonic counter for unique per-invocation split-dir suffixes. Same
+/// reasoning as `WORK_DIR_SEQ` — a ms timestamp could collide on retry
+/// double-taps and let two `SplitDirGuard`s fight over the same directory.
+static SPLIT_DIR_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// RAII cleanup for a split-audio scratch directory. Separate from
+/// `WorkDirGuard` so `run_asr` works on both branches (URL pipeline with
+/// a pre-existing `work_dir`, and local-audio pipeline without).
+struct SplitDirGuard(std::path::PathBuf);
+
+impl Drop for SplitDirGuard {
+    fn drop(&mut self) {
+        if let Err(e) = std::fs::remove_dir_all(&self.0) {
+            tracing::debug!(
+                target = "transcribe",
+                "split dir cleanup ({:?}) failed: {}",
+                self.0,
+                e
+            );
+        }
+    }
+}
+
+fn run_asr(
+    app: &AppHandle,
+    clip_id: i64,
+    path: &Path,
+) -> Result<(String, String), AppError> {
     let cfg_map = read_asr_config()?;
     let cfg = AsrConfig::from_map(&cfg_map)?;
     let provider = asr_client::build_provider(&cfg)?;
+    let max_bytes = provider.max_file_bytes();
 
     let size = std::fs::metadata(path)
         .map_or(0, |m| usize::try_from(m.len()).unwrap_or(usize::MAX));
-    if size > provider.max_file_bytes() {
-        return Err(AppError::validation(format!(
-            "音频 {:.1} MB，超过 {} 单次上传上限 {:.1} MB。长视频分片将在后续版本接入。",
-            size as f64 / 1_048_576.0,
-            cfg.provider,
-            provider.max_file_bytes() as f64 / 1_048_576.0,
-        )));
+
+    // Fast path: single upload when the audio already fits.
+    if size <= max_bytes {
+        let mime = audio_mime_for_path(path);
+        let audio = AudioInput { path, mime: &mime };
+        let transcript = provider.transcribe(&audio, cfg.language.as_deref())?;
+        return Ok((transcript, provider.provider_id().to_string()));
     }
 
-    let mime = audio_mime_for_path(path);
-    let audio = AudioInput {
-        path,
-        mime: &mime,
-    };
-    let transcript = provider.transcribe(&audio, cfg.language.as_deref())?;
-    Ok((transcript, provider.provider_id().to_string()))
+    // Split path: ffmpeg segments → serial per-chunk ASR → concat.
+    let size_mb = size as f64 / 1_048_576.0;
+    let cap_mb = max_bytes as f64 / 1_048_576.0;
+    emit(
+        app,
+        clip_id,
+        Stage::Split,
+        42,
+        Some(&format!(
+            "音频 {size_mb:.1} MB 超过 {} 单次上限 {cap_mb:.1} MB，自动分片",
+            cfg.provider,
+        )),
+    );
+
+    let chunk_secs = read_asr_chunk_seconds();
+    let seq = SPLIT_DIR_SEQ.fetch_add(1, Ordering::Relaxed);
+    let split_dir = app_temp_media_dir()
+        .map_err(AppError::io)?
+        .join(format!("asr_split_{clip_id}_{seq}"));
+    std::fs::create_dir_all(&split_dir)
+        .map_err(|e| AppError::io(format!("创建分片目录失败: {e}")))?;
+    let _cleanup = SplitDirGuard(split_dir.clone());
+
+    let segments = audio_split::split_audio_by_duration(app, path, chunk_secs, &split_dir)?;
+    let total = segments.len();
+    emit(
+        app,
+        clip_id,
+        Stage::Split,
+        45,
+        Some(&format!("分片 {total} 段 · 每段约 {chunk_secs}s")),
+    );
+
+    let mut transcripts: Vec<String> = Vec::with_capacity(total);
+    for seg in &segments {
+        // Defensive cap check — ffmpeg produced the chunks so they should
+        // fit, but bitrate anomalies (e.g. VBR spike from music content)
+        // could in theory push one over. Surface a clear error rather
+        // than letting the provider reject with a generic 413.
+        let seg_size = std::fs::metadata(&seg.path)
+            .map_or(0, |m| usize::try_from(m.len()).unwrap_or(usize::MAX));
+        if seg_size > max_bytes {
+            return Err(AppError::validation(format!(
+                "分片 {}/{} 仍超过上传上限，请减小分片时长后重试",
+                seg.index + 1,
+                total,
+            )));
+        }
+
+        let mime = audio_mime_for_path(&seg.path);
+        let audio = AudioInput {
+            path: &seg.path,
+            mime: &mime,
+        };
+        let text = provider
+            .transcribe(&audio, cfg.language.as_deref())
+            .map_err(|e| {
+                AppError::io(format!(
+                    "分片 {}/{} 转录失败: {}",
+                    seg.index + 1,
+                    total,
+                    e.message
+                ))
+            })?;
+        transcripts.push(text);
+
+        // Interpolate within the Asr range (45-80) so the UI reflects
+        // per-chunk progress instead of jumping 45 → 80 on the last one.
+        let done = seg.index + 1;
+        let pct = 45u32
+            + u32::try_from(((35_f64 * done as f64) / total as f64).round() as i64)
+                .unwrap_or(35)
+                .min(35);
+        emit(
+            app,
+            clip_id,
+            Stage::Asr,
+            pct,
+            Some(&format!("转录 {done}/{total}")),
+        );
+    }
+
+    // Blank-line join preserves rough segment boundaries in the raw
+    // transcript — the AI cleanup stage later reflows into proper prose.
+    let joined = transcripts.join("\n\n");
+    Ok((joined, provider.provider_id().to_string()))
 }
 
 fn audio_mime_for_path(path: &Path) -> String {
@@ -580,6 +716,20 @@ pub struct AsrProviderState {
     pub key_hint: String,
 }
 
+/// Default chunk length when splitting long audio. 300s = 5 minutes, which
+/// at mono/16kHz/64kbps mp3 is ≈ 2.4 MB per chunk — well under every
+/// provider's single-upload cap while keeping total chunk count reasonable
+/// for a 1-hour podcast (~12 chunks).
+pub const DEFAULT_ASR_CHUNK_SECONDS: u32 = 300;
+/// Minimum allowed chunk length. Below 60s the overhead of per-chunk ASR
+/// requests starts to dominate; also some providers enforce a minimum
+/// audio length.
+const MIN_ASR_CHUNK_SECONDS: u32 = 60;
+/// Maximum allowed chunk length. 900s at 64 kbps mp3 ≈ 7.2 MB, still well
+/// under Whisper's 24.75 MB ceiling. We cap here so a mistyped value can't
+/// inadvertently push a chunk over the provider limit.
+const MAX_ASR_CHUNK_SECONDS: u32 = 900;
+
 #[derive(Serialize, Debug, Default)]
 pub struct AsrFullConfig {
     /// The currently active provider id (`""` if none picked yet).
@@ -589,6 +739,10 @@ pub struct AsrFullConfig {
     pub asr_api_base: String,
     /// Mirrors `providers[asr_provider].model` for the active edit form.
     pub asr_model: String,
+    /// Auto-split threshold and segment length for long-audio ASR. Shared
+    /// across providers (the per-provider upload cap is a property of the
+    /// provider itself and doesn't belong in user-editable config).
+    pub asr_chunk_seconds: u32,
     pub providers: BTreeMap<String, AsrProviderState>,
 }
 
@@ -611,6 +765,8 @@ pub struct AsrSetCfg {
     pub asr_api_base: Option<String>,
     #[serde(default)]
     pub asr_model: Option<String>,
+    #[serde(default)]
+    pub asr_chunk_seconds: Option<u32>,
 }
 
 /// Build the flat `HashMap<String, String>` that `AsrConfig::from_map`
@@ -650,6 +806,22 @@ fn read_asr_config() -> Result<HashMap<String, String>, AppError> {
         out.insert("asr_language".into(), lang);
     }
     Ok(out)
+}
+
+/// Read the user-configured chunk length for long-audio auto-split.
+/// Falls back to `DEFAULT_ASR_CHUNK_SECONDS` if unset or out of range.
+/// Kept as its own helper so `run_asr` can call it without touching the
+/// provider-facing `HashMap` that `read_asr_config` returns.
+fn read_asr_chunk_seconds() -> u32 {
+    let Ok(conn) = open_db() else {
+        return DEFAULT_ASR_CHUNK_SECONDS;
+    };
+    kv_get(&conn, "asr_chunk_seconds")
+        .ok()
+        .flatten()
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| (MIN_ASR_CHUNK_SECONDS..=MAX_ASR_CHUNK_SECONDS).contains(n))
+        .unwrap_or(DEFAULT_ASR_CHUNK_SECONDS)
 }
 
 /// Write status + optional source. Swallows DB errors (logged) so a failing
@@ -840,11 +1012,16 @@ pub fn get_asr_config() -> Result<AsrFullConfig, String> {
     }
 
     let active_state = providers.get(&active).cloned().unwrap_or_default();
+    let chunk_seconds = kv_get(&conn, "asr_chunk_seconds")?
+        .and_then(|v| v.parse::<u32>().ok())
+        .filter(|n| (MIN_ASR_CHUNK_SECONDS..=MAX_ASR_CHUNK_SECONDS).contains(n))
+        .unwrap_or(DEFAULT_ASR_CHUNK_SECONDS);
     Ok(AsrFullConfig {
         asr_provider: active,
         asr_language: language,
         asr_api_base: active_state.api_base,
         asr_model: active_state.model,
+        asr_chunk_seconds: chunk_seconds,
         providers,
     })
 }
@@ -880,6 +1057,15 @@ pub fn set_asr_config(cfg: AsrSetCfg) -> Result<(), String> {
     }
     if let Some(lang) = cfg.asr_language.as_ref() {
         set_kv_entry(&conn, "asr_language", lang.trim()).map_err(|e| e.to_string())?;
+    }
+    if let Some(secs) = cfg.asr_chunk_seconds {
+        if !(MIN_ASR_CHUNK_SECONDS..=MAX_ASR_CHUNK_SECONDS).contains(&secs) {
+            return Err(format!(
+                "分片时长必须在 {MIN_ASR_CHUNK_SECONDS} 到 {MAX_ASR_CHUNK_SECONDS} 秒之间"
+            ));
+        }
+        set_kv_entry(&conn, "asr_chunk_seconds", &secs.to_string())
+            .map_err(|e| e.to_string())?;
     }
 
     // 2. Per-provider writes need a target. Prefer the freshly-set

@@ -91,6 +91,14 @@ pub struct WebClip {
     /// Video duration in seconds; 0 for non-video clips.
     #[serde(default)]
     pub audio_duration_sec: i64,
+    /// ISO 639-1 language code detected by the translation stage (e.g. "en",
+    /// "ja"). Empty if translation hasn't run or AI isn't configured.
+    #[serde(default)]
+    pub source_language: String,
+    /// Chinese Markdown translation of `content`. Empty when the source is
+    /// already Chinese (AI short-circuits) or translation hasn't run yet.
+    #[serde(default)]
+    pub translated_content: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -143,6 +151,12 @@ pub(crate) fn row_to_clip(row: &rusqlite::Row) -> rusqlite::Result<WebClip> {
             .unwrap_or_default(),
         audio_duration_sec: row
             .get::<_, i64>("audio_duration_sec")
+            .unwrap_or_default(),
+        source_language: row
+            .get::<_, String>("source_language")
+            .unwrap_or_default(),
+        translated_content: row
+            .get::<_, String>("translated_content")
             .unwrap_or_default(),
     })
 }
@@ -966,6 +980,135 @@ pub(crate) fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn ai_auto_tag_clip(id: i64) -> Result<(), String> {
     auto_tag_clip_inner(id)
+}
+
+/// Character budget for the translation prompt. Reuses the 24K ceiling from
+/// `ai_clean_clip_inner` — translation doesn't need more context than
+/// cleanup, and a shared budget keeps token costs predictable.
+const AI_TRANSLATE_INPUT_CHARS: usize = 24_000;
+
+/// Target language for translation. Hard-coded to Simplified Chinese: the
+/// app's UI is Chinese and the rollout goal is "English / Japanese videos
+/// get a Chinese subtitle alongside the original". A future `ui_language`
+/// preference could generalize this, but adding one now would be YAGNI.
+const TRANSLATION_TARGET_LANG: &str = "zh";
+
+/// Minimum source length (chars) below which translation is skipped. Short
+/// headers like "Introduction" or "Chapter 1" add no value translated and
+/// just burn tokens. Picked at 50 to comfortably filter page breadcrumbs.
+const TRANSLATE_MIN_CHARS: usize = 50;
+
+/// Stage 4 (optional) of the clip pipeline: produce a Simplified Chinese
+/// translation of the cleaned Markdown `content` when the source language
+/// isn't already Chinese. Runs after auto-tag so it:
+///   - has access to the AI-cleaned content (not raw scraper dump)
+///   - doesn't delay the core "clip is ready" signal to the UI
+///
+/// Best-effort: any failure (AI unconfigured, rate-limit, parse error)
+/// leaves the clip untouched. The UI only renders a "译文" toggle when
+/// `translated_content` is non-empty, so a failed translation simply
+/// hides the affordance — no error surface the user has to deal with.
+pub(crate) fn ai_translate_clip_inner(clip_id: i64) -> Result<(), String> {
+    let conn = open_db()?;
+    let content: String = conn
+        .query_row(
+            "SELECT content FROM web_clips WHERE id = ?1",
+            [clip_id],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+
+    if content.trim().chars().count() < TRANSLATE_MIN_CHARS {
+        return Ok(());
+    }
+
+    let cfg = crate::db::read_ai_config(&conn)?;
+    let config = match AiClientConfig::from_map(&cfg) {
+        Ok(c) => c,
+        Err(_) => return Ok(()), // No AI configured; skip silently
+    };
+
+    let truncated: String = content.chars().take(AI_TRANSLATE_INPUT_CHARS).collect();
+
+    // Single prompt does both jobs: language detection + translation.
+    // The short-circuit rule (empty translation when already zh) avoids a
+    // second round trip AND lets the model skip generating a redundant
+    // copy of Chinese content.
+    let system = r#"你是一个专业的字幕/文档译员。输入是一段 Markdown 文本。请判断其源语言，并在源语言不是简体中文时将其完整翻译为简体中文。
+
+【输出格式】严格 JSON 对象，不要任何额外文字、不要 code fence：
+{"source_language":"<ISO 639-1>","translation":"<简体中文 markdown>"}
+
+【翻译要求】
+- 直译，不要意译、不要添加解释或注释
+- 保留原文分段、Markdown 标题/列表/代码块等结构
+- 专有名词、代码、函数名、产品名保留英文原文
+- 语气立场与原作者保持一致
+
+【短路规则】
+- 如果 source_language 是 zh（简体中文），将 translation 字段设为空字符串 ""，不要重复原文
+- source_language 用 ISO 639-1 小写代码（如 "en" / "ja" / "ko" / "fr" / "zh"），无法判断时填 "und""#;
+
+    let messages = vec![
+        serde_json::json!({"role": "system", "content": system}),
+        serde_json::json!({"role": "user", "content": truncated}),
+    ];
+
+    let reply = ai_client::chat(&config, messages, 0.2).map_err(String::from)?;
+    let json_str = crate::ai::extract_json(&reply).unwrap_or(reply);
+    let parsed: serde_json::Value = serde_json::from_str(&json_str)
+        .map_err(|e| format!("AI 翻译返回非 JSON: {e}"))?;
+
+    // Untrusted-output hygiene: hard cap every string the AI gave us.
+    const MAX_LANG_CHARS: usize = 10;
+    let source_language: String = parsed["source_language"]
+        .as_str()
+        .unwrap_or("")
+        .trim()
+        .to_lowercase()
+        .chars()
+        .take(MAX_LANG_CHARS)
+        .collect();
+
+    let translation_raw = parsed["translation"].as_str().unwrap_or("");
+    // Force empty when the source is already Chinese: even if the model
+    // ignored the short-circuit rule and echoed back the content, we
+    // don't want a redundant copy in `translated_content` — the UI's
+    // toggle would then falsely promise a translation that's actually
+    // identical to the original.
+    let translated_content: String = if source_language == TRANSLATION_TARGET_LANG {
+        String::new()
+    } else {
+        translation_raw.chars().take(MAX_CONTENT_LEN).collect()
+    };
+
+    conn.execute(
+        "UPDATE web_clips SET source_language = ?1, translated_content = ?2,
+           updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id = ?3",
+        rusqlite::params![source_language, translated_content, clip_id],
+    )
+    .map_err(|e| e.to_string())?;
+
+    tracing::info!(
+        "Translated clip {} ({} → zh, {} chars)",
+        clip_id,
+        if source_language.is_empty() {
+            "?"
+        } else {
+            source_language.as_str()
+        },
+        translated_content.chars().count()
+    );
+    Ok(())
+}
+
+/// Manually trigger AI translation for a clip. Useful for retrying after
+/// an AI config fix, or back-filling clips imported before this feature
+/// existed.
+#[tauri::command]
+pub fn ai_translate_clip(id: i64) -> Result<(), String> {
+    ai_translate_clip_inner(id)
 }
 
 /// Batch re-tag all clips that have no summary yet.

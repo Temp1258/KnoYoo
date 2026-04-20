@@ -106,11 +106,25 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
     return saved ? Number(saved) : DEFAULT_FONT_SIZE;
   });
 
-  // Content view toggle: readable (AI-cleaned content) vs. raw dump. Raw is
-  // hidden for clips that predate the 3-stage pipeline (empty raw_content).
-  const [viewMode, setViewMode] = useState<"readable" | "raw">("readable");
+  // Content view toggle: readable (AI-cleaned) / raw dump / translated
+  // (AI-produced Chinese Markdown). Each mode is hidden when the backing
+  // field is empty, so the toggle only offers what actually exists.
+  //
+  // Per-clip state reset is handled by the parent passing `key={clip.id}`
+  // (see ClipsPage) — a new clip remounts the component, so useState's
+  // initializer picks the right default without needing an effect.
   const hasRaw = !!clip.raw_content;
-  const displayedContent = viewMode === "raw" && hasRaw ? clip.raw_content : clip.content;
+  const hasTranslated = !!clip.translated_content;
+  const [viewMode, setViewMode] = useState<"readable" | "raw" | "translated">(
+    hasTranslated ? "translated" : "readable",
+  );
+
+  const displayedContent =
+    viewMode === "raw" && hasRaw
+      ? clip.raw_content
+      : viewMode === "translated" && hasTranslated
+        ? (clip.translated_content ?? "")
+        : clip.content;
 
   // TOC
   const [tocExpanded, setTocExpanded] = useState(false);
@@ -701,8 +715,10 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
         </div>
       )}
 
-      {/* Content view toggle (only visible when we have a raw dump) */}
-      {hasRaw && (
+      {/* Content view toggle. Shown whenever any alternate view exists —
+          raw dump (clips from the 3-stage pipeline) or translation
+          (non-Chinese clips that the AI translate stage processed). */}
+      {(hasRaw || hasTranslated) && (
         <div className="flex items-center gap-1 mb-3 text-[12px]">
           <button
             onClick={() => setViewMode("readable")}
@@ -714,17 +730,37 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
           >
             可读版
           </button>
-          <button
-            onClick={() => setViewMode("raw")}
-            className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
-              viewMode === "raw"
-                ? "bg-accent/10 text-accent font-medium"
-                : "text-text-tertiary hover:text-text"
-            }`}
-            title="未经 AI 清洗的原始抓取文本"
-          >
-            原始
-          </button>
+          {hasRaw && (
+            <button
+              onClick={() => setViewMode("raw")}
+              className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                viewMode === "raw"
+                  ? "bg-accent/10 text-accent font-medium"
+                  : "text-text-tertiary hover:text-text"
+              }`}
+              title="未经 AI 清洗的原始抓取文本"
+            >
+              原始
+            </button>
+          )}
+          {hasTranslated && (
+            <button
+              onClick={() => setViewMode("translated")}
+              className={`px-2.5 py-1 rounded-md transition-colors cursor-pointer ${
+                viewMode === "translated"
+                  ? "bg-accent/10 text-accent font-medium"
+                  : "text-text-tertiary hover:text-text"
+              }`}
+              title={`AI 翻译 · 源语言 ${clip.source_language?.toUpperCase() || "未知"}`}
+            >
+              中文译文
+              {clip.source_language && clip.source_language !== "zh" && (
+                <span className="ml-1 text-[10px] opacity-70 font-mono">
+                  {clip.source_language.toUpperCase()}
+                </span>
+              )}
+            </button>
+          )}
           {!clip.summary && (
             <span className="ml-2 text-[11px] text-text-tertiary italic">AI 正在清洗和总结…</span>
           )}

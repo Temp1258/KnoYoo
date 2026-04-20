@@ -4,6 +4,7 @@ mod ai;
 mod ai_client;
 mod asr_client;
 mod audio;
+mod audio_split;
 mod bilibili;
 mod books;
 mod clip_server;
@@ -228,6 +229,7 @@ fn main() {
             clips::count_pending_clips,
             clips::list_clip_tags,
             clips::ai_auto_tag_clip,
+            clips::ai_translate_clip,
             clips::ai_batch_retag_clips,
             clips::check_clip_exists,
             clips::find_similar_clips,

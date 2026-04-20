@@ -80,6 +80,12 @@ export type WebClip = {
   transcription_source?: string;
   /** Video duration in seconds; 0 for non-video clips. */
   audio_duration_sec?: number;
+  /** ISO 639-1 code detected by the translation stage (`en`, `ja`, …).
+   *  Empty when translation hasn't run or AI isn't configured. */
+  source_language?: string;
+  /** Chinese Markdown translation of `content`. Empty when the source is
+   *  already Chinese or translation hasn't run. */
+  translated_content?: string;
 };
 
 // ── Video transcription ────────────────────────────────────────────────────
@@ -122,6 +128,9 @@ export type AsrFullConfig = {
   asr_language: string;
   asr_api_base: string;
   asr_model: string;
+  /** Segment length (seconds) used when auto-splitting audio that exceeds
+   *  a provider's single-upload cap. Shared across providers; default 300. */
+  asr_chunk_seconds: number;
   providers: Record<string, AsrProviderState>;
 };
 
@@ -135,6 +144,7 @@ export type AsrSetConfig = {
   asr_api_key?: string;
   asr_api_base?: string;
   asr_model?: string;
+  asr_chunk_seconds?: number;
 };
 
 export type ClipNote = {

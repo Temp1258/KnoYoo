@@ -351,6 +351,10 @@ function ProviderEditor({ provider, ai, asr }: EditorProps) {
   const [newKey, setNewKey] = useState("");
   // Unified language (only relevant when ASR role is present).
   const [language, setLanguage] = useState(asr.asrCfg.asr_language);
+  // Auto-split chunk length for long-audio transcription. Shared across
+  // all ASR providers — shown here for convenience (alongside language)
+  // since this is where the user configures ASR behaviour.
+  const [chunkSeconds, setChunkSeconds] = useState(asr.asrCfg.asr_chunk_seconds);
   // For Ollama only.
   const [model, setModel] = useState(
     provider.ai ? ai.stateFor(provider.ai.providerKey).model || provider.ai.model : "",
@@ -383,13 +387,19 @@ function ProviderEditor({ provider, ai, asr }: EditorProps) {
   useEffect(() => {
     const id = requestAnimationFrame(() => {
       setLanguage(asr.asrCfg.asr_language);
+      setChunkSeconds(asr.asrCfg.asr_chunk_seconds);
       if (provider.ai) {
         setModel(ai.stateFor(provider.ai.providerKey).model || provider.ai.model);
       }
     });
     return () => cancelAnimationFrame(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [asr.asrCfg.asr_language, aiState?.configured, asrState?.configured]);
+  }, [
+    asr.asrCfg.asr_language,
+    asr.asrCfg.asr_chunk_seconds,
+    aiState?.configured,
+    asrState?.configured,
+  ]);
 
   // Ollama local-model discovery.
   const [ollama, setOllama] = useState<OllamaStatus | null>(null);
@@ -434,11 +444,15 @@ function ProviderEditor({ provider, ai, asr }: EditorProps) {
         await ai.saveConfig(payload);
       }
       if (provider.asr) {
+        // Clamp client-side so a typo can't push past the backend's
+        // 60–900s validation and surface as a cryptic error toast.
+        const clampedChunk = Math.max(60, Math.min(900, Math.round(chunkSeconds) || 300));
         const payload: Parameters<typeof asr.saveConfig>[0] = {
           asr_provider: provider.asr.providerKey,
           asr_language: language,
           asr_api_base: provider.asr.api_base,
           asr_model: provider.asr.model,
+          asr_chunk_seconds: clampedChunk,
         };
         if (newKey.trim()) payload.asr_api_key = newKey.trim();
         await asr.saveConfig(payload);
@@ -622,7 +636,10 @@ function ProviderEditor({ provider, ai, asr }: EditorProps) {
         />
       )}
 
-      {/* ASR language picker (only shown if provider has ASR role) */}
+      {/* ASR language + long-audio chunk length (only shown if provider
+          has ASR role). Both fields are global across providers — we
+          surface them here so the user doesn't have to hunt in a
+          separate settings section. */}
       {provider.asr && (
         <div className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-2 items-center text-[13px]">
           <span className="text-text-secondary">转录语言</span>
@@ -637,6 +654,22 @@ function ProviderEditor({ provider, ai, asr }: EditorProps) {
             <option value="ja">日本語</option>
             <option value="ko">한국어</option>
           </select>
+
+          <span className="text-text-secondary">分片时长</span>
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              min={60}
+              max={900}
+              step={30}
+              value={chunkSeconds}
+              onChange={(e) => setChunkSeconds(Number(e.target.value))}
+              className="w-28 font-mono"
+            />
+            <span className="text-[11px] text-text-tertiary">
+              秒 · 超过此时长的音频自动分片转录（60–900）
+            </span>
+          </div>
         </div>
       )}
 

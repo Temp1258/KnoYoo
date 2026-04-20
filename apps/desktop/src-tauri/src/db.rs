@@ -174,6 +174,30 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         [],
     )
     .ok();
+
+    // Migration: bilingual subtitles. For clips whose source language isn't
+    // the user's (zh), we run an extra AI pass after auto-tag to produce a
+    // Chinese translation of the cleaned Markdown content.
+    //
+    // - source_language: ISO 639-1 the AI detected from `content` (e.g. "en",
+    //   "ja"). Empty when the translate stage hasn't run or AI isn't configured.
+    // - translated_content: Chinese Markdown. Empty when source_language is
+    //   already "zh" (AI returns empty translation to avoid wasted tokens).
+    //
+    // Not added to the FTS trigger — searching both the English original and
+    // the Chinese translation would produce duplicated hits for the same
+    // clip. The `content` field alone stays the canonical searchable text.
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN source_language TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
+    conn.execute(
+        "ALTER TABLE web_clips ADD COLUMN translated_content TEXT NOT NULL DEFAULT ''",
+        [],
+    )
+    .ok();
+
     // Partial index: only rows actively in the pipeline. Keeps the index tiny
     // (completed/empty rows dominate the table) while making startup self-heal
     // (`resume_pending_transcription`) an O(log n) lookup.

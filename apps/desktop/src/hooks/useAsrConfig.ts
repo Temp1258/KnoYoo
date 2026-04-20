@@ -14,6 +14,7 @@ const EMPTY_CFG: AsrFullConfig = {
   asr_language: "",
   asr_api_base: "",
   asr_model: "",
+  asr_chunk_seconds: 300,
   providers: {},
 };
 
