@@ -259,9 +259,13 @@ export default function ChatDrawer() {
         <div className="fixed inset-0 z-40 bg-black/20" onClick={() => setChatOpen(false)} />
       )}
 
-      {/* Drawer */}
+      {/* Drawer — full-width on narrow windows, fixed 380px on ≥ md (768px).
+          On MacBook Air 13" (1280px) the 380px side panel leaves comfortable
+          main-content width; on an iPad Slide Over or a resized Tauri window
+          that drops below 768px, the drawer takes over the viewport so the
+          message list stays legible. */}
       <div
-        className={`fixed top-0 right-0 h-full w-[380px] bg-bg-secondary border-l border-border shadow-lg z-50 flex flex-col transition-transform duration-300 ${
+        className={`fixed top-0 right-0 h-full w-full md:w-[380px] bg-bg-secondary border-l border-border shadow-lg z-50 flex flex-col transition-transform duration-300 ${
           chatOpen ? "translate-x-0" : "translate-x-full"
         }`}
       >
