@@ -86,7 +86,8 @@
       "Read(//tmp/**)",
       "Bash(bash *)",
       "Bash(sed 's/YT_DLP_MACOS_SHA256=\"bd9bbe.*\"/YT_DLP_MACOS_SHA256=\"0000000000000000000000000000000000000000000000000000000000000000\"/' scripts/fetch-sidecars.sh)",
-      "Bash(git config *)"
+      "Bash(git config *)",
+      "Bash(xargs -n1 basename)"
     ]
   }
 }
