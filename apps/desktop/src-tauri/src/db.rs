@@ -90,18 +90,6 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         VALUES (new.id, new.title, new.content, new.summary, new.tags);
     END;
 
-    -- Weekly reports
-    CREATE TABLE IF NOT EXISTS weekly_reports (
-      id          INTEGER PRIMARY KEY AUTOINCREMENT,
-      week_start  TEXT NOT NULL UNIQUE,
-      week_end    TEXT NOT NULL,
-      clip_count  INTEGER NOT NULL DEFAULT 0,
-      top_tags    TEXT NOT NULL DEFAULT '[]',
-      top_domains TEXT NOT NULL DEFAULT '[]',
-      ai_summary  TEXT NOT NULL DEFAULT '',
-      created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-    );
-
     -- User notes attached to clips (1:1 relationship)
     CREATE TABLE IF NOT EXISTS clip_notes (
       id          INTEGER PRIMARY KEY AUTOINCREMENT,

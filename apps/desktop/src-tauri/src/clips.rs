@@ -1159,51 +1159,6 @@ pub fn check_clip_exists(url: String) -> Result<Option<WebClip>, String> {
     }
 }
 
-/// Find similar clips by matching title keywords.
-/// Returns clips whose titles share significant words with the given title.
-#[tauri::command]
-pub fn find_similar_clips(title: String, exclude_id: Option<i64>) -> Result<Vec<WebClip>, String> {
-    let conn = open_db()?;
-
-    // Extract keywords (2+ chars, including CJK characters)
-    let keywords: Vec<&str> = title
-        .split(|c: char| !c.is_alphanumeric() && !('\u{4e00}'..='\u{9fff}').contains(&c))
-        .filter(|w| w.chars().count() >= 2)
-        .take(5)
-        .collect();
-
-    if keywords.is_empty() {
-        return Ok(vec![]);
-    }
-
-    // Build FTS query from keywords
-    let fts_q = keywords
-        .iter()
-        .map(|w| format!("\"{}\"", w.replace('"', "")))
-        .collect::<Vec<_>>()
-        .join(" OR ");
-
-    let exclude = exclude_id.unwrap_or(-1);
-    let mut stmt = conn
-        .prepare(
-            "SELECT c.* FROM web_clips c
-             JOIN web_clips_fts f ON c.id = f.rowid
-             WHERE web_clips_fts MATCH ?1 AND c.id != ?2 AND c.deleted_at IS NULL
-             ORDER BY rank LIMIT 5",
-        )
-        .map_err(|e| e.to_string())?;
-
-    let rows = stmt
-        .query_map(rusqlite::params![fts_q, exclude], row_to_clip)
-        .map_err(|e| e.to_string())?;
-
-    let mut out = Vec::new();
-    for r in rows {
-        out.push(r.map_err(|e| e.to_string())?);
-    }
-    Ok(out)
-}
-
 // ── Smart Search (Phase 3) ────────────────────────────────────────────────
 
 /// AI fuzzy search: user describes what they remember, AI finds matching clips.

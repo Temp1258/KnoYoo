@@ -444,20 +444,6 @@ fn find_balanced_json(s: &str) -> Option<String> {
     None
 }
 
-#[tauri::command]
-pub fn ai_chat(messages: Vec<ChatMessage>) -> Result<String, String> {
-    tracing::info!("AI chat: {} messages", messages.len());
-    let cfg = read_raw_config()?;
-    let config = AiClientConfig::from_map(&cfg).map_err(String::from)?;
-
-    let msg_values: Vec<serde_json::Value> = messages
-        .into_iter()
-        .map(|m| serde_json::json!({"role": m.role, "content": m.content}))
-        .collect();
-
-    ai_client::chat(&config, msg_values, 0.2).map_err(String::from)
-}
-
 /// AI chat response with referenced clip IDs for attribution.
 #[derive(Debug, Serialize)]
 pub struct AiChatResponse {
@@ -608,91 +594,6 @@ pub fn detect_ollama() -> OllamaStatus {
     }
 }
 
-/// Auto-configure Ollama as the AI provider.
-#[tauri::command]
-pub fn auto_configure_ollama(model: String) -> Result<(), String> {
-    let mut conn = open_db()?;
-    let tx = conn.transaction().map_err(|e| e.to_string())?;
-    let pairs = [
-        ("provider", "ollama"),
-        ("api_base", "http://localhost:11434"),
-        ("api_key", "ollama"),
-    ];
-    for (k, v) in pairs {
-        tx.execute(
-            "INSERT INTO app_kv(key, val) VALUES(?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET val=excluded.val",
-            rusqlite::params![k, v],
-        )
-        .map_err(|e| e.to_string())?;
-    }
-    tx.execute(
-        "INSERT INTO app_kv(key, val) VALUES('model', ?1)
-         ON CONFLICT(key) DO UPDATE SET val=excluded.val",
-        rusqlite::params![model],
-    )
-    .map_err(|e| e.to_string())?;
-    tx.commit().map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-// ── Proactive Suggestions ────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct AiSuggestion {
-    pub suggestion_type: String,
-    pub title: String,
-    pub description: String,
-}
-
-/// Rule-based suggestions (no AI call needed).
-#[tauri::command]
-pub fn ai_suggest_actions() -> Result<Vec<AiSuggestion>, String> {
-    let conn = open_db()?;
-    let mut suggestions = Vec::new();
-
-    // Check unread pile-up
-    let unread_count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM web_clips WHERE is_read = 0 AND deleted_at IS NULL", [], |r| r.get(0))
-        .map_err(|e| e.to_string())?;
-    if unread_count >= 10 {
-        suggestions.push(AiSuggestion {
-            suggestion_type: "review_clips".to_string(),
-            title: format!("你有 {unread_count} 条未读收藏"),
-            description: "找时间回顾一下最近收藏的内容".to_string(),
-        });
-    }
-
-    // Surface tags the user has been stacking up on — companions to the
-    // tag_depth milestone ladder. Suggestion type is `focus_tag`; no command
-    // dispatch on the frontend, it's pure display.
-    let mut stmt = conn
-        .prepare("SELECT tags FROM web_clips WHERE tags != '[]' AND deleted_at IS NULL")
-        .map_err(|e| e.to_string())?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0)).map_err(|e| e.to_string())?;
-    let mut tag_counts: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
-    for r in rows {
-        let json_str = r.map_err(|e| e.to_string())?;
-        if let Ok(tags) = serde_json::from_str::<Vec<String>>(&json_str) {
-            for t in tags {
-                *tag_counts.entry(t).or_insert(0) += 1;
-            }
-        }
-    }
-    for (tag, count) in &tag_counts {
-        if *count >= 5 {
-            suggestions.push(AiSuggestion {
-                suggestion_type: "focus_tag".to_string(),
-                title: format!("你在「{tag}」上积累了 {count} 条"),
-                description: "继续收藏会触发更高阶的话题深度里程碑".to_string(),
-            });
-        }
-    }
-
-    // Limit to 3 suggestions
-    suggestions.truncate(3);
-    Ok(suggestions)
-}
 
 #[cfg(test)]
 mod tests {

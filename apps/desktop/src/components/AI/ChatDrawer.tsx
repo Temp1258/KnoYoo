@@ -3,7 +3,6 @@ import {
   MessageCircle,
   X,
   Send,
-  Lightbulb,
   RotateCcw,
   Plus,
   ChevronDown,
@@ -14,12 +13,6 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
 import type { ChatMessage, AiChatResponse, ChatSession, WebClip } from "../../types";
-
-type Suggestion = {
-  suggestion_type: string;
-  title: string;
-  description: string;
-};
 
 type ReferencedClips = Record<number, { id: number; title: string }>;
 
@@ -44,7 +37,6 @@ export default function ChatDrawer() {
   const [chatMsgs, setChatMsgs] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState("");
   const [sending, setSending] = useState(false);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
 
   // Chat session state
   const [sessions, setSessions] = useState<ChatSession[]>([]);
@@ -74,14 +66,11 @@ export default function ChatDrawer() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, [showSessionList]);
 
-  // Load sessions and suggestions on drawer open
+  // Load sessions on drawer open
   useEffect(() => {
     if (!chatOpen) return;
     tauriInvoke<ChatSession[]>("list_chat_sessions").then(setSessions).catch(console.error);
-    if (chatMsgs.length === 0) {
-      tauriInvoke<Suggestion[]>("ai_suggest_actions").then(setSuggestions).catch(console.error);
-    }
-  }, [chatOpen, chatMsgs.length]);
+  }, [chatOpen]);
 
   // Fetch clip details for referenced IDs
   const fetchClipDetails = useCallback(
@@ -338,26 +327,9 @@ export default function ChatDrawer() {
         <div className="flex-1 overflow-y-auto px-4 py-3 space-y-3">
           {chatMsgs.length === 0 && (
             <div className="text-center py-6">
-              <div className="text-[13px] text-text-tertiary mb-4">
+              <div className="text-[13px] text-text-tertiary">
                 向 AI 助手提问，它会优先基于你的智库内容回答
               </div>
-              {suggestions.length > 0 && (
-                <div className="space-y-2">
-                  {suggestions.map((s, i) => (
-                    <button
-                      key={i}
-                      onClick={() => setChatInput(s.title)}
-                      className="w-full text-left p-2.5 rounded-lg bg-yellow-500/5 border border-yellow-500/10 hover:border-yellow-500/20 transition-colors cursor-pointer"
-                    >
-                      <div className="flex items-center gap-1.5 text-[12px] font-medium text-yellow-600">
-                        <Lightbulb size={12} />
-                        {s.title}
-                      </div>
-                      <div className="text-[11px] text-text-tertiary mt-0.5">{s.description}</div>
-                    </button>
-                  ))}
-                </div>
-              )}
             </div>
           )}
 
