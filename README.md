@@ -57,7 +57,7 @@
 ### 知识生长可视化
 
 - **发现页**：标签词云 / 来源 Top5 / 28 天趋势 / AI 周报 / 遗忘内容提醒
-- **成就页**：四类里程碑按 kind 分组陈列（收藏量 / 连续输入 / 话题深度 / 阅读完成），斐波那契阶梯让每一步积累都被看见
+- **成就橱窗**：四类里程碑按 kind 分组陈列在发现页底部（收藏量 / 连续输入 / 话题深度 / 阅读完成），斐波那契阶梯让每一步积累都被看见
 - **里程碑横幅**：新成就达成时在发现页顶部浮现，用户确认后归档
 - **书架**：想读 / 正在读 / 已读 / 弃读分组，阅读进度与评分
 
@@ -87,7 +87,7 @@
 │  │  React 19 + Router 7     │  │  浮窗 · 透明 · 置顶    │  │
 │  │  HomePage / ClipsPage    │  │  Cmd+Shift+K 触发      │  │
 │  │  BooksPage / MediaPage   │  │  共享同一 bundle       │  │
-│  │  AchievementsPage / ...  │  │  (按 window label 分流)│  │
+│  │  DiscoverPage / ...      │  │  (按 window label 分流)│  │
 │  └────────────────┬─────────┘  └──────────┬─────────────┘  │
 │                   │ Tauri invoke          │                │
 │                   ▼                       ▼                │
@@ -177,8 +177,7 @@ pages/
 ├── ClipsPage.tsx           # 智库（article + 在线视频）
 ├── BooksPage.tsx           # 书籍 + 拖入 + 轮询 AI 状态
 ├── MediaPage.tsx           # 影音（本地音频 + 本地视频）
-├── DiscoverPage.tsx        # 发现页 + 周报 + 里程碑横幅
-├── AchievementsPage.tsx    # 成就陈列墙
+├── DiscoverPage.tsx        # 发现页 + 周报 + 里程碑横幅 + 成就橱窗
 ├── SettingsPage.tsx        # AI / 主题 / 快捷键 / 数据 / 导入
 └── TrashPage.tsx           # 乐色（剪藏 + 图书两个 tab）
 
@@ -214,7 +213,6 @@ utils/url.ts                # isSafeUrl / formatClipDomain
 | `clip_notes` | 用户笔记（1:1 关联 clip） |
 | `milestones` | 里程碑记录（kind + value + meta_json + acknowledged） |
 | `chat_sessions` | AI 对话历史（持久化） |
-| `weekly_reports` | 周报缓存 |
 | `app_kv` | 应用配置（AI 供应商选择、server token、主题、快捷键、里程碑 backfill 标志等） |
 
 > Collections 表已在 v2.0.4 移除。原集合分组功能被主页 + QuickSearch + 新影音页替代；老用户数据库升级时会自动执行 `DROP TABLE IF EXISTS`。
@@ -321,8 +319,7 @@ pnpm build
 - 各页顶部搜索框：限定该页类型
 - 无结果 → 自动切换到 AI 语义搜索
 - 左侧导航：主页 / 智库 / 书籍 / 影音 / 发现 / 成就 / 乐色 / 设置
-- 发现页看标签云、来源 Top5、28 天趋势、AI 周报、遗忘内容
-- 成就页看所有已达成的里程碑
+- 发现页看标签云、来源 Top5、28 天趋势、AI 周报、成就橱窗、遗忘内容
 
 ### 6. 数据管理
 
@@ -364,9 +361,6 @@ KnoYoo/
 │   │   ├── package.json
 │   │   └── vite.config.ts
 │   ├── browser-extension/    # Chrome Manifest V3 扩展
-│   └── cloud/                # 可选 Supabase 脚手架（尚未启用）
-├── docs/
-│   └── VIDEO_TRANSCRIPTION.md  # 视频转录管道设计笔记
 ├── scripts/
 │   └── fetch-sidecars.ps1    # Windows 平台 yt-dlp/ffmpeg 抓取脚本
 ├── BLUEPRINT.md              # 产品蓝图
