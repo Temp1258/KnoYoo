@@ -14,6 +14,7 @@ import type { WebClip } from "../types";
 import ClipCard from "../components/Clips/ClipCard";
 import ClipDetail from "../components/Clips/ClipDetail";
 import MilestoneBanner from "../components/Milestones/MilestoneBanner";
+import AchievementsSection from "../components/Milestones/AchievementsSection";
 import { SkeletonCard } from "../components/ui/Skeleton";
 import { useMediaQuery } from "../hooks/useMediaQuery";
 
@@ -334,6 +335,9 @@ export default function DiscoverPage() {
             )}
           </section>
         )}
+
+        {/* ── Achievements (trophy wall, formerly /achievements page) ── */}
+        <AchievementsSection />
 
         {/* ── Forgotten Clips ── */}
         <section>

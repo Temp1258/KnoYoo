@@ -8,20 +8,21 @@ import {
   FileText,
   type LucideIcon,
 } from "lucide-react";
-import { tauriInvoke } from "../hooks/useTauriInvoke";
-import type { Milestone, MilestoneKind } from "../types";
+import { tauriInvoke } from "../../hooks/useTauriInvoke";
+import type { Milestone, MilestoneKind } from "../../types";
 
 /**
- * Trophy-room view: every milestone the user has ever achieved, grouped by
- * kind. Pure chronicle — no "next target" progress bars per the product
- * decision to keep this page a celebration, not a motivational checklist.
+ * Trophy wall embedded inside DiscoverPage. Shows every milestone the user
+ * has ever achieved, grouped by kind. Formerly a standalone /achievements
+ * page — integrated into Discover so the sidebar stays lean and so new
+ * (unacknowledged) + historical milestones live in the same visual context.
  */
 
 type GroupMeta = {
   title: string;
   icon: LucideIcon;
-  accent: string; // tailwind color class for the header icon
-  cardAccent: string; // bg for each trophy card
+  accent: string;
+  cardAccent: string;
 };
 
 const GROUP_META: Record<string, GroupMeta> = {
@@ -113,7 +114,7 @@ function MilestoneCard({ m, meta }: { m: Milestone; meta: GroupMeta }) {
   );
 }
 
-export default function AchievementsPage() {
+export default function AchievementsSection() {
   const [milestones, setMilestones] = useState<Milestone[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -137,7 +138,6 @@ export default function AchievementsPage() {
     for (const m of milestones) {
       (out[m.kind] ??= []).push(m);
     }
-    // Highest value first within each group.
     for (const list of Object.values(out)) {
       list.sort((a, b) => b.value - a.value);
     }
@@ -146,59 +146,45 @@ export default function AchievementsPage() {
 
   const kinds = Object.keys(GROUP_META).filter((k) => (grouped[k]?.length ?? 0) > 0);
 
+  // Loading silently (no skeleton) — this is one of several sections and
+  // other content above already gives the user something to look at.
+  if (loading) return null;
+  // Zero-state: hide entirely. The MilestoneBanner covers the "你还没有成就"
+  // guidance path via its own empty branch (it simply doesn't render).
+  if (milestones.length === 0) return null;
+
   return (
-    <div className="max-w-4xl mx-auto">
-      <div className="mb-6 flex items-end justify-between">
-        <div>
-          <h1 className="text-[28px] font-bold tracking-tight m-0">成就</h1>
-          <p className="text-[13px] text-text-tertiary mt-1 m-0">你在 KnoYoo 上留下的所有里程碑</p>
-        </div>
-        <div className="flex items-center gap-2 text-[12px] text-text-secondary">
-          <Trophy size={14} className="text-amber-500" />共{" "}
-          <span className="font-semibold text-text">{milestones.length}</span> 项
+    <section className="mb-8">
+      <div className="flex items-center justify-between mb-4">
+        <div className="flex items-center gap-2">
+          <Trophy size={15} className="text-amber-500" />
+          <h2 className="text-[16px] font-semibold text-text m-0">成就</h2>
+          <span className="text-[11px] text-text-tertiary">· 共 {milestones.length} 项</span>
         </div>
       </div>
 
-      {loading && <div className="py-12 text-center text-[13px] text-text-tertiary">加载中…</div>}
-
-      {!loading && milestones.length === 0 && (
-        <div className="py-16 text-center">
-          <Trophy
-            size={40}
-            strokeWidth={1.5}
-            className="mx-auto mb-3 text-text-tertiary opacity-40"
-          />
-          <p className="text-[14px] text-text-secondary m-0">还没有达成任何成就</p>
-          <p className="text-[12px] text-text-tertiary mt-1 m-0">
-            继续收藏、阅读，里程碑会在达成时自动解锁
-          </p>
-        </div>
-      )}
-
-      {!loading && kinds.length > 0 && (
-        <div className="space-y-7">
-          {kinds.map((kind) => {
-            const meta = GROUP_META[kind];
-            if (!meta) return null;
-            const list = grouped[kind] ?? [];
-            const Icon = meta.icon;
-            return (
-              <section key={kind}>
-                <div className="flex items-center gap-2 mb-3">
-                  <Icon size={15} className={meta.accent} />
-                  <h2 className="text-[15px] font-semibold text-text m-0">{meta.title}</h2>
-                  <span className="text-[11px] text-text-tertiary">· {list.length}</span>
-                </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  {list.map((m) => (
-                    <MilestoneCard key={m.id} m={m} meta={meta} />
-                  ))}
-                </div>
-              </section>
-            );
-          })}
-        </div>
-      )}
-    </div>
+      <div className="space-y-5">
+        {kinds.map((kind) => {
+          const meta = GROUP_META[kind];
+          if (!meta) return null;
+          const list = grouped[kind] ?? [];
+          const Icon = meta.icon;
+          return (
+            <div key={kind}>
+              <div className="flex items-center gap-2 mb-2">
+                <Icon size={13} className={meta.accent} />
+                <h3 className="text-[13px] font-medium text-text-secondary m-0">{meta.title}</h3>
+                <span className="text-[10px] text-text-tertiary">· {list.length}</span>
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+                {list.map((m) => (
+                  <MilestoneCard key={m.id} m={m} meta={meta} />
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </section>
   );
 }

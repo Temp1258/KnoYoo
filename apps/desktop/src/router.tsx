@@ -4,14 +4,7 @@ import AppShell from "./components/Layout/AppShell";
 import ClipsPage from "./pages/ClipsPage";
 import HomePage from "./pages/HomePage";
 import { SkeletonCard } from "./components/ui/Skeleton";
-import {
-  DiscoverPage,
-  SettingsPage,
-  TrashPage,
-  BooksPage,
-  MediaPage,
-  AchievementsPage,
-} from "./lazyPages";
+import { DiscoverPage, SettingsPage, TrashPage, BooksPage, MediaPage } from "./lazyPages";
 
 const fallback = (
   <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -51,14 +44,6 @@ export default createBrowserRouter([
         element: (
           <Suspense fallback={fallback}>
             <DiscoverPage />
-          </Suspense>
-        ),
-      },
-      {
-        path: "achievements",
-        element: (
-          <Suspense fallback={fallback}>
-            <AchievementsPage />
           </Suspense>
         ),
       },

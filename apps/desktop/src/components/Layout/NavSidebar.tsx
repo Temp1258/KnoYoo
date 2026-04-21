@@ -1,13 +1,4 @@
-import {
-  Home,
-  Library,
-  Compass,
-  Settings,
-  Trash2,
-  BookMarked,
-  Headphones,
-  Trophy,
-} from "lucide-react";
+import { Home, Library, Compass, Settings, Trash2, BookMarked, Headphones } from "lucide-react";
 import { NavLink, useLocation } from "react-router";
 import KnoYooLogo from "./KnoYooLogo";
 
@@ -17,7 +8,6 @@ const navItems = [
   { to: "/books", icon: BookMarked, label: "书籍", exact: false },
   { to: "/media", icon: Headphones, label: "影音", exact: false },
   { to: "/discover", icon: Compass, label: "发现", exact: false },
-  { to: "/achievements", icon: Trophy, label: "成就", exact: false },
   { to: "/trash", icon: Trash2, label: "乐色", exact: false },
   { to: "/settings", icon: Settings, label: "设置", exact: false },
 ];
