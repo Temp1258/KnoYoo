@@ -1,6 +1,6 @@
 [package]
 name = "desktop"
-version = "2.0.8"
+version = "2.0.9"
 description = "A Tauri App"
 authors = ["you"]
 edition = "2021"
@@ -97,6 +97,13 @@ lopdf = "0.34"
 # with non-trivial ToUnicode CMaps (common in books with subset fonts). We
 # fall back to pdf-extract when lopdf can't decode any page.
 pdf-extract = "0.9"
+# docx is a ZIP of XML; Phase C's document import walks word/document.xml
+# with zip (default features disabled — we only need deflate decompression
+# and don't want zstd / bzip2 pulled in) and quick-xml (streaming SAX-style
+# event parser, which keeps docx up to a few hundred MB parseable without
+# building a full DOM).
+zip = { version = "2", default-features = false, features = ["deflate"] }
+quick-xml = "0.36"
 base64 = "0.22"
 # API keys live in the OS keychain (macOS Keychain / Windows Credential
 # Manager). `apple-native` on macOS and `windows-native` on Windows avoid
