@@ -42,26 +42,29 @@ use crate::ytdlp;
 
 /// Which table a clip-shaped row lives in. The post-import AI pipeline
 /// (`ai_clean`, `auto_tag`, `ai_translate`) and the transcription status
-/// writers here are parameterized by this so the same code processes both
-/// web-sourced clips (`web_clips`) and locally uploaded media
-/// (`media_items`). `table()` returns a `&'static str` from a closed enum,
-/// so string-interpolating it into SQL is safe from injection.
+/// writers here are parameterized by this so the same code processes
+/// every content table: web-sourced clips (`web_clips`), locally uploaded
+/// media (`media_items`), and locally uploaded documents (`documents`).
+/// `table()` returns a `&'static str` from a closed enum, so string-
+/// interpolating it into SQL is safe from injection.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum ClipTarget {
     Web(i64),
     Media(i64),
+    Document(i64),
 }
 
 impl ClipTarget {
     pub const fn id(self) -> i64 {
         match self {
-            Self::Web(id) | Self::Media(id) => id,
+            Self::Web(id) | Self::Media(id) | Self::Document(id) => id,
         }
     }
     pub const fn table(self) -> &'static str {
         match self {
             Self::Web(_) => "web_clips",
             Self::Media(_) => "media_items",
+            Self::Document(_) => "documents",
         }
     }
 }

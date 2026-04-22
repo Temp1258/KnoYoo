@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { useNavigate } from "react-router";
 import {
   ArrowLeft,
   ExternalLink,
@@ -15,6 +16,7 @@ import {
   RotateCcw,
   BookOpen,
   BookOpenCheck,
+  BookMarked,
   NotebookPen,
   Trash2,
   Download,
@@ -36,17 +38,29 @@ type Props = {
   onUpdate?: (clip: WebClip) => void;
   compact?: boolean;
   /** Backend table this clip lives in. `'web'` hits `web_clips` (default,
-   *  for articles and online videos). `'media'` hits `media_items` (local
-   *  audio / local video). Every tauriInvoke in this component is routed
+   *  for articles and online videos), `'media'` hits `media_items` (local
+   *  audio / local video), `'document'` hits `documents` (local pdf /
+   *  docx / md / txt). Every tauriInvoke in this component is routed
    *  through the `cmds` map below so the shared rendering code can drive
-   *  both pipelines without duplicating the 900-line detail view. */
-  kind?: "web" | "media";
+   *  all three pipelines without duplicating the 900-line detail view. */
+  kind?: "web" | "media" | "document";
 };
 
 /** Command names used by the detail view, keyed by backend table. A single
  *  map keeps the branching declarative and easy to extend — add a new
- *  operation by adding a pair, not by threading a second prop. */
-const CMDS = {
+ *  operation by adding a pair, not by threading a second prop. `aiTranslate`
+ *  is optional: documents don't carry translation columns in v1, so the
+ *  translation affordance is gated on the command being defined. */
+type CmdMap = {
+  get: string;
+  update: string;
+  markRead: string;
+  toggleRead: string;
+  aiAutoTag: string;
+  aiTranslate?: string;
+};
+
+const CMDS: Record<"web" | "media" | "document", CmdMap> = {
   web: {
     get: "get_clip",
     update: "update_web_clip",
@@ -62,6 +76,15 @@ const CMDS = {
     toggleRead: "toggle_read_media_item",
     aiAutoTag: "ai_auto_tag_media_item",
     aiTranslate: "ai_translate_media_item",
+  },
+  document: {
+    get: "get_document",
+    update: "update_document",
+    markRead: "mark_document_read",
+    toggleRead: "toggle_read_document",
+    aiAutoTag: "ai_auto_tag_document",
+    // No aiTranslate: documents lack source_language / translated_content
+    // columns in the v1 schema. Translation UI hides when undefined.
   },
 } as const;
 
@@ -346,14 +369,19 @@ export default function ClipDetail({
   // and returns the fresh row. `update_media_item` mirrors that shape for
   // the subset of fields ClipDetail lets users edit (title / summary /
   // tags), so the same helper drives both modes.
+  // `update_web_clip` accepts fields flat at the top level; the newer
+  // `update_media_item` / `update_document` commands wrap them in a
+  // `patch` object (matches the Rust `struct ..Update` pattern and
+  // keeps the command signature stable as fields are added). Shape by
+  // kind accordingly — anything other than web uses the patch wrapper.
   const saveSummary = async () => {
     setSaving(true);
     try {
-      const patch =
-        kind === "media"
-          ? { id: clip.id, patch: { summary: summaryDraft } }
-          : { id: clip.id, summary: summaryDraft };
-      const updated = await tauriInvoke<WebClip>(cmds.update, patch);
+      const body =
+        kind === "web"
+          ? { id: clip.id, summary: summaryDraft }
+          : { id: clip.id, patch: { summary: summaryDraft } };
+      const updated = await tauriInvoke<WebClip>(cmds.update, body);
       onUpdate?.(updated);
       setEditingSummary(false);
     } catch (e) {
@@ -365,11 +393,11 @@ export default function ClipDetail({
   const saveTags = async () => {
     setSaving(true);
     try {
-      const patch =
-        kind === "media"
-          ? { id: clip.id, patch: { tags: tagsDraft } }
-          : { id: clip.id, tags: tagsDraft };
-      const updated = await tauriInvoke<WebClip>(cmds.update, patch);
+      const body =
+        kind === "web"
+          ? { id: clip.id, tags: tagsDraft }
+          : { id: clip.id, patch: { tags: tagsDraft } };
+      const updated = await tauriInvoke<WebClip>(cmds.update, body);
       onUpdate?.(updated);
       setEditingTags(false);
     } catch (e) {
@@ -409,7 +437,9 @@ export default function ClipDetail({
   // "生成译文" (first time) and "重新翻译" (retry / refresh).
   const [translating, setTranslating] = useState(false);
   const handleRetranslate = async () => {
-    if (translating) return;
+    // `aiTranslate` is absent for document kind — the "生成译文" button
+    // is gated on this below, but guard here too in case of stale UI.
+    if (!cmds.aiTranslate || translating) return;
     setTranslating(true);
     try {
       await tauriInvoke(cmds.aiTranslate, { id: clip.id });
@@ -437,6 +467,28 @@ export default function ClipDetail({
       setNewTag("");
     }
   };
+
+  // Phase C.11 — cross-type movement. Only pdf documents can become
+  // books (books reject docx/md/txt). Button is conditionally rendered
+  // on source_type === "pdf" in the sticky-bar area.
+  const navigate = useNavigate();
+  const [converting, setConverting] = useState(false);
+  const handleConvertToBook = async () => {
+    if (converting) return;
+    setConverting(true);
+    try {
+      const bookId = await tauriInvoke<number>("convert_document_to_book", {
+        documentId: clip.id,
+      });
+      showToast("已移动到书籍，AI 正在补齐作者 / 出版社", "success");
+      navigate(`/books?openBook=${bookId}`);
+    } catch (e) {
+      showToast(`移动失败：${String(e)}`, "error");
+    } finally {
+      setConverting(false);
+    }
+  };
+  const canConvertToBook = kind === "document" && clip.source_type === "pdf";
 
   return (
     <div ref={scrollRef}>
@@ -502,6 +554,18 @@ export default function ClipDetail({
               />
               {clip.is_starred ? "已星标" : "星标"}
             </Button>
+            {canConvertToBook && (
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={handleConvertToBook}
+                disabled={converting}
+                title="把这份 PDF 移到书架（当前条目会进入乐色，可恢复）"
+              >
+                <BookMarked size={14} />
+                {converting ? "移动中…" : "移到书籍"}
+              </Button>
+            )}
             <Button
               variant="ghost"
               size="sm"
@@ -710,12 +774,14 @@ export default function ClipDetail({
                 onClick={async () => {
                   setSaving(true);
                   try {
-                    if (kind === "media") {
-                      // media_items carries the note inline — the command
-                      // returns void, so we synthesize a ClipNote-shaped
-                      // wrapper locally to keep the display path uniform
-                      // with the web branch below.
-                      await tauriInvoke("save_media_item_notes", {
+                    if (kind === "media" || kind === "document") {
+                      // Inline notes on row — no separate table, command
+                      // returns void. Synthesize a ClipNote-shaped
+                      // wrapper locally so the display path stays uniform
+                      // with the web (clip_notes table) branch below.
+                      const cmd =
+                        kind === "media" ? "save_media_item_notes" : "save_document_notes";
+                      await tauriInvoke(cmd, {
                         id: clip.id,
                         content: noteDraft,
                       });
@@ -775,11 +841,13 @@ export default function ClipDetail({
                 <button
                   onClick={async () => {
                     try {
-                      if (kind === "media") {
-                        // Media inline notes: "delete" = save empty
-                        // string. Keeps the column NOT NULL invariant
-                        // and avoids a separate backend command.
-                        await tauriInvoke("save_media_item_notes", {
+                      if (kind === "media" || kind === "document") {
+                        // Inline notes: "delete" = save empty string.
+                        // Keeps the column NOT NULL invariant and avoids
+                        // a separate backend command.
+                        const cmd =
+                          kind === "media" ? "save_media_item_notes" : "save_document_notes";
+                        await tauriInvoke(cmd, {
                           id: clip.id,
                           content: "",
                         });
@@ -903,7 +971,9 @@ export default function ClipDetail({
           {!clip.summary && (
             <span className="ml-2 text-[11px] text-text-tertiary italic">AI 正在清洗和总结…</span>
           )}
-          {(clip.content?.trim().length ?? 0) >= 50 && (
+          {/* Translation button hides when the target doesn't support it
+              (documents in v1, which lack the backing columns entirely). */}
+          {cmds.aiTranslate && (clip.content?.trim().length ?? 0) >= 50 && (
             <button
               onClick={handleRetranslate}
               disabled={translating}

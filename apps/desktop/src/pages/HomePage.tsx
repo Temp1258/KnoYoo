@@ -24,8 +24,15 @@ const PAGE_SIZE = 10;
 
 /** Extensions the home-page drag-drop dispatcher routes to each command.
  *  Kept in sync with the per-page ACCEPTED_EXTS lists — if either side
- *  changes, validate here too. */
-const BOOK_EXTS = ["epub", "pdf"];
+ *  changes, validate here too.
+ *
+ *  Phase C note: pdf moved out of BOOK_EXTS into DOCUMENT_EXTS. The
+ *  homepage dropzone is the "lazy lane" — per the product decision, a
+ *  bare pdf defaults to the documents area; only explicitly dropping
+ *  onto the /books page keeps it as a book. epub stays a book since
+ *  it's unambiguously book-shaped. */
+const BOOK_EXTS = ["epub"];
+const DOCUMENT_EXTS = ["pdf", "docx", "md", "txt"];
 const AUDIO_EXTS = ["mp3", "m4a", "wav", "flac", "opus", "ogg", "aac", "webm"];
 const VIDEO_EXTS = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "flv", "wmv"];
 
@@ -60,6 +67,8 @@ function iconFor(kind: SearchHit["kind"]) {
       return <Video size={14} className="text-rose-500" />;
     case "media":
       return <Headphones size={14} className="text-accent" />;
+    case "document":
+      return <FileText size={14} className="text-emerald-500" />;
     default:
       return <FileText size={14} className="text-blue-500" />;
   }
@@ -73,6 +82,8 @@ function kindLabel(kind: SearchHit["kind"]): string {
       return "视频";
     case "media":
       return "影音";
+    case "document":
+      return "文档";
     default:
       return "剪藏";
   }
@@ -130,6 +141,16 @@ export default function HomePage() {
           return true;
         } catch (e) {
           showToast(`书籍导入失败：${String(e)}`, "error");
+          return false;
+        }
+      }
+      if (DOCUMENT_EXTS.includes(ext)) {
+        try {
+          const id = await tauriInvoke<number>("import_document", { filePath });
+          navigate(`/documents?openDocument=${id}`);
+          return true;
+        } catch (e) {
+          showToast(`文档导入失败：${String(e)}`, "error");
           return false;
         }
       }
@@ -287,6 +308,8 @@ export default function HomePage() {
       navigate(`/books?openBook=${hit.id}`);
     } else if (hit.kind === "media") {
       navigate(`/media?openClip=${hit.id}`);
+    } else if (hit.kind === "document") {
+      navigate(`/documents?openDocument=${hit.id}`);
     } else {
       // Clip + online video (YouTube/Bilibili) live in the Clips page.
       navigate(`/clips?openClip=${hit.id}`);

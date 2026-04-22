@@ -166,6 +166,101 @@ fn media_item_to_markdown(
     md
 }
 
+fn document_to_markdown(
+    title: &str,
+    file_format: &str,
+    file_path: &str,
+    file_hash: &str,
+    word_count: i64,
+    tags_json: &str,
+    summary: &str,
+    notes: &str,
+    added_at: &str,
+    content: &str,
+) -> String {
+    let tags: Vec<String> = serde_json::from_str(tags_json).unwrap_or_default();
+    let tags_yaml = tags
+        .iter()
+        .map(|t| format!("\"{}\"", yaml_escape(t)))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let mut md = format!(
+        "---\n\
+         title: \"{title}\"\n\
+         file_format: \"{file_format}\"\n\
+         file_path: \"{file_path}\"\n\
+         file_hash: \"{file_hash}\"\n\
+         word_count: {word_count}\n\
+         tags: [{tags_yaml}]\n\
+         saved_at: \"{added_at}\"\n\
+         ---\n\n\
+         # {title_h1}\n\n",
+        title = yaml_escape(title),
+        file_format = yaml_escape(file_format),
+        file_path = yaml_escape(file_path),
+        file_hash = yaml_escape(file_hash),
+        title_h1 = title,
+    );
+    if !summary.is_empty() {
+        md.push_str(&format!("> **AI 摘要：** {summary}\n\n"));
+    }
+    if !notes.is_empty() {
+        md.push_str(&format!("## 我的笔记\n\n{notes}\n\n"));
+    }
+    md.push_str("---\n\n");
+    md.push_str(content);
+    md.push('\n');
+    md
+}
+
+/// Phase C.9: export a single document row as a self-describing Markdown
+/// file. Schema parallels `export_media_item_to_file` but frontmatter
+/// replaces `media_type` / audio-specific fields with `file_format` /
+/// `word_count`, and the body carries the cleaned content directly (no
+/// transcription source / translation variants — documents don't have
+/// those fields in v1).
+#[tauri::command]
+pub fn export_document_to_file(id: i64, path: String) -> Result<(), String> {
+    let dest = std::path::Path::new(&path);
+    validate_export_path(dest)?;
+
+    let conn = open_db()?;
+    let (
+        title,
+        file_format,
+        file_path,
+        file_hash,
+        word_count,
+        tags,
+        summary,
+        notes,
+        added_at,
+        content,
+    ): (
+        String, String, String, String, i64, String, String, String, String, String,
+    ) = conn
+        .query_row(
+            "SELECT title, file_format, file_path, file_hash, word_count, tags,
+                    summary, notes, added_at, content
+             FROM documents WHERE id = ?1",
+            [id],
+            |r| {
+                Ok((
+                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    let md = document_to_markdown(
+        &title, &file_format, &file_path, &file_hash, word_count,
+        &tags, &summary, &notes, &added_at, &content,
+    );
+    std::fs::write(dest, md).map_err(|_| "导出失败：无法写入文件".to_string())
+}
+
 #[tauri::command]
 pub fn export_media_item_to_file(id: i64, path: String) -> Result<(), String> {
     let dest = std::path::Path::new(&path);

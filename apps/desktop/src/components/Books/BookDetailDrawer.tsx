@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { X, ExternalLink, ImagePlus, Trash2, Sparkles } from "lucide-react";
+import { useNavigate } from "react-router";
+import { X, ExternalLink, ImagePlus, Trash2, Sparkles, FileText } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
+import { invoke } from "@tauri-apps/api/core";
 import SegmentedControl from "../ui/SegmentedControl";
 import { useToast } from "../common/toast-context";
 import type { Book, BookStatus, BookPatch } from "../../hooks/useBooks";
@@ -93,9 +95,15 @@ export default function BookDetailDrawer({
   onAiAnalyze,
 }: Props) {
   const { showToast } = useToast();
+  const navigate = useNavigate();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [tagInput, setTagInput] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
+  // Phase C.11 — busy flag for the "move to documents" affordance. Kept
+  // at the top of the component with all other hooks because the JSX
+  // usage is after an early `if (!book) return null` guard that would
+  // otherwise break rules-of-hooks if the useState lived next to it.
+  const [converting, setConverting] = useState(false);
 
   // Close on Escape
   useEffect(() => {
@@ -217,6 +225,29 @@ export default function BookDetailDrawer({
       showToast(`删除失败：${e}`, "error");
     } finally {
       setConfirmingDelete(false);
+    }
+  };
+
+  // Phase C.11 — move a pdf book to the documents area. epub books are
+  // rejected backend-side; `canConvertToDocument` gates the button so
+  // users don't see a dead affordance. The Book type on the frontend
+  // uses camelCase field names (`fileFormat`), mirrored from the Rust
+  // struct by the useBooks mapping layer.
+  const canConvertToDocument = book.fileFormat === "pdf";
+  const handleConvertToDocument = async () => {
+    if (converting) return;
+    setConverting(true);
+    try {
+      const docId = await invoke<number>("convert_book_to_document", {
+        bookId: book.id,
+      });
+      showToast("已移动到文档，AI 正在清洗与打标签", "success");
+      onClose();
+      navigate(`/documents?openDocument=${docId}`);
+    } catch (e) {
+      showToast(`移动失败：${String(e)}`, "error");
+    } finally {
+      setConverting(false);
     }
   };
 
@@ -462,6 +493,18 @@ export default function BookDetailDrawer({
             >
               <ExternalLink size={12} />
               在系统中打开
+            </button>
+          )}
+          {canConvertToDocument && (
+            <button
+              type="button"
+              onClick={handleConvertToDocument}
+              disabled={converting}
+              title="把这本 PDF 移到文档区（当前条目会进入乐色，可恢复）"
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[12px] text-text-secondary hover:text-text hover:bg-bg-tertiary transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <FileText size={12} />
+              {converting ? "移动中…" : "移到文档"}
             </button>
           )}
           <div className="flex-1" />

@@ -42,6 +42,8 @@ pub const KIND_BOOK: &str = "book";
 pub const KIND_VIDEO: &str = "video";
 /// Local audio + `local_video` clips. Routed to the Media page on click.
 pub const KIND_MEDIA: &str = "media";
+/// Local pdf / docx / md / txt uploads. Routed to the Documents page.
+pub const KIND_DOCUMENT: &str = "document";
 
 /// Unified result row. Field set is the superset across kinds; fields that
 /// don't apply to a given kind come back empty (never null) so the frontend
@@ -509,23 +511,133 @@ fn search_media_like(
     Ok(out)
 }
 
+// ── documents path (Phase C.8) ─────────────────────────────────────────────
+//
+// Shape is near-identical to `search_media_*` — documents have title /
+// content / summary / tags just like media_items, the only SearchHit
+// difference is the URL scheme and the `kind` label. Kept as its own
+// pair of functions (rather than generic) so the SELECT column list
+// stays explicit and the UI receives stable result shapes.
+
+const DOCUMENT_URL_SCHEME: &str = "document://";
+
+fn search_documents_fts(
+    conn: &rusqlite::Connection,
+    fts_q: &str,
+    per_table_k: u32,
+) -> Result<Vec<SearchHit>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT d.id, d.title, d.summary, d.added_at, bm25(documents_fts) AS bm
+             FROM documents_fts
+             JOIN documents d ON d.id = documents_fts.rowid
+             WHERE documents_fts MATCH ?1 AND d.deleted_at IS NULL
+             ORDER BY rank
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![fts_q, per_table_k], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, f64>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        let (id, title, summary, added_at, bm) = r.map_err(|e| e.to_string())?;
+        out.push(SearchHit {
+            kind: KIND_DOCUMENT.to_string(),
+            id,
+            title,
+            snippet: summary,
+            score: normalize_bm25(bm),
+            url: format!("{DOCUMENT_URL_SCHEME}{id}"),
+            favicon: String::new(),
+            cover_path: String::new(),
+            created_at: added_at,
+        });
+    }
+    Ok(out)
+}
+
+fn search_documents_like(
+    conn: &rusqlite::Connection,
+    raw_query: &str,
+    per_table_k: u32,
+) -> Result<Vec<SearchHit>, String> {
+    let toks = tokens_of(raw_query);
+    if toks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (where_like, like_params) =
+        like_clause(&toks, &["title", "content", "summary", "tags"]);
+
+    let sql = format!(
+        "SELECT id, title, summary, added_at
+         FROM documents
+         WHERE deleted_at IS NULL{where_like}
+         ORDER BY updated_at DESC
+         LIMIT ?",
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut all_params: Vec<String> = like_params;
+    all_params.push(per_table_k.to_string());
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(all_params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        let (id, title, summary, added_at) = r.map_err(|e| e.to_string())?;
+        out.push(SearchHit {
+            kind: KIND_DOCUMENT.to_string(),
+            id,
+            title,
+            snippet: summary,
+            score: LIKE_SCORE,
+            url: format!("{DOCUMENT_URL_SCHEME}{id}"),
+            favicon: String::new(),
+            cover_path: String::new(),
+            created_at: added_at,
+        });
+    }
+    Ok(out)
+}
+
 // ── Scope parsing + entry point ────────────────────────────────────────────
 
-/// Returns `(want_article, want_video, want_book, want_media)`.
+/// Returns `(want_article, want_video, want_book, want_media, want_document)`.
 /// - `"all"` (default) — everything
 /// - `"clips"` — article-type web clips only
 /// - `"videos"` — online video (YouTube/Bilibili) only
 /// - `"books"` — library entries only
 /// - `"media"` — local audio + `local_video` only
+/// - `"documents"` — local pdf / docx / md / txt only
 ///
 /// Any other value falls back to "all" so older callers don't break silently.
-fn parse_scope(scope: Option<String>) -> (bool, bool, bool, bool) {
+fn parse_scope(scope: Option<String>) -> (bool, bool, bool, bool, bool) {
     match scope.as_deref().unwrap_or("all") {
-        "clips" => (true, false, false, false),
-        "videos" => (false, true, false, false),
-        "books" => (false, false, true, false),
-        "media" => (false, false, false, true),
-        _ => (true, true, true, true),
+        "clips" => (true, false, false, false, false),
+        "videos" => (false, true, false, false, false),
+        "books" => (false, false, true, false, false),
+        "media" => (false, false, false, true, false),
+        "documents" => (false, false, false, false, true),
+        _ => (true, true, true, true, true),
     }
 }
 
@@ -561,7 +673,7 @@ pub fn unified_search(
     let off = offset.unwrap_or(0).min(MAX_OFFSET);
     // Each table needs enough rows that merge+skip yields `lim` valid hits.
     let per_table_k = (lim + off).max(MIN_PER_TABLE_K);
-    let (want_article, want_video, want_book, want_media) = parse_scope(scope);
+    let (want_article, want_video, want_book, want_media, want_document) = parse_scope(scope);
     let use_fts = should_use_fts(trimmed);
 
     let mut hits: Vec<SearchHit> = Vec::new();
@@ -597,6 +709,18 @@ pub fn unified_search(
             )?);
         } else {
             hits.extend(search_media_like(&conn, trimmed, per_table_k)?);
+        }
+    }
+    // documents path — local pdf / docx / md / txt (Phase C.8).
+    if want_document {
+        if use_fts {
+            hits.extend(search_documents_fts(
+                &conn,
+                &build_fts_query(trimmed),
+                per_table_k,
+            )?);
+        } else {
+            hits.extend(search_documents_like(&conn, trimmed, per_table_k)?);
         }
     }
     if want_book {
@@ -675,6 +799,26 @@ mod tests {
                 VALUES (new.id, new.title, new.content, new.summary, new.tags);
             END;
 
+            CREATE TABLE documents (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              title TEXT NOT NULL DEFAULT '',
+              file_format TEXT NOT NULL,
+              content TEXT NOT NULL DEFAULT '',
+              summary TEXT NOT NULL DEFAULT '',
+              tags TEXT NOT NULL DEFAULT '[]',
+              deleted_at TEXT,
+              added_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            );
+            CREATE VIRTUAL TABLE documents_fts USING fts5(
+              title, content, summary, tags,
+              content='documents', content_rowid='id',
+              tokenize='trigram');
+            CREATE TRIGGER documents_ai AFTER INSERT ON documents BEGIN
+              INSERT INTO documents_fts(rowid, title, content, summary, tags)
+                VALUES (new.id, new.title, new.content, new.summary, new.tags);
+            END;
+
             CREATE TABLE books (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               title TEXT NOT NULL DEFAULT '',
@@ -720,6 +864,15 @@ mod tests {
             "INSERT INTO media_items(media_type, title, content, summary)
              VALUES (?1, ?2, ?3, ?4)",
             rusqlite::params![media_type, title, summary, summary],
+        )
+        .unwrap();
+    }
+
+    fn add_document(conn: &Connection, title: &str, summary: &str, file_format: &str) {
+        conn.execute(
+            "INSERT INTO documents(title, file_format, content, summary)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![title, file_format, summary, summary],
         )
         .unwrap();
     }
@@ -986,13 +1139,73 @@ mod tests {
 
     #[test]
     fn parse_scope_defaults_to_all() {
-        assert_eq!(parse_scope(None), (true, true, true, true));
-        assert_eq!(parse_scope(Some("all".into())), (true, true, true, true));
-        assert_eq!(parse_scope(Some("clips".into())), (true, false, false, false));
-        assert_eq!(parse_scope(Some("videos".into())), (false, true, false, false));
-        assert_eq!(parse_scope(Some("books".into())), (false, false, true, false));
-        assert_eq!(parse_scope(Some("media".into())), (false, false, false, true));
-        assert_eq!(parse_scope(Some("garbage".into())), (true, true, true, true));
+        assert_eq!(parse_scope(None), (true, true, true, true, true));
+        assert_eq!(parse_scope(Some("all".into())), (true, true, true, true, true));
+        assert_eq!(
+            parse_scope(Some("clips".into())),
+            (true, false, false, false, false)
+        );
+        assert_eq!(
+            parse_scope(Some("videos".into())),
+            (false, true, false, false, false)
+        );
+        assert_eq!(
+            parse_scope(Some("books".into())),
+            (false, false, true, false, false)
+        );
+        assert_eq!(
+            parse_scope(Some("media".into())),
+            (false, false, false, true, false)
+        );
+        assert_eq!(
+            parse_scope(Some("documents".into())),
+            (false, false, false, false, true)
+        );
+        assert_eq!(
+            parse_scope(Some("garbage".into())),
+            (true, true, true, true, true)
+        );
+    }
+
+    // ── documents search paths (Phase C.8) ────────────────────────────────
+
+    #[test]
+    fn document_fts_path_finds_by_title_and_content() {
+        let conn = test_db();
+        add_document(&conn, "架构白皮书", "分布式系统一致性实践", "pdf");
+        add_document(&conn, "随手记", "周会纪要 4 月 22 日", "md");
+        let hits = search_documents_fts(
+            &conn,
+            &build_fts_query("分布式"),
+            MIN_PER_TABLE_K,
+        )
+        .unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, KIND_DOCUMENT);
+        assert_eq!(hits[0].title, "架构白皮书");
+        assert!(hits[0].url.starts_with(DOCUMENT_URL_SCHEME));
+    }
+
+    #[test]
+    fn document_like_path_short_cjk() {
+        let conn = test_db();
+        add_document(&conn, "2024 年度总结", "回顾", "docx");
+        let hits = search_documents_like(&conn, "总结", MIN_PER_TABLE_K).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, KIND_DOCUMENT);
+    }
+
+    #[test]
+    fn document_like_path_excludes_soft_deleted() {
+        let conn = test_db();
+        add_document(&conn, "draft.md", "草稿", "md");
+        conn.execute(
+            "UPDATE documents SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+            [],
+        )
+        .unwrap();
+        let hits = search_documents_like(&conn, "草稿", MIN_PER_TABLE_K).unwrap();
+        assert_eq!(hits.len(), 0);
     }
 
     #[test]

@@ -12,10 +12,18 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
-import type { ChatMessage, AiChatResponse, ChatSession, WebClip, MediaItem } from "../../types";
+import type {
+  ChatMessage,
+  AiChatResponse,
+  ChatSession,
+  WebClip,
+  MediaItem,
+  Document,
+} from "../../types";
 
 type ReferencedClips = Record<number, { id: number; title: string }>;
 type ReferencedMedia = Record<number, { id: number; title: string }>;
+type ReferencedDocuments = Record<number, { id: number; title: string }>;
 
 function formatRelativeTime(date: Date): string {
   const now = Date.now();
@@ -52,6 +60,9 @@ export default function ChatDrawer() {
   // media_items.id share integers (both AUTOINCREMENT). Added in B.7.
   const [referencedMedia, setReferencedMedia] = useState<Record<number, number[]>>({});
   const [mediaDetails, setMediaDetails] = useState<ReferencedMedia>({});
+  // Referenced documents — same parallel-namespace reasoning. Added in C.9.
+  const [referencedDocuments, setReferencedDocuments] = useState<Record<number, number[]>>({});
+  const [documentDetails, setDocumentDetails] = useState<ReferencedDocuments>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sessionListRef = useRef<HTMLDivElement>(null);
@@ -136,6 +147,26 @@ export default function ChatDrawer() {
     [mediaDetails],
   );
 
+  const fetchDocumentDetails = useCallback(
+    async (ids: number[]) => {
+      const missing = ids.filter((id) => !documentDetails[id]);
+      if (missing.length === 0) return;
+      const map: ReferencedDocuments = { ...documentDetails };
+      await Promise.all(
+        missing.map(async (id) => {
+          try {
+            const item = await tauriInvoke<Document>("get_document", { id });
+            map[id] = { id: item.id, title: item.title };
+          } catch {
+            map[id] = { id, title: `文档 #${id}` };
+          }
+        }),
+      );
+      setDocumentDetails(map);
+    },
+    [documentDetails],
+  );
+
   // Persist messages to current session
   const saveToSession = useCallback(async (sessionId: number, messages: ChatMessage[]) => {
     try {
@@ -153,6 +184,7 @@ export default function ChatDrawer() {
     setCurrentSessionId(null);
     setReferencedClips({});
     setReferencedMedia({});
+    setReferencedDocuments({});
     setShowSessionList(false);
   }
 
@@ -161,6 +193,7 @@ export default function ChatDrawer() {
     setCurrentSessionId(session.id);
     setReferencedClips({});
     setReferencedMedia({});
+    setReferencedDocuments({});
     setShowSessionList(false);
   }
 
@@ -235,6 +268,13 @@ export default function ChatDrawer() {
       if (reply.referenced_media_ids?.length > 0) {
         setReferencedMedia((prev) => ({ ...prev, [msgIdx]: reply.referenced_media_ids }));
         fetchMediaDetails(reply.referenced_media_ids);
+      }
+      if (reply.referenced_document_ids?.length > 0) {
+        setReferencedDocuments((prev) => ({
+          ...prev,
+          [msgIdx]: reply.referenced_document_ids,
+        }));
+        fetchDocumentDetails(reply.referenced_document_ids);
       }
 
       // Persist to session
@@ -415,7 +455,9 @@ export default function ChatDrawer() {
                   interactive. */}
               {m.role === "assistant" &&
                 !m.error &&
-                (referencedClips[i]?.length > 0 || referencedMedia[i]?.length > 0) && (
+                (referencedClips[i]?.length > 0 ||
+                  referencedMedia[i]?.length > 0 ||
+                  referencedDocuments[i]?.length > 0) && (
                   <div className="max-w-[85%] mt-1.5 px-2 py-1.5 rounded-lg bg-bg-tertiary/60 border border-border/50">
                     <div className="flex items-center gap-1 text-[11px] text-text-tertiary mb-1">
                       <FileText size={10} />
@@ -438,6 +480,15 @@ export default function ChatDrawer() {
                         >
                           <span className="text-text-tertiary">影音 · </span>
                           {mediaDetails[mediaId]?.title || `影音 #${mediaId}`}
+                        </div>
+                      ))}
+                      {referencedDocuments[i]?.map((docId) => (
+                        <div
+                          key={`doc-${docId}`}
+                          className="text-[11px] text-text-secondary truncate pl-3"
+                        >
+                          <span className="text-text-tertiary">文档 · </span>
+                          {documentDetails[docId]?.title || `文档 #${docId}`}
                         </div>
                       ))}
                     </div>

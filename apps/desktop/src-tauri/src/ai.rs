@@ -446,8 +446,8 @@ fn find_balanced_json(s: &str) -> Option<String> {
 
 /// AI chat response with referenced source IDs for attribution. Each kind
 /// lives in its own array because `web_clips.id` / `media_items.id` /
-/// `books.id` share a namespace collision — the frontend uses the kind
-/// signal to route clicks to the right detail page.
+/// `documents.id` / `books.id` share a namespace collision — the frontend
+/// uses the kind signal to route clicks to the right detail page.
 #[derive(Debug, Serialize)]
 pub struct AiChatResponse {
     pub content: String,
@@ -455,6 +455,8 @@ pub struct AiChatResponse {
     pub referenced_clip_ids: Vec<i64>,
     /// `media_items` rows (local audio + local video). Added in Phase B.7.
     pub referenced_media_ids: Vec<i64>,
+    /// `documents` rows (local pdf / docx / md / txt). Added in Phase C.9.
+    pub referenced_document_ids: Vec<i64>,
 }
 
 /// Parse all `[PREFIX:<n>]` references the AI emitted, scoped to the
@@ -512,6 +514,41 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
             };
             buf.push_str(&format!("- [CLIP:{id}][{domain}] {desc} (标签:{tags})\n"));
             clip_ids.push(id);
+        }
+        buf
+    };
+
+    // ── documents context (10 most-recent; local text uploads) ──
+    //
+    // Mirrors the media block below — same budget rationale (small
+    // summaries keep the system prompt size bounded). `file_format`
+    // flows through as a human-readable type label.
+    let mut document_ids: Vec<i64> = Vec::new();
+    let documents_ctx: String = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, title, summary, tags, file_format FROM documents
+                 WHERE deleted_at IS NULL
+                 ORDER BY datetime(added_at) DESC LIMIT 10",
+            )
+            .map_err(|e| e.to_string())?;
+        let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut buf = String::new();
+        while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+            let id: i64 = row.get(0).map_err(|e| e.to_string())?;
+            let title: String = row.get(1).map_err(|e| e.to_string())?;
+            let summary: String = row.get(2).map_err(|e| e.to_string())?;
+            let tags: String = row.get(3).map_err(|e| e.to_string())?;
+            let file_format: String = row.get(4).map_err(|e| e.to_string())?;
+            let desc = if summary.is_empty() {
+                title.clone()
+            } else {
+                format!("{title}: {summary}")
+            };
+            buf.push_str(&format!(
+                "- [DOC:{id}][{file_format}] {desc} (标签:{tags})\n"
+            ));
+            document_ids.push(id);
         }
         buf
     };
@@ -610,6 +647,27 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
             }
         }
 
+        // documents.notes (inline) — same pattern as media.
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT notes, title FROM documents
+                     WHERE deleted_at IS NULL AND notes <> ''
+                     ORDER BY datetime(updated_at) DESC LIMIT 5",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                let content: String = row.get(0).map_err(|e| e.to_string())?;
+                let title: String = row.get(1).map_err(|e| e.to_string())?;
+                buf.push_str(&format!(
+                    "- 关于「{}」的笔记: {}\n",
+                    title,
+                    content.chars().take(100).collect::<String>()
+                ));
+            }
+        }
+
         if buf.is_empty() {
             String::new()
         } else {
@@ -617,29 +675,38 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
         }
     };
 
-    let knowledge_section = if clips_ctx.is_empty() && media_ctx.is_empty() {
-        "（智库暂无内容）\n".to_string()
-    } else {
-        let mut s = String::new();
-        if !clips_ctx.is_empty() {
-            s.push_str("### 网页剪藏\n");
-            s.push_str(&clips_ctx);
-        }
-        if !media_ctx.is_empty() {
-            if !s.is_empty() {
-                s.push('\n');
+    let knowledge_section =
+        if clips_ctx.is_empty() && media_ctx.is_empty() && documents_ctx.is_empty() {
+            "（智库暂无内容）\n".to_string()
+        } else {
+            let mut s = String::new();
+            if !clips_ctx.is_empty() {
+                s.push_str("### 网页剪藏\n");
+                s.push_str(&clips_ctx);
             }
-            s.push_str("### 影音（本地音视频转录）\n");
-            s.push_str(&media_ctx);
-        }
-        s
-    };
+            if !media_ctx.is_empty() {
+                if !s.is_empty() {
+                    s.push('\n');
+                }
+                s.push_str("### 影音（本地音视频转录）\n");
+                s.push_str(&media_ctx);
+            }
+            if !documents_ctx.is_empty() {
+                if !s.is_empty() {
+                    s.push('\n');
+                }
+                s.push_str("### 文档（本地 pdf / docx / md / txt）\n");
+                s.push_str(&documents_ctx);
+            }
+            s
+        };
 
     let system_prompt = format!(
         "你是 KnoYoo AI 知识助手。用户有一个个人智库，以下是智库中的内容。\n\n\
         **重要规则：回答问题时必须优先基于智库中的内容。**\n\
         - 引用网页剪藏时用 [CLIP:数字] 格式\n\
         - 引用影音（本地音视频转录）时用 [MEDIA:数字] 格式\n\
+        - 引用文档（本地 pdf / docx / md / txt）时用 [DOC:数字] 格式\n\
         - 如果智库中有相关信息，直接引用并回答\n\
         - 如果智库中没有相关信息，再用你自己的知识补充，并明确说明这不是来自用户的智库\n\n\
         ## 用户智库\n{knowledge_section}{notes_ctx}",
@@ -665,11 +732,13 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
         }
     }
     let referenced_media_ids = extract_referenced_ids(&content, "MEDIA", &media_ids);
+    let referenced_document_ids = extract_referenced_ids(&content, "DOC", &document_ids);
 
     Ok(AiChatResponse {
         content,
         referenced_clip_ids,
         referenced_media_ids,
+        referenced_document_ids,
     })
 }
 

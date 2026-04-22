@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
 type OpenPayload = {
-  kind: "clip" | "book" | "video" | "media";
+  kind: "clip" | "book" | "video" | "media" | "document";
   id: number;
 };
 
@@ -29,8 +29,11 @@ export function useQuickSearchNavigation() {
         if (kind === "book") {
           navigate(`/books?openBook=${id}`);
         } else if (kind === "media") {
-          // Audio + local video now live in the Media page.
+          // Audio + local video live in the Media page.
           navigate(`/media?openClip=${id}`);
+        } else if (kind === "document") {
+          // pdf / docx / md / txt live in the Documents page (Phase C).
+          navigate(`/documents?openDocument=${id}`);
         } else {
           // Web clip (article) + online video (YouTube/Bilibili) stay in Clips.
           navigate(`/clips?openClip=${id}`);

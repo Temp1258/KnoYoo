@@ -10,6 +10,8 @@ mod books;
 mod clip_server;
 mod clips;
 mod db;
+mod doc_extract;
+mod documents;
 mod export;
 mod import;
 mod error;
@@ -256,6 +258,7 @@ fn main() {
             // Export / Backup
             export::export_clip_to_file,
             export::export_media_item_to_file,
+            export::export_document_to_file,
             export::export_full_database,
             export::import_full_database,
             // Import
@@ -306,6 +309,26 @@ fn main() {
             media::retry_media_transcription,
             media::ai_auto_tag_media_item,
             media::ai_translate_media_item,
+            // documents (Phase C): local text-file uploads
+            documents::import_document,
+            documents::list_documents,
+            documents::get_document,
+            documents::count_documents,
+            documents::toggle_star_document,
+            documents::toggle_read_document,
+            documents::mark_document_read,
+            documents::update_document,
+            documents::save_document_notes,
+            documents::delete_document,
+            documents::restore_document,
+            documents::purge_document,
+            documents::list_document_trash,
+            documents::count_document_trash,
+            documents::empty_document_trash,
+            documents::retry_document_ai,
+            documents::ai_auto_tag_document,
+            documents::convert_document_to_book,
+            documents::convert_book_to_document,
             // Milestones
             milestones::list_milestones,
             milestones::acknowledge_milestone,

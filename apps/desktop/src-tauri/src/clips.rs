@@ -857,22 +857,23 @@ pub(crate) fn auto_tag_clip_inner(target: crate::transcribe::ClipTarget) -> Resu
     let conn = open_db()?;
     let clip_id = target.id();
     let table = target.table();
-    let is_media = matches!(target, crate::transcribe::ClipTarget::Media(_));
+    let is_web = matches!(target, crate::transcribe::ClipTarget::Web(_));
 
-    // For web_clips we co-read `source_type` so the immutable file-origin
-    // guard still applies for any legacy audio/local_video rows that may
-    // live there before migration. For media_items we skip the column —
-    // media_type is immutable by construction and doesn't need AI approval.
-    let (title, content, original_source_type): (String, String, String) = if is_media {
-        let sql = format!("SELECT title, content FROM {table} WHERE id = ?1");
-        conn.query_row(&sql, [clip_id], |r| {
-            Ok((r.get(0)?, r.get(1)?, String::new()))
-        })
-        .map_err(|e| e.to_string())?
-    } else {
+    // Only `web_clips` carries a mutable `source_type` column — `media_items`
+    // has an immutable `media_type` and `documents` has `file_format`, both
+    // set at import time. Pull source_type alongside text only for web
+    // targets so auto_tag can keep its existing "preserve file-origin type"
+    // guard; other targets read just title+content.
+    let (title, content, original_source_type): (String, String, String) = if is_web {
         let sql = format!("SELECT title, content, source_type FROM {table} WHERE id = ?1");
         conn.query_row(&sql, [clip_id], |r| {
             Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .map_err(|e| e.to_string())?
+    } else {
+        let sql = format!("SELECT title, content FROM {table} WHERE id = ?1");
+        conn.query_row(&sql, [clip_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, String::new()))
         })
         .map_err(|e| e.to_string())?
     };
@@ -984,17 +985,11 @@ pub(crate) fn auto_tag_clip_inner(target: crate::transcribe::ClipTarget) -> Resu
 
         let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
 
-        // media_items has no `source_type` column — skip that clause for
-        // media targets. web_clips still gets it so URL-video clips keep
-        // their semi-mutable source_type behaviour.
-        if is_media {
-            let sql = format!(
-                "UPDATE {table} SET summary = ?1, tags = ?2,
-                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?3"
-            );
-            conn.execute(&sql, rusqlite::params![summary, tags_json, clip_id])
-                .map_err(|e| e.to_string())?;
-        } else {
+        // Only web_clips has the mutable `source_type` column — update
+        // it for web targets; media_items / documents skip that clause
+        // because their type column (`media_type` / `file_format`) is
+        // immutable from import time.
+        if is_web {
             let sql = format!(
                 "UPDATE {table} SET summary = ?1, tags = ?2, source_type = ?3,
                  updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?4"
@@ -1004,6 +999,13 @@ pub(crate) fn auto_tag_clip_inner(target: crate::transcribe::ClipTarget) -> Resu
                 rusqlite::params![summary, tags_json, source_type, clip_id],
             )
             .map_err(|e| e.to_string())?;
+        } else {
+            let sql = format!(
+                "UPDATE {table} SET summary = ?1, tags = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?3"
+            );
+            conn.execute(&sql, rusqlite::params![summary, tags_json, clip_id])
+                .map_err(|e| e.to_string())?;
         }
 
         tracing::info!("Auto-tagged clip {}: [{}]", clip_id, tags_json);
@@ -1045,6 +1047,14 @@ const TRANSLATE_MIN_CHARS: usize = 50;
 /// `translated_content` is non-empty, so a failed translation simply
 /// hides the affordance — no error surface the user has to deal with.
 pub(crate) fn ai_translate_clip_inner(target: crate::transcribe::ClipTarget) -> Result<(), String> {
+    // Documents don't (yet) carry `source_language` / `translated_content`
+    // columns — a deliberate trim of the Phase C v1 schema; bilingual UI
+    // for uploaded docs is a later iteration. No-op here so the document
+    // AI pipeline can fan out uniformly without special-casing at the
+    // call site.
+    if matches!(target, crate::transcribe::ClipTarget::Document(_)) {
+        return Ok(());
+    }
     let conn = open_db()?;
     let clip_id = target.id();
     let table = target.table();

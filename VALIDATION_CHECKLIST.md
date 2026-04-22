@@ -76,8 +76,11 @@
 | E.1 | 主页拖 mp3 | 跳 `/media?openClip=<id>`，详情打开 | ☐ |
 | E.2 | 主页拖 mp4 | 同 E.1 | ☐ |
 | E.3 | 主页拖 epub | 跳 `/books` | ☐ |
-| E.4 | 主页拖 pdf | 跳 `/books`（Phase C 后才会进文档区） | ☐ |
+| E.4 | 主页拖 pdf | 跳 `/documents?openDocument=<id>`（Phase C 后 pdf 默认进文档区） | ☐ |
 | E.5 | 照片 App 直接拖视频 | 友好提示"请先导出原始文件"，不是通用"不支持格式" | ☐ |
+| E.6 | 主页拖 docx | 跳 `/documents?openDocument=<id>`，详情自动打开 | ☐ |
+| E.7 | 主页拖 md | 跳 `/documents?openDocument=<id>` | ☐ |
+| E.8 | 主页拖 txt | 跳 `/documents?openDocument=<id>` | ☐ |
 
 ---
 
@@ -90,7 +93,10 @@
 | F.3 | `Cmd+Shift+K` 搜同一词 | 同样命中 + 跳转 | ☐ |
 | F.4 | 搜 2 字中文短词 | LIKE 兜底命中 | ☐ |
 | F.5 | 搜 1 字 CJK | 仍命中 | ☐ |
-| F.6 | 有多种 kind 时 | 同屏可同时看到 clip / media / book | ☐ |
+| F.6 | 有多种 kind 时 | 同屏可同时看到 clip / media / book / document | ☐ |
+| F.7 | 搜一个 document 内容里的词 | 结果里有 document kind（绿色 📄 图标） | ☐ |
+| F.8 | 点击 document 结果 | 跳 `/documents?openDocument=<id>`，详情打开且内容匹配 | ☐ |
+| F.9 | scope=documents | 只返 document 结果 | ☐ |
 
 ---
 
@@ -126,6 +132,8 @@
 | H.6 | 新对话再问 | 上一会话引用不串扰 | ☐ |
 | H.7 | 切回旧会话 | 旧消息可见 | ☐ |
 | H.8 | 问智库不存在的内容 | AI 老实说"智库没有"，不乱编 ID | ☐ |
+| H.9 | 问涉及 document 的问题 | 回答里有 `[DOC:<数字>]` 标记 | ☐ |
+| H.10 | 引用卡 | 含一行"文档 · 〈document 标题〉" | ☐ |
 
 ---
 
@@ -134,13 +142,17 @@
 | # | 操作 | 期望看到 | ✓ |
 |---|---|---|---|
 | I.1 | MediaPage 删一条 | 从列表消失 | ☐ |
-| I.2 | 进"乐色"页 | 三个 tab：剪藏 / 书籍 / 影音 | ☐ |
-| I.3 | tab 标签带计数 | 如 `影音 · 1` | ☐ |
+| I.2 | 进"乐色"页 | **四个** tab：剪藏 / 书籍 / 影音 / 文档（Phase C 加了"文档"） | ☐ |
+| I.3 | tab 标签带计数 | 如 `影音 · 1` / `文档 · 2` | ☐ |
 | I.4 | 点"影音"tab | 刚删的条目在，媒体类型徽标对 | ☐ |
 | I.5 | 点"恢复" | 回 MediaPage，trash 计数 -1 | ☐ |
 | I.6 | 点"永久删除" | `SELECT * FROM media_items WHERE id=?` 空 | ☐ |
 | I.7 | "清空影音乐色" | 确认 + 清空 | ☐ |
 | I.8 | "剪藏"/"书籍" tab | 100% 同迁移前 | ☐ |
+| I.9 | DocumentsPage 删一条 → 进文档 tab | 看到条目，格式徽标对（PDF / Word / Markdown / 纯文本） | ☐ |
+| I.10 | 文档恢复 | 回 DocumentsPage 主列表 | ☐ |
+| I.11 | 文档"永久删除" | `SELECT * FROM documents WHERE id=?` 空，对应文件也从 `documents/` 目录删除 | ☐ |
+| I.12 | "清空文档乐色" | 批量删除 + 文件一并清理 | ☐ |
 
 ---
 
@@ -179,10 +191,80 @@
 
 ---
 
-## 最关键 10 条（时间紧只跑这些能覆盖 80% 风险）
+---
 
-A.3 / A.5 / B.1 / C.4 / C.6 / E.5 / F.1 / G.11 / H.3 / I.4
+## M. 文档导入（Phase C）
+
+**准备**：1 个 pdf（< 10 MB）+ 1 个 docx（带几个 Heading 段落）+ 1 个 md（带 `#` 标题）+ 1 个 txt
+
+| # | 操作 | 期望看到 | ✓ |
+|---|---|---|---|
+| M.1 | 拖 pdf 到"文档"页 | 详情抽屉打开，几秒后 content 显示文本，summary + tags 生成 | ☐ |
+| M.2 | 拖 docx 到"文档"页 | content 显示带 markdown 标题语法（`# …` / `## …`），TOC 自动出现 | ☐ |
+| M.3 | 拖 md 到"文档"页 | content 保留原 markdown，TOC 按 `#` 层级渲染 | ☐ |
+| M.4 | 拖 txt 到"文档"页 | content 显示纯文本，无 TOC 模块 | ☐ |
+| M.5 | 重复拖同一 pdf | 不产生新行，报错"已在文档"或类似 | ☐ |
+| M.6 | 拖 .xlsx / .pptx / .zip | 友好报错"不支持的文档格式（仅支持 pdf/docx/md/txt）" | ☐ |
+| M.7 | 照片 App 拖文件到文档页 | 友好提示"请先从照片 App 中导出" | ☐ |
+| M.8 | `sqlite3 ... "SELECT file_format,file_path,file_hash,word_count FROM documents ORDER BY id DESC LIMIT 1"` | 四个字段**都**有值 | ☐ |
 
 ---
 
-*基线：v2.0.8 · 创建于 2026-04-22*
+## N. 文档页展示 + 详情编辑
+
+| # | 操作 | 期望看到 | ✓ |
+|---|---|---|---|
+| N.1 | DocumentsPage 打开 | 文档按格式分组：PDF / Word / Markdown / 纯文本 四栏 | ☐ |
+| N.2 | 左侧导航有"文档" | 图标 📄，位于影音与发现之间 | ☐ |
+| N.3 | 详情显示 content / summary / tags | 都正常 | ☐ |
+| N.4 | 写笔记，保存 | `SELECT notes FROM documents WHERE id=?` 非空 | ☐ |
+| N.5 | 删除笔记 | `notes = ''`（空串，非 NULL） | ☐ |
+| N.6 | "让 AI 重新归类"按钮 | summary + tags 重新生成 | ☐ |
+| N.7 | 详情页无"AI 翻译"按钮 | 文档 v1 不支持翻译，不出现 | ☐ |
+| N.8 | 标题编辑、摘要编辑、标签增删 | 全部落库 | ☐ |
+| N.9 | 切换"已读/未读" | 状态翻转；`last_opened_at` 自动更新 | ☐ |
+
+---
+
+## O. 跨类型移动（C.11）
+
+**前提**：手上有至少 1 个 pdf 书籍、1 个 pdf 文档、1 个 epub 书籍、1 个 docx 文档。
+
+| # | 操作 | 期望看到 | ✓ |
+|---|---|---|---|
+| O.1 | 打开 pdf 文档详情 | sticky 操作栏有"移到书籍"按钮（BookMarked 图标） | ☐ |
+| O.2 | 点击"移到书籍" | 跳 `/books?openBook=<id>`；toast"已移动到书籍" | ☐ |
+| O.3 | 乐色 → 文档 tab | 能看到刚移走的文档（软删，可恢复） | ☐ |
+| O.4 | books 目录 | 新增 `{hash}.pdf` 文件；documents 目录的原文件仍在（copy 非 move） | ☐ |
+| O.5 | 打开 pdf 书籍详情 | 底部 footer 有"移到文档"按钮 | ☐ |
+| O.6 | 点击"移到文档" | 跳 `/documents?openDocument=<id>`；toast"已移动到文档" | ☐ |
+| O.7 | 原 book 进入乐色"书籍" tab | ✓ | ☐ |
+| O.8 | 打开 docx 文档详情 | **不**显示"移到书籍"按钮（文档格式非 pdf） | ☐ |
+| O.9 | 打开 epub 书籍详情 | **不**显示"移到文档"按钮 | ☐ |
+| O.10 | 尝试把已存在 hash 的 pdf 跨移 | 友好报错"《X》已在书籍 / 已在文档" | ☐ |
+
+---
+
+## P. TOC 目录（C.12）
+
+| # | 操作 | 期望看到 | ✓ |
+|---|---|---|---|
+| P.1 | 打开一个带 ≥3 个 `#` 标题的 md 文档 | "目录 (N)" 收缩条出现 | ☐ |
+| P.2 | 打开一个带 ≥3 个 Heading 段落的 docx 文档 | TOC 同样出现（docx 现在会被渲染为 `<h1>`..`<h6>`） | ☐ |
+| P.3 | 点开 TOC | 列表条目缩进按 level 展开 | ☐ |
+| P.4 | 点击 TOC 某条 | 正文平滑滚动到对应标题 | ☐ |
+| P.5 | 打开 txt 文档 | **无** TOC 模块（没有标题结构） | ☐ |
+| P.6 | 打开 pdf 文档 | 一般**无** TOC 模块（pdf 提取后是纯文本，无 markdown `#`） | ☐ |
+| P.7 | 打开一个标题 < 3 个的 md | **无** TOC 模块（`extractHeadings` 阈值 ≥ 3） | ☐ |
+
+---
+
+## 最关键 12 条（v2.0.9 · 时间紧只跑这些能覆盖 85% 风险）
+
+A.3 / A.5 / B.1 / C.4 / C.6 / E.4 / F.1 / F.7 / G.11 / H.3 / I.2 / M.2 / O.2 / P.2
+
+（M.2 / P.2 合计一条——docx 带 TOC 是本轮改动的核心路径）
+
+---
+
+*基线：v2.0.9 · 更新于 2026-04-22（Phase C 全部落地）*

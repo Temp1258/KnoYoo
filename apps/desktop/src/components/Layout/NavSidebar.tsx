@@ -1,12 +1,26 @@
-import { Home, Library, Compass, Settings, Trash2, BookMarked, Headphones } from "lucide-react";
+import {
+  Home,
+  Library,
+  Compass,
+  Settings,
+  Trash2,
+  BookMarked,
+  Headphones,
+  FileText,
+} from "lucide-react";
 import { NavLink, useLocation } from "react-router";
 import KnoYooLogo from "./KnoYooLogo";
 
+// Nav order: 主页 / 智库 / 书籍 / 影音 / 文档 / 发现 / 乐色 / 设置.
+// 文档 sits between 影音 and 发现 per Phase C decision #2 — keeps the
+// four content containers (智库 / 书籍 / 影音 / 文档) clustered together
+// and leaves the "explore / housekeeping" items at the tail.
 const navItems = [
   { to: "/", icon: Home, label: "主页", exact: true },
   { to: "/clips", icon: Library, label: "智库", exact: false },
   { to: "/books", icon: BookMarked, label: "书籍", exact: false },
   { to: "/media", icon: Headphones, label: "影音", exact: false },
+  { to: "/documents", icon: FileText, label: "文档", exact: false },
   { to: "/discover", icon: Compass, label: "发现", exact: false },
   { to: "/trash", icon: Trash2, label: "乐色", exact: false },
   { to: "/settings", icon: Settings, label: "设置", exact: false },

@@ -47,6 +47,9 @@ export type AiChatResponse = {
   /** `media_items` rows (local audio + local video). Parsed from
    *  `[MEDIA:N]` markers. Added in Phase B.7. */
   referenced_media_ids: number[];
+  /** `documents` rows (local pdf / docx / md / txt). Parsed from
+   *  `[DOC:N]` markers. Added in Phase C.9. */
+  referenced_document_ids: number[];
 };
 
 export type TranscriptionStatus =
@@ -90,6 +93,39 @@ export type MediaItem = {
   is_starred: boolean;
   is_read: boolean;
   created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
+
+/** Row in `documents` — user-uploaded local text files (pdf / docx / md /
+ *  txt). Parallels {@link MediaItem} structurally; differences are file-
+ *  format-specific (`file_format`, `word_count`, `toc_json`) plus the
+ *  absence of a transcription pipeline. No `source_language` /
+ *  `translated_content` fields in v1 — translation for uploaded docs is
+ *  a later iteration. */
+export type Document = {
+  id: number;
+  title: string;
+  file_path: string;
+  file_hash: string;
+  /** `'pdf'` | `'docx'` | `'md'` | `'txt'` */
+  file_format: string;
+  file_size: number;
+  word_count: number;
+  /** JSON-encoded `Array<{level, title, anchor}>` describing the heading
+   *  structure; empty string when the format or the document has none. */
+  toc_json: string;
+  content: string;
+  raw_content: string;
+  summary: string;
+  tags: string[];
+  notes: string;
+  ai_status: "pending" | "ok" | "failed";
+  ai_error: string;
+  is_starred: boolean;
+  is_read: boolean;
+  last_opened_at: string | null;
+  added_at: string;
   updated_at: string;
   deleted_at: string | null;
 };
@@ -211,12 +247,13 @@ export type ChatSession = {
  *  - `videos` — online videos (YouTube / Bilibili)
  *  - `books` — library entries
  *  - `media` — local audio + local video */
-export type SearchScope = "all" | "clips" | "videos" | "books" | "media";
+export type SearchScope = "all" | "clips" | "videos" | "books" | "media" | "documents";
 
 /** Result kinds returned by `unified_search`. Frontend uses this to pick
  *  which card component to render and which route to navigate to.
- *  `media` covers local audio + local video (the Media page). */
-export type SearchHitKind = "clip" | "book" | "video" | "media";
+ *  `media` covers local audio + local video (the Media page).
+ *  `document` covers local pdf / docx / md / txt (the Documents page). */
+export type SearchHitKind = "clip" | "book" | "video" | "media" | "document";
 
 /** Unified cross-content search result. Fields that don't apply to a given
  *  kind are returned as empty strings (never null) so React code can treat

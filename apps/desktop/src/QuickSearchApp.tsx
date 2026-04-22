@@ -24,7 +24,8 @@ type ContentRef =
   | { kind: "clip"; id: number }
   | { kind: "book"; id: number }
   | { kind: "video"; id: number }
-  | { kind: "media"; id: number };
+  | { kind: "media"; id: number }
+  | { kind: "document"; id: number };
 
 function iconFor(kind: SearchHit["kind"]) {
   switch (kind) {
@@ -34,6 +35,8 @@ function iconFor(kind: SearchHit["kind"]) {
       return <Video size={14} className="text-rose-500" />;
     case "media":
       return <Video size={14} className="text-accent" />;
+    case "document":
+      return <FileText size={14} className="text-emerald-500" />;
     default:
       return <FileText size={14} className="text-blue-500" />;
   }
@@ -47,6 +50,8 @@ function kindLabel(kind: SearchHit["kind"]): string {
       return "视频";
     case "media":
       return "影音";
+    case "document":
+      return "文档";
     default:
       return "剪藏";
   }
