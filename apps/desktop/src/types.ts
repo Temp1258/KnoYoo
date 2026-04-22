@@ -40,7 +40,13 @@ export type ChatMessage = {
 
 export type AiChatResponse = {
   content: string;
+  /** `web_clips` rows (articles + online video). The `[CLIP:N]` markers in
+   *  `content` are parsed into this list, plus any legacy `[ID:N]` for
+   *  chat transcripts generated before Phase B.7. */
   referenced_clip_ids: number[];
+  /** `media_items` rows (local audio + local video). Parsed from
+   *  `[MEDIA:N]` markers. Added in Phase B.7. */
+  referenced_media_ids: number[];
 };
 
 export type TranscriptionStatus =
@@ -51,6 +57,42 @@ export type TranscriptionStatus =
   | "cleaning"
   | "completed"
   | "failed";
+
+/** Row in `media_items` — user-uploaded local audio / local video.
+ *  Parallels {@link WebClip} but without web-origin fields (`url`, `favicon`,
+ *  `og_image`) and with local-file fields (`file_path`, `file_hash`,
+ *  `file_size`, `media_type`). Notes are inline (no separate `clip_notes`
+ *  table). `ai_status` mirrors the same state machine `books` uses. */
+export type MediaItem = {
+  id: number;
+  /** `'audio'` (mp3/m4a/wav/…) or `'local_video'` (mp4/mov/…). Immutable
+   *  after import — AI auto-tag is prevented from reclassifying. */
+  media_type: "audio" | "local_video";
+  title: string;
+  file_path: string;
+  file_hash: string;
+  file_size: number;
+  audio_duration_sec: number;
+  content: string;
+  raw_content: string;
+  summary: string;
+  tags: string[];
+  /** Inline user note. Empty string means "no note" — the `notes` column
+   *  is `NOT NULL DEFAULT ''` so the UI never deals with null. */
+  notes: string;
+  transcription_status: TranscriptionStatus;
+  transcription_error: string;
+  transcription_source: string;
+  source_language: string;
+  translated_content: string;
+  ai_status: "pending" | "ok" | "failed";
+  ai_error: string;
+  is_starred: boolean;
+  is_read: boolean;
+  created_at: string;
+  updated_at: string;
+  deleted_at: string | null;
+};
 
 export type WebClip = {
   id: number;

@@ -111,8 +111,18 @@ export default function HomePage() {
   // per-kind command. `.webm` is treated as video (more common use case)
   // so audio dispatch only matches pure audio containers. Unknown formats
   // surface an explicit toast rather than silently failing.
+  //
+  // macOS 照片 App 会给出 library bundle 内的 thumbnail JPEG 路径（而不是
+  // 原始视频）；我们统一截胡并引导用户先导出。
   const importOne = useCallback(
     async (filePath: string): Promise<boolean> => {
+      if (filePath.toLowerCase().includes(".photoslibrary/")) {
+        showToast(
+          "『照片』App 的文件不能直接拖入。请先选中视频 → 文件 → 导出 → 导出未修改的原始文件，再把导出后的文件拖进来。",
+          "error",
+        );
+        return false;
+      }
       const ext = extOf(filePath);
       if (BOOK_EXTS.includes(ext)) {
         try {

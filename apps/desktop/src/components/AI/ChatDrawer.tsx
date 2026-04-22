@@ -12,9 +12,10 @@ import {
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { tauriInvoke } from "../../hooks/useTauriInvoke";
-import type { ChatMessage, AiChatResponse, ChatSession, WebClip } from "../../types";
+import type { ChatMessage, AiChatResponse, ChatSession, WebClip, MediaItem } from "../../types";
 
 type ReferencedClips = Record<number, { id: number; title: string }>;
+type ReferencedMedia = Record<number, { id: number; title: string }>;
 
 function formatRelativeTime(date: Date): string {
   const now = Date.now();
@@ -43,9 +44,14 @@ export default function ChatDrawer() {
   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null);
   const [showSessionList, setShowSessionList] = useState(false);
 
-  // Referenced clips per assistant message index
+  // Referenced clips (web_clips) per assistant message index
   const [referencedClips, setReferencedClips] = useState<Record<number, number[]>>({});
   const [clipDetails, setClipDetails] = useState<ReferencedClips>({});
+  // Referenced media (media_items) per assistant message index — parallel
+  // to the clip refs above, separate namespace because web_clips.id and
+  // media_items.id share integers (both AUTOINCREMENT). Added in B.7.
+  const [referencedMedia, setReferencedMedia] = useState<Record<number, number[]>>({});
+  const [mediaDetails, setMediaDetails] = useState<ReferencedMedia>({});
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const sessionListRef = useRef<HTMLDivElement>(null);
@@ -106,6 +112,30 @@ export default function ChatDrawer() {
     [clipDetails],
   );
 
+  // Fetch media item details for referenced IDs. Uses per-id
+  // `get_media_item` (instead of a list query) because the chat may
+  // reference individual items across a larger corpus than the AI
+  // context window included.
+  const fetchMediaDetails = useCallback(
+    async (ids: number[]) => {
+      const missing = ids.filter((id) => !mediaDetails[id]);
+      if (missing.length === 0) return;
+      const map: ReferencedMedia = { ...mediaDetails };
+      await Promise.all(
+        missing.map(async (id) => {
+          try {
+            const item = await tauriInvoke<MediaItem>("get_media_item", { id });
+            map[id] = { id: item.id, title: item.title };
+          } catch {
+            map[id] = { id, title: `影音 #${id}` };
+          }
+        }),
+      );
+      setMediaDetails(map);
+    },
+    [mediaDetails],
+  );
+
   // Persist messages to current session
   const saveToSession = useCallback(async (sessionId: number, messages: ChatMessage[]) => {
     try {
@@ -122,6 +152,7 @@ export default function ChatDrawer() {
     setChatMsgs([]);
     setCurrentSessionId(null);
     setReferencedClips({});
+    setReferencedMedia({});
     setShowSessionList(false);
   }
 
@@ -129,6 +160,7 @@ export default function ChatDrawer() {
     setChatMsgs(session.messages);
     setCurrentSessionId(session.id);
     setReferencedClips({});
+    setReferencedMedia({});
     setShowSessionList(false);
   }
 
@@ -192,11 +224,17 @@ export default function ChatDrawer() {
       const newMsgs = [...allMessages, assistantMsg];
       setChatMsgs(newMsgs);
 
-      // Track referenced clips
+      // Track referenced sources — clip + media tables have independent
+      // id namespaces so they're tracked as parallel maps keyed by the
+      // same message index.
+      const msgIdx = newMsgs.length - 1;
       if (reply.referenced_clip_ids?.length > 0) {
-        const msgIdx = newMsgs.length - 1;
         setReferencedClips((prev) => ({ ...prev, [msgIdx]: reply.referenced_clip_ids }));
         fetchClipDetails(reply.referenced_clip_ids);
+      }
+      if (reply.referenced_media_ids?.length > 0) {
+        setReferencedMedia((prev) => ({ ...prev, [msgIdx]: reply.referenced_media_ids }));
+        fetchMediaDetails(reply.referenced_media_ids);
       }
 
       // Persist to session
@@ -370,22 +408,41 @@ export default function ChatDrawer() {
                 )}
               </div>
 
-              {/* Referenced clips */}
-              {m.role === "assistant" && !m.error && referencedClips[i]?.length > 0 && (
-                <div className="max-w-[85%] mt-1.5 px-2 py-1.5 rounded-lg bg-bg-tertiary/60 border border-border/50">
-                  <div className="flex items-center gap-1 text-[11px] text-text-tertiary mb-1">
-                    <FileText size={10} />
-                    引用来源
+              {/* Referenced sources — clip + media combined. Each kind is
+                  tagged with a small prefix so the user can tell whether
+                  clicking would take them to ClipsPage or MediaPage in
+                  a future iteration where the titles are made
+                  interactive. */}
+              {m.role === "assistant" &&
+                !m.error &&
+                (referencedClips[i]?.length > 0 || referencedMedia[i]?.length > 0) && (
+                  <div className="max-w-[85%] mt-1.5 px-2 py-1.5 rounded-lg bg-bg-tertiary/60 border border-border/50">
+                    <div className="flex items-center gap-1 text-[11px] text-text-tertiary mb-1">
+                      <FileText size={10} />
+                      引用来源
+                    </div>
+                    <div className="space-y-0.5">
+                      {referencedClips[i]?.map((clipId) => (
+                        <div
+                          key={`clip-${clipId}`}
+                          className="text-[11px] text-text-secondary truncate pl-3"
+                        >
+                          <span className="text-text-tertiary">剪藏 · </span>
+                          {clipDetails[clipId]?.title || `知识片段 #${clipId}`}
+                        </div>
+                      ))}
+                      {referencedMedia[i]?.map((mediaId) => (
+                        <div
+                          key={`media-${mediaId}`}
+                          className="text-[11px] text-text-secondary truncate pl-3"
+                        >
+                          <span className="text-text-tertiary">影音 · </span>
+                          {mediaDetails[mediaId]?.title || `影音 #${mediaId}`}
+                        </div>
+                      ))}
+                    </div>
                   </div>
-                  <div className="space-y-0.5">
-                    {referencedClips[i].map((clipId) => (
-                      <div key={clipId} className="text-[11px] text-text-secondary truncate pl-3">
-                        {clipDetails[clipId]?.title || `知识片段 #${clipId}`}
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                )}
 
               {/* Timestamp */}
               {m.timestamp && (

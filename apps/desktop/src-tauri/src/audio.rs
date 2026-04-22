@@ -11,10 +11,14 @@
 //!   audio (mono 16 kHz mp3, the smallest format all ASR providers accept)
 //!   into the temp dir, then run the same pipeline.
 //!
-//! Storage model: both share `web_clips`, differentiated by `source_type`
-//! (`'audio'` vs `'local_video'`). URLs take the synthetic form
-//! `audio-local://<sha256>` / `local-video://<sha256>` so the table's
-//! UNIQUE(url) index handles duplicate-import detection for free.
+//! Storage model: both write into the dedicated `media_items` table,
+//! differentiated by `media_type` (`'audio'` vs `'local_video'`). The
+//! streaming SHA-256 of the source file serves as both the durable
+//! deduplication key (partial UNIQUE index on `file_hash` scoped to
+//! non-deleted rows) and, for legacy reasons, the post-import backing for
+//! the row's original-file reference. Pipeline dispatch uses
+//! `ClipTarget::Media(id)` so the shared post-ASR AI stages target the
+//! right table.
 
 use std::path::{Path, PathBuf};
 
@@ -117,15 +121,82 @@ fn hex_sha256_file(path: &Path) -> Result<String, String> {
     Ok(out)
 }
 
-/// Import a local audio file as a new clip. Returns the new `clip_id` so the
-/// frontend can start listening for `transcribe://progress` events the same
-/// way it does for `import_video_clip`.
+/// Upsert a `media_items` row for a freshly-dropped file and return its id.
 ///
-/// Flow mirrors `import_video_clip`:
+/// Semantics:
+/// - Primary key for dedup is `file_hash` (SHA-256 of the bytes), scoped
+///   by an active partial UNIQUE index. A user reimporting the same file
+///   after soft-deletion gets a *new* row (by design — the partial index
+///   excludes `deleted_at IS NOT NULL`), matching how `books` handles the
+///   same scenario.
+/// - A user reimporting the same file while it's still active updates the
+///   existing row: title is only refilled when empty (respect manual
+///   edits), and `transcription_*` state is reset so the retry pipeline
+///   can start cleanly.
+fn upsert_media_row(
+    conn: &rusqlite::Connection,
+    media_type: &str,
+    title: &str,
+    file_path: &Path,
+    file_hash: &str,
+    file_size: u64,
+) -> Result<i64, String> {
+    let path_str = file_path.to_string_lossy();
+    // File size serialised as i64 — SQLite's INTEGER is signed 64 and our
+    // 2 GB video cap is well under 2^63.
+    let size_i64 = i64::try_from(file_size).unwrap_or(i64::MAX);
+
+    // Check for an active (non-deleted) row with this hash first.
+    let existing: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM media_items
+               WHERE file_hash = ?1 AND deleted_at IS NULL
+               LIMIT 1",
+            [file_hash],
+            |r| r.get(0),
+        )
+        .ok();
+
+    if let Some(id) = existing {
+        conn.execute(
+            "UPDATE media_items SET
+                media_type = ?1,
+                title      = CASE WHEN title = '' THEN ?2 ELSE title END,
+                file_path  = ?3,
+                file_size  = ?4,
+                transcription_status = 'pending',
+                transcription_error  = '',
+                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id = ?5",
+            rusqlite::params![media_type, title, path_str, size_i64, id],
+        )
+        .map_err(|e| e.to_string())?;
+        return Ok(id);
+    }
+
+    conn.execute(
+        "INSERT INTO media_items
+             (media_type, title, file_path, file_hash, file_size,
+              transcription_status, ai_status)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'pending', 'pending')",
+        rusqlite::params![media_type, title, path_str, file_hash, size_i64],
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(conn.last_insert_rowid())
+}
+
+/// Import a local audio file as a new media item. Returns the new
+/// `media_item_id` so the frontend can start listening for
+/// `transcribe://progress` events the same way it does for
+/// `import_video_clip`.
+///
+/// Flow:
 ///   1. validate (existence, size, extension)
-///   2. hash the bytes → synthetic URL
-///   3. upsert a placeholder row with `transcription_status = 'pending'`
+///   2. streaming hash the bytes
+///   3. upsert a `media_items` row with `transcription_status = 'pending'`
 ///   4. spawn a background thread running `transcribe::run_audio_pipeline`
+///      against `ClipTarget::Media(id)`
 #[tauri::command]
 #[allow(non_snake_case)]
 pub fn import_audio_file(app: AppHandle, filePath: String) -> Result<i64, String> {
@@ -165,40 +236,22 @@ pub fn import_audio_file(app: AppHandle, filePath: String) -> Result<i64, String
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "本地音频".to_string());
 
-    // Hash-based URL. Two imports of the same bytes collapse onto the same
-    // row via the UNIQUE(url) index + ON CONFLICT upsert — matching the way
-    // `import_video_clip` handles re-imports of the same YouTube URL.
     // Streaming hash so a 300 MB audio doesn't peak memory.
     let hash = hex_sha256_file(&path)?;
-    let url = format!("audio-local://{hash}");
 
     let conn = open_db()?;
-    conn.execute(
-        "INSERT INTO web_clips (url, title, source_type, transcription_status)
-             VALUES (?1, ?2, 'audio', 'pending')
-         ON CONFLICT(url) DO UPDATE SET
-             source_type = 'audio',
-             title = CASE WHEN web_clips.title = '' THEN excluded.title ELSE web_clips.title END,
-             transcription_status = 'pending',
-             transcription_error = '',
-             deleted_at = NULL,
-             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-        rusqlite::params![url, title],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let clip_id: i64 = conn
-        .query_row("SELECT id FROM web_clips WHERE url = ?1", [&url], |r| {
-            r.get(0)
-        })
-        .map_err(|e| e.to_string())?;
+    let media_id = upsert_media_row(&conn, "audio", &title, &path, &hash, size)?;
 
     let app_bg = app.clone();
     std::thread::spawn(move || {
-        crate::transcribe::run_audio_pipeline(app_bg, clip_id, path);
+        crate::transcribe::run_audio_pipeline(
+            app_bg,
+            crate::transcribe::ClipTarget::Media(media_id),
+            path,
+        );
     });
 
-    Ok(clip_id)
+    Ok(media_id)
 }
 
 /// Run the bundled ffmpeg sidecar to pull an audio-only track out of a video
@@ -286,10 +339,11 @@ fn extract_audio_from_video(
     }
 }
 
-/// Import a local video file. Stores a placeholder clip with
-/// `source_type = 'local_video'`, then in a background thread:
+/// Import a local video file. Stores a placeholder `media_items` row with
+/// `media_type = 'local_video'`, then in a background thread:
 ///   1. Extract mono 16 kHz mp3 via ffmpeg (temp dir)
-///   2. Hand the temp audio to `transcribe::run_audio_pipeline`
+///   2. Hand the temp audio to `transcribe::run_audio_pipeline` targeting
+///      `ClipTarget::Media(id)`
 ///   3. Remove the temp audio on drop
 #[tauri::command]
 #[allow(non_snake_case)]
@@ -328,66 +382,47 @@ pub fn import_local_video_file(app: AppHandle, filePath: String) -> Result<i64, 
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "本地视频".to_string());
 
-    // Hash → synthetic URL (same dedup trick as import_audio_file).
     // Streaming hash — a 2 GB MP4 would OOM with fs::read.
     let hash = hex_sha256_file(&path)?;
-    let url = format!("local-video://{hash}");
 
     let conn = open_db()?;
-    conn.execute(
-        "INSERT INTO web_clips (url, title, source_type, transcription_status)
-             VALUES (?1, ?2, 'local_video', 'pending')
-         ON CONFLICT(url) DO UPDATE SET
-             source_type = 'local_video',
-             title = CASE WHEN web_clips.title = '' THEN excluded.title ELSE web_clips.title END,
-             transcription_status = 'pending',
-             transcription_error = '',
-             deleted_at = NULL,
-             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
-        rusqlite::params![url, title],
-    )
-    .map_err(|e| e.to_string())?;
-
-    let clip_id: i64 = conn
-        .query_row("SELECT id FROM web_clips WHERE url = ?1", [&url], |r| {
-            r.get(0)
-        })
-        .map_err(|e| e.to_string())?;
+    let media_id = upsert_media_row(&conn, "local_video", &title, &path, &hash, size)?;
+    drop(conn);
 
     let app_bg = app.clone();
     std::thread::spawn(move || {
-        match extract_audio_from_video(&app_bg, &path, clip_id) {
+        match extract_audio_from_video(&app_bg, &path, media_id) {
             Ok(audio_tmp) => {
                 // RAII guard: cleanup runs even if run_audio_pipeline
                 // panics, preventing scratch-file leaks in temp_media/.
                 let _guard = TempFileGuard(audio_tmp.clone());
                 crate::transcribe::run_audio_pipeline(
                     app_bg.clone(),
-                    clip_id,
+                    crate::transcribe::ClipTarget::Media(media_id),
                     audio_tmp,
                 );
             }
             Err(e) => {
                 tracing::warn!(
                     target = "audio",
-                    clip_id,
+                    media_id,
                     "video audio extraction failed: {}",
                     e.message
                 );
                 let _ = crate::db::open_db().map(|conn| {
                     conn.execute(
-                        "UPDATE web_clips SET transcription_status = 'failed',
+                        "UPDATE media_items SET transcription_status = 'failed',
                             transcription_error = ?1,
                             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
                          WHERE id = ?2",
-                        rusqlite::params![format!("提取视频音频失败: {}", e.message), clip_id],
+                        rusqlite::params![format!("提取视频音频失败: {}", e.message), media_id],
                     )
                 });
             }
         }
     });
 
-    Ok(clip_id)
+    Ok(media_id)
 }
 
 #[cfg(test)]
@@ -429,5 +464,157 @@ mod tests {
         assert!(ALLOWED_EXTS.contains(&"flac"));
         assert!(ALLOWED_EXTS.contains(&"opus"));
         assert!(!ALLOWED_EXTS.contains(&"mp4"), "video containers excluded");
+    }
+
+    // ── upsert_media_row dedup semantics ──────────────────────────────
+
+    fn schema_only_conn() -> rusqlite::Connection {
+        // Minimal standalone fixture — just the media_items table + its
+        // partial unique index, without the full ensure_schema path so
+        // these tests stay independent of unrelated migrations.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            r"
+            CREATE TABLE media_items (
+              id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+              media_type           TEXT NOT NULL,
+              title                TEXT NOT NULL DEFAULT '',
+              file_path            TEXT NOT NULL DEFAULT '',
+              file_hash            TEXT NOT NULL DEFAULT '',
+              file_size            INTEGER NOT NULL DEFAULT 0,
+              audio_duration_sec   INTEGER NOT NULL DEFAULT 0,
+              content              TEXT NOT NULL DEFAULT '',
+              raw_content          TEXT NOT NULL DEFAULT '',
+              summary              TEXT NOT NULL DEFAULT '',
+              tags                 TEXT NOT NULL DEFAULT '[]',
+              notes                TEXT NOT NULL DEFAULT '',
+              transcription_status TEXT NOT NULL DEFAULT '',
+              transcription_error  TEXT NOT NULL DEFAULT '',
+              transcription_source TEXT NOT NULL DEFAULT '',
+              source_language      TEXT NOT NULL DEFAULT '',
+              translated_content   TEXT NOT NULL DEFAULT '',
+              ai_status            TEXT NOT NULL DEFAULT 'pending',
+              ai_error             TEXT NOT NULL DEFAULT '',
+              is_starred           INTEGER NOT NULL DEFAULT 0,
+              is_read              INTEGER NOT NULL DEFAULT 0,
+              created_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+              updated_at           TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+              deleted_at           TEXT
+            );
+            CREATE UNIQUE INDEX idx_media_items_file_hash_active
+              ON media_items(file_hash) WHERE deleted_at IS NULL AND file_hash <> '';
+            ",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn upsert_first_import_creates_row_with_all_fields() {
+        let conn = schema_only_conn();
+        let p = PathBuf::from("/tmp/podcast.mp3");
+        let id = super::upsert_media_row(&conn, "audio", "播客 · 第 1 集", &p, "hash-a", 42_000)
+            .expect("first upsert");
+        let (media_type, title, file_path, file_hash, file_size, t_status, ai_status): (
+            String, String, String, String, i64, String, String,
+        ) = conn
+            .query_row(
+                "SELECT media_type, title, file_path, file_hash, file_size,
+                        transcription_status, ai_status
+                 FROM media_items WHERE id = ?1",
+                [id],
+                |r| {
+                    Ok((
+                        r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+                        r.get(5)?, r.get(6)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(media_type, "audio");
+        assert_eq!(title, "播客 · 第 1 集");
+        assert_eq!(file_path, "/tmp/podcast.mp3");
+        assert_eq!(file_hash, "hash-a");
+        assert_eq!(file_size, 42_000);
+        assert_eq!(t_status, "pending");
+        assert_eq!(ai_status, "pending");
+    }
+
+    #[test]
+    fn upsert_reimport_while_active_updates_existing_row() {
+        let conn = schema_only_conn();
+        let p = PathBuf::from("/tmp/a.mp3");
+        let id1 = super::upsert_media_row(&conn, "audio", "orig", &p, "same-hash", 10)
+            .unwrap();
+
+        // User-edited title must be preserved (we only refill when empty).
+        conn.execute(
+            "UPDATE media_items SET title = 'user edited' WHERE id = ?1",
+            [id1],
+        )
+        .unwrap();
+        // Pretend transcription completed (so the reset clause has
+        // something to do).
+        conn.execute(
+            "UPDATE media_items SET transcription_status = 'completed',
+             transcription_error = 'stale' WHERE id = ?1",
+            [id1],
+        )
+        .unwrap();
+
+        let id2 = super::upsert_media_row(&conn, "audio", "ignored", &p, "same-hash", 20)
+            .unwrap();
+        assert_eq!(id1, id2, "reimport must update existing row, not insert");
+
+        let (title, t_status, t_err, size): (String, String, String, i64) = conn
+            .query_row(
+                "SELECT title, transcription_status, transcription_error, file_size
+                 FROM media_items WHERE id = ?1",
+                [id1],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(title, "user edited", "must not clobber user-edited title");
+        assert_eq!(t_status, "pending", "retry pipeline needs a clean status");
+        assert_eq!(t_err, "", "old error must be wiped on retry");
+        assert_eq!(size, 20, "file_size refreshes to latest observation");
+
+        // Only one row exists.
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM media_items", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 1);
+    }
+
+    #[test]
+    fn upsert_reimport_after_soft_delete_creates_new_row() {
+        let conn = schema_only_conn();
+        let p = PathBuf::from("/tmp/a.mp3");
+        let id1 = super::upsert_media_row(&conn, "audio", "t", &p, "h", 1).unwrap();
+        conn.execute(
+            "UPDATE media_items SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+             WHERE id = ?1",
+            [id1],
+        )
+        .unwrap();
+
+        // Same hash, but the previous row is soft-deleted — partial unique
+        // index must allow the reimport as a fresh row.
+        let id2 = super::upsert_media_row(&conn, "audio", "t", &p, "h", 1)
+            .expect("soft-deleted row must not block reimport");
+        assert_ne!(id1, id2);
+    }
+
+    // ── ClipTarget enum contract ──────────────────────────────────────
+    // Small but load-bearing: every SQL-emitting helper in transcribe/clips
+    // relies on `.table()` returning a `&'static str` from a closed set.
+
+    #[test]
+    fn clip_target_exposes_id_and_table() {
+        use crate::transcribe::ClipTarget;
+        assert_eq!(ClipTarget::Web(17).id(), 17);
+        assert_eq!(ClipTarget::Media(99).id(), 99);
+        assert_eq!(ClipTarget::Web(1).table(), "web_clips");
+        assert_eq!(ClipTarget::Media(1).table(), "media_items");
     }
 }

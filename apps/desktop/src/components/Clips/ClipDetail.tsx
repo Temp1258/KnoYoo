@@ -35,7 +35,35 @@ type Props = {
   onStar: (id: number) => void;
   onUpdate?: (clip: WebClip) => void;
   compact?: boolean;
+  /** Backend table this clip lives in. `'web'` hits `web_clips` (default,
+   *  for articles and online videos). `'media'` hits `media_items` (local
+   *  audio / local video). Every tauriInvoke in this component is routed
+   *  through the `cmds` map below so the shared rendering code can drive
+   *  both pipelines without duplicating the 900-line detail view. */
+  kind?: "web" | "media";
 };
+
+/** Command names used by the detail view, keyed by backend table. A single
+ *  map keeps the branching declarative and easy to extend — add a new
+ *  operation by adding a pair, not by threading a second prop. */
+const CMDS = {
+  web: {
+    get: "get_clip",
+    update: "update_web_clip",
+    markRead: "mark_clip_read",
+    toggleRead: "toggle_read_clip",
+    aiAutoTag: "ai_auto_tag_clip",
+    aiTranslate: "ai_translate_clip",
+  },
+  media: {
+    get: "get_media_item",
+    update: "update_media_item",
+    markRead: "mark_media_item_read",
+    toggleRead: "toggle_read_media_item",
+    aiAutoTag: "ai_auto_tag_media_item",
+    aiTranslate: "ai_translate_media_item",
+  },
+} as const;
 
 type Heading = { level: number; text: string; id: string };
 
@@ -84,7 +112,15 @@ function formatTranscriptionSource(source: string): string {
   return source;
 }
 
-export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: Props) {
+export default function ClipDetail({
+  clip,
+  onBack,
+  onStar,
+  onUpdate,
+  compact,
+  kind = "web",
+}: Props) {
+  const cmds = CMDS[kind];
   const [editingSummary, setEditingSummary] = useState(false);
   const [summaryDraft, setSummaryDraft] = useState(clip.summary);
   const [editingTags, setEditingTags] = useState(false);
@@ -193,29 +229,60 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
   // Auto-mark as read (fire-and-forget, no stale concern)
   useEffect(() => {
     if (!clip.is_read) {
-      tauriInvoke("mark_clip_read", { id: clip.id }).catch(console.error);
+      tauriInvoke(cmds.markRead, { id: clip.id }).catch(console.error);
     }
-  }, [clip.id, clip.is_read]);
+  }, [clip.id, clip.is_read, cmds.markRead]);
 
-  // Load related clips + user note with stale-guard
+  // Load related clips + user note with stale-guard.
+  //
+  // Related clips currently only index web_clips content — media_items
+  // isn't covered by `find_related_clips` yet (planned for B.6 search
+  // aggregation), so we gate that call on kind to avoid pointless round-
+  // trips and stale Chinese error messages for media rows.
+  //
+  // Notes model differs by kind: web_clips uses a separate `clip_notes`
+  // table (round-trip via get_clip_note); media_items has an inline
+  // `notes` column already on the clip prop — we wrap it in a synthetic
+  // ClipNote shape so downstream UI code stays uniform.
   useEffect(() => {
     let stale = false;
-    tauriInvoke<WebClip[]>("find_related_clips", { clipId: clip.id, limit: 5 })
-      .then((r) => {
-        if (!stale) setRelatedClips(r);
-      })
-      .catch(console.error);
+    if (kind === "web") {
+      tauriInvoke<WebClip[]>("find_related_clips", { clipId: clip.id, limit: 5 })
+        .then((r) => {
+          if (!stale) setRelatedClips(r);
+        })
+        .catch(console.error);
 
-    tauriInvoke<ClipNote | null>("get_clip_note", { clipId: clip.id })
-      .then((n) => {
-        if (!stale) setNote(n);
-      })
-      .catch(console.error);
-
+      tauriInvoke<ClipNote | null>("get_clip_note", { clipId: clip.id })
+        .then((n) => {
+          if (!stale) setNote(n);
+        })
+        .catch(console.error);
+    } else {
+      // MediaItems carry the note inline. An empty string means "no
+      // note" — reflect that as null so the "add note" empty state still
+      // renders.
+      setRelatedClips([]);
+      // `clip` was typed as WebClip for shared rendering; MediaPage
+      // adapts a MediaItem into this shape and folds the inline note
+      // into a stable field we can read here without a second IPC.
+      const inline = (clip as WebClip & { notes?: string }).notes ?? "";
+      if (inline) {
+        setNote({
+          id: 0,
+          clip_id: clip.id,
+          content: inline,
+          created_at: clip.updated_at,
+          updated_at: clip.updated_at,
+        });
+      } else {
+        setNote(null);
+      }
+    }
     return () => {
       stale = true;
     };
-  }, [clip.id]);
+  }, [clip, kind]);
 
   // Poll while the AI pipeline is still working. "In-flight" means either:
   //   • transcription pipeline active (video clips only), OR
@@ -247,7 +314,7 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
     const interval = setInterval(async () => {
       if (cancelled) return;
       try {
-        const fresh = await tauriInvoke<WebClip>("get_clip", { id: clip.id });
+        const fresh = await tauriInvoke<WebClip>(cmds.get, { id: clip.id });
         if (cancelled) return;
         const stillActive =
           fresh.transcription_status === "pending" ||
@@ -271,17 +338,22 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
       clearInterval(interval);
       clearTimeout(stopTimer);
     };
-  }, [clip.id, clip.updated_at, videoActive, articleActive]);
+  }, [clip.id, clip.updated_at, videoActive, articleActive, cmds.get]);
 
   const domain = formatClipDomain(clip.url);
 
+  // For web clips, `update_web_clip` accepts a patch keyed by column name
+  // and returns the fresh row. `update_media_item` mirrors that shape for
+  // the subset of fields ClipDetail lets users edit (title / summary /
+  // tags), so the same helper drives both modes.
   const saveSummary = async () => {
     setSaving(true);
     try {
-      const updated = await tauriInvoke<WebClip>("update_web_clip", {
-        id: clip.id,
-        summary: summaryDraft,
-      });
+      const patch =
+        kind === "media"
+          ? { id: clip.id, patch: { summary: summaryDraft } }
+          : { id: clip.id, summary: summaryDraft };
+      const updated = await tauriInvoke<WebClip>(cmds.update, patch);
       onUpdate?.(updated);
       setEditingSummary(false);
     } catch (e) {
@@ -293,10 +365,11 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
   const saveTags = async () => {
     setSaving(true);
     try {
-      const updated = await tauriInvoke<WebClip>("update_web_clip", {
-        id: clip.id,
-        tags: tagsDraft,
-      });
+      const patch =
+        kind === "media"
+          ? { id: clip.id, patch: { tags: tagsDraft } }
+          : { id: clip.id, tags: tagsDraft };
+      const updated = await tauriInvoke<WebClip>(cmds.update, patch);
       onUpdate?.(updated);
       setEditingTags(false);
     } catch (e) {
@@ -308,13 +381,21 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
   const resetToAI = async () => {
     setSaving(true);
     try {
-      await tauriInvoke("ai_auto_tag_clip", { id: clip.id });
-      // Reload clip data
-      const clips = await tauriInvoke<WebClip[]>("search_web_clips", {
-        q: clip.title.slice(0, 20),
-      });
-      const updated = clips.find((c) => c.id === clip.id);
-      if (updated) onUpdate?.(updated);
+      await tauriInvoke(cmds.aiAutoTag, { id: clip.id });
+      // Reload freshly — web clips currently re-read via search (cheaper
+      // than get_clip which joins notes); media uses get_media_item
+      // directly since there's no cross-content search index for media
+      // yet (B.6).
+      if (kind === "web") {
+        const clips = await tauriInvoke<WebClip[]>("search_web_clips", {
+          q: clip.title.slice(0, 20),
+        });
+        const updated = clips.find((c) => c.id === clip.id);
+        if (updated) onUpdate?.(updated);
+      } else {
+        const updated = await tauriInvoke<WebClip>(cmds.get, { id: clip.id });
+        onUpdate?.(updated);
+      }
     } catch (e) {
       console.error("AI retag failed:", e);
     }
@@ -331,8 +412,8 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
     if (translating) return;
     setTranslating(true);
     try {
-      await tauriInvoke("ai_translate_clip", { id: clip.id });
-      const fresh = await tauriInvoke<WebClip>("get_clip", { id: clip.id });
+      await tauriInvoke(cmds.aiTranslate, { id: clip.id });
+      const fresh = await tauriInvoke<WebClip>(cmds.get, { id: clip.id });
       onUpdate?.(fresh);
       if (fresh.translated_content) {
         const from = fresh.source_language ? ` ${fresh.source_language.toUpperCase()} →` : "";
@@ -406,7 +487,7 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
               variant="ghost"
               size="sm"
               onClick={async () => {
-                const isRead = await tauriInvoke<boolean>("toggle_read_clip", { id: clip.id });
+                const isRead = await tauriInvoke<boolean>(cmds.toggleRead, { id: clip.id });
                 onUpdate?.({ ...clip, is_read: isRead });
               }}
             >
@@ -629,11 +710,29 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
                 onClick={async () => {
                   setSaving(true);
                   try {
-                    const saved = await tauriInvoke<ClipNote>("save_clip_note", {
-                      clipId: clip.id,
-                      content: noteDraft,
-                    });
-                    setNote(saved);
+                    if (kind === "media") {
+                      // media_items carries the note inline — the command
+                      // returns void, so we synthesize a ClipNote-shaped
+                      // wrapper locally to keep the display path uniform
+                      // with the web branch below.
+                      await tauriInvoke("save_media_item_notes", {
+                        id: clip.id,
+                        content: noteDraft,
+                      });
+                      setNote({
+                        id: clip.id,
+                        clip_id: clip.id,
+                        content: noteDraft,
+                        created_at: note?.created_at ?? clip.updated_at,
+                        updated_at: new Date().toISOString(),
+                      });
+                    } else {
+                      const saved = await tauriInvoke<ClipNote>("save_clip_note", {
+                        clipId: clip.id,
+                        content: noteDraft,
+                      });
+                      setNote(saved);
+                    }
                     setEditingNote(false);
                   } catch (e) {
                     console.error("Save note failed:", e);
@@ -676,7 +775,17 @@ export default function ClipDetail({ clip, onBack, onStar, onUpdate, compact }: 
                 <button
                   onClick={async () => {
                     try {
-                      await tauriInvoke("delete_clip_note", { clipId: clip.id });
+                      if (kind === "media") {
+                        // Media inline notes: "delete" = save empty
+                        // string. Keeps the column NOT NULL invariant
+                        // and avoids a separate backend command.
+                        await tauriInvoke("save_media_item_notes", {
+                          id: clip.id,
+                          content: "",
+                        });
+                      } else {
+                        await tauriInvoke("delete_clip_note", { clipId: clip.id });
+                      }
                       setNote(null);
                     } catch (e) {
                       // Without this catch, a failed delete still flipped

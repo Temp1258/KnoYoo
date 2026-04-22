@@ -14,6 +14,7 @@ mod export;
 mod import;
 mod error;
 mod html_extract;
+mod media;
 mod milestones;
 mod models;
 mod search;
@@ -254,6 +255,7 @@ fn main() {
             clips::delete_chat_session,
             // Export / Backup
             export::export_clip_to_file,
+            export::export_media_item_to_file,
             export::export_full_database,
             export::import_full_database,
             // Import
@@ -286,6 +288,24 @@ fn main() {
             // Local audio & video file import (podcasts, recordings, MP4s)
             audio::import_audio_file,
             audio::import_local_video_file,
+            // media_items: post-import CRUD + manual pipeline triggers
+            media::list_media_items,
+            media::get_media_item,
+            media::count_media_items,
+            media::toggle_star_media_item,
+            media::toggle_read_media_item,
+            media::mark_media_item_read,
+            media::update_media_item,
+            media::save_media_item_notes,
+            media::delete_media_item,
+            media::restore_media_item,
+            media::purge_media_item,
+            media::list_media_trash,
+            media::count_media_trash,
+            media::empty_media_trash,
+            media::retry_media_transcription,
+            media::ai_auto_tag_media_item,
+            media::ai_translate_media_item,
             // Milestones
             milestones::list_milestones,
             milestones::acknowledge_milestone,

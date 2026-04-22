@@ -40,6 +40,32 @@ use crate::error::AppError;
 use crate::secrets;
 use crate::ytdlp;
 
+/// Which table a clip-shaped row lives in. The post-import AI pipeline
+/// (`ai_clean`, `auto_tag`, `ai_translate`) and the transcription status
+/// writers here are parameterized by this so the same code processes both
+/// web-sourced clips (`web_clips`) and locally uploaded media
+/// (`media_items`). `table()` returns a `&'static str` from a closed enum,
+/// so string-interpolating it into SQL is safe from injection.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ClipTarget {
+    Web(i64),
+    Media(i64),
+}
+
+impl ClipTarget {
+    pub const fn id(self) -> i64 {
+        match self {
+            Self::Web(id) | Self::Media(id) => id,
+        }
+    }
+    pub const fn table(self) -> &'static str {
+        match self {
+            Self::Web(_) => "web_clips",
+            Self::Media(_) => "media_items",
+        }
+    }
+}
+
 /// Event name used for all pipeline progress notifications.
 pub const PROGRESS_EVENT: &str = "transcribe://progress";
 
@@ -73,13 +99,15 @@ pub struct ProgressEvent {
     pub detail: Option<String>,
 }
 
-/// Run the pipeline for `clip_id`. Safe to call from any `std::thread::spawn`.
-/// Emits progress events and writes final status to the DB; never panics.
+/// Run the URL-video pipeline for `clip_id` (a row in `web_clips`). Safe to
+/// call from any `std::thread::spawn`. Emits progress events and writes
+/// final status to the DB; never panics.
 pub fn run_pipeline(app: AppHandle, clip_id: i64, url: String) {
-    set_status(clip_id, "pending", "", None);
-    match run_pipeline_inner(&app, clip_id, &url) {
+    let target = ClipTarget::Web(clip_id);
+    set_status(target, "pending", "", None);
+    match run_pipeline_inner(&app, target, &url) {
         Ok(provider_id) => {
-            set_status(clip_id, "completed", "", Some(&provider_id));
+            set_status(target, "completed", "", Some(&provider_id));
             emit(
                 &app,
                 clip_id,
@@ -95,16 +123,17 @@ pub fn run_pipeline(app: AppHandle, clip_id: i64, url: String) {
                 "pipeline failed: {}",
                 e
             );
-            set_status(clip_id, "failed", &e.message, None);
+            set_status(target, "failed", &e.message, None);
         }
     }
 }
 
 fn run_pipeline_inner(
     app: &AppHandle,
-    clip_id: i64,
+    target: ClipTarget,
     url: &str,
 ) -> Result<String, AppError> {
+    let clip_id = target.id();
     // Dedicated scratch dir per invocation so yt-dlp output files don't
     // collide across concurrent pipelines, and cleanup is a single rmdir.
     // Suffix comes from a process-wide atomic counter (was a ms timestamp —
@@ -120,7 +149,9 @@ fn run_pipeline_inner(
     // ── Stage 1: metadata ────────────────────────────────────────────────
     emit(app, clip_id, Stage::Metadata, 2, Some("解析视频元数据"));
     let meta = ytdlp::fetch_metadata(app, url)?;
-    update_clip_metadata(clip_id, &meta)?;
+    // Metadata extraction is URL-video specific (title + duration + cover
+    // from YouTube/Bilibili response); only makes sense on the Web target.
+    update_web_clip_metadata(clip_id, &meta)?;
     emit(
         app,
         clip_id,
@@ -134,20 +165,22 @@ fn run_pipeline_inner(
     );
 
     // ── Stage 2-5: obtain transcript (subtitle first, ASR fallback) ──────
-    let (transcript, source_id) = obtain_transcript(app, clip_id, url, &meta, &work_dir)?;
+    let (transcript, source_id) = obtain_transcript(app, target, url, &meta, &work_dir)?;
 
     // ── Stage 6: AI 清洗 raw → 可读版 Markdown ───────────────────────────
-    set_status(clip_id, "cleaning", "", None);
-    save_raw_transcript(clip_id, &transcript)?;
+    set_status(target, "cleaning", "", None);
+    save_raw_transcript(target, &transcript)?;
     emit(app, clip_id, Stage::Clean, 82, Some("AI 清洗为可读版"));
-    run_ai_cleanup(clip_id);
+    run_ai_cleanup(target);
     emit(app, clip_id, Stage::Clean, 93, Some("清洗完成"));
 
     // ── Stage 7: 摘要 + 标签 ─────────────────────────────────────────────
     emit(app, clip_id, Stage::Summarize, 96, Some("生成摘要与标签"));
-    run_auto_tag(clip_id);
+    run_auto_tag(target);
     // auto_tag re-classifies source_type from the AI reply. Transcripts
     // always come from video — force the label back regardless of guess.
+    // Only applies to Web target (media_items has an immutable media_type
+    // that auto_tag is prevented from touching).
     enforce_video_source_type(clip_id);
 
     // ── Stage 8 (optional): 译文 ─────────────────────────────────────────
@@ -155,7 +188,7 @@ fn run_pipeline_inner(
     // variant just for translation. The UI shows the detail string
     // ("生成译文") which is what users actually read.
     emit(app, clip_id, Stage::Summarize, 98, Some("生成译文"));
-    run_ai_translate(clip_id);
+    run_ai_translate(target);
 
     Ok(source_id)
 }
@@ -182,11 +215,12 @@ impl Drop for WorkDirGuard {
 /// branch may fail softly; only a failure of the final ASR path propagates.
 fn obtain_transcript(
     app: &AppHandle,
-    clip_id: i64,
+    target: ClipTarget,
     url: &str,
     meta: &ytdlp::VideoMetadata,
     work_dir: &Path,
 ) -> Result<(String, String), AppError> {
+    let clip_id = target.id();
     // Order matters: publisher captions are human-authored and more accurate
     // than YouTube's ASR-generated `automatic_captions`, which are still
     // better (and free) than our own cloud ASR call.
@@ -205,7 +239,7 @@ fn obtain_transcript(
         };
         emit(app, clip_id, Stage::SubtitleProbe, 10, Some(label));
 
-        match try_subtitle_path(app, clip_id, url, langs, *prefer_publisher, work_dir) {
+        match try_subtitle_path(app, target, url, langs, *prefer_publisher, work_dir) {
             Ok(Some(text)) => return Ok((text, "subtitle".to_string())),
             Ok(None) => tracing::info!(
                 target = "transcribe",
@@ -222,7 +256,7 @@ fn obtain_transcript(
     }
 
     emit(app, clip_id, Stage::SubtitleProbe, 10, Some("无字幕，走 ASR"));
-    let (transcript, provider_id) = run_asr_path(app, clip_id, url, work_dir)?;
+    let (transcript, provider_id) = run_asr_path(app, target, url, work_dir)?;
     Ok((transcript, provider_id))
 }
 
@@ -231,13 +265,14 @@ fn obtain_transcript(
 /// caller then falls through to the next source in the ladder.
 fn try_subtitle_path(
     app: &AppHandle,
-    clip_id: i64,
+    target: ClipTarget,
     url: &str,
     available_langs: &[String],
     prefer_publisher: bool,
     work_dir: &Path,
 ) -> Result<Option<String>, AppError> {
-    set_status(clip_id, "downloading", "", None);
+    let clip_id = target.id();
+    set_status(target, "downloading", "", None);
     emit(app, clip_id, Stage::Download, 15, Some("下载字幕"));
 
     let Some(srt_path) =
@@ -266,11 +301,12 @@ fn try_subtitle_path(
 /// `(transcript, provider_id)`.
 fn run_asr_path(
     app: &AppHandle,
-    clip_id: i64,
+    target: ClipTarget,
     url: &str,
     work_dir: &Path,
 ) -> Result<(String, String), AppError> {
-    set_status(clip_id, "downloading", "", None);
+    let clip_id = target.id();
+    set_status(target, "downloading", "", None);
 
     // The progress closure needs its own AppHandle clone so it can emit
     // from the yt-dlp subprocess event loop without borrowing `app`.
@@ -291,7 +327,7 @@ fn run_asr_path(
     })?;
     emit(app, clip_id, Stage::Download, 40, Some("下载完成"));
 
-    set_status(clip_id, "transcribing", "", None);
+    set_status(target, "transcribing", "", None);
     emit(app, clip_id, Stage::Asr, 45, Some("正在转录"));
     let (transcript, provider_id) = run_asr(app, clip_id, &audio_path)?;
     emit(
@@ -305,24 +341,25 @@ fn run_asr_path(
 }
 
 /// AI cleanup is optional — if it fails (no AI configured, rate limit,
-/// >66% compression rejection), we keep the raw transcript as `content`
-/// > and move on. A failed cleanup MUST NOT fail the whole pipeline.
-fn run_ai_cleanup(clip_id: i64) {
-    if let Err(e) = crate::clips::ai_clean_clip_inner(clip_id) {
+/// over 66% compression rejection), we keep the raw transcript as
+/// `content` and move on. A failed cleanup MUST NOT fail the whole
+/// pipeline.
+fn run_ai_cleanup(target: ClipTarget) {
+    if let Err(e) = crate::clips::ai_clean_clip_inner(target) {
         tracing::warn!(
             target = "transcribe",
-            clip_id,
+            clip_id = target.id(),
             "AI cleanup skipped: {}",
             e
         );
     }
 }
 
-fn run_auto_tag(clip_id: i64) {
-    if let Err(e) = crate::clips::auto_tag_clip_inner(clip_id) {
+fn run_auto_tag(target: ClipTarget) {
+    if let Err(e) = crate::clips::auto_tag_clip_inner(target) {
         tracing::warn!(
             target = "transcribe",
-            clip_id,
+            clip_id = target.id(),
             "auto-tag skipped: {}",
             e
         );
@@ -332,11 +369,11 @@ fn run_auto_tag(clip_id: i64) {
 /// Optional translation pass. Best-effort like cleanup/auto-tag — if AI
 /// isn't configured or the call fails, the clip keeps its original content
 /// and the UI simply doesn't offer a translation toggle.
-fn run_ai_translate(clip_id: i64) {
-    if let Err(e) = crate::clips::ai_translate_clip_inner(clip_id) {
+fn run_ai_translate(target: ClipTarget) {
+    if let Err(e) = crate::clips::ai_translate_clip_inner(target) {
         tracing::warn!(
             target = "transcribe",
-            clip_id,
+            clip_id = target.id(),
             "AI translate skipped: {}",
             e
         );
@@ -352,25 +389,36 @@ fn run_ai_translate(clip_id: i64) {
 /// Emits the same `transcribe://progress` events the UI already listens to —
 /// audio import reuses the existing progress bar component without special
 /// casing.
-pub fn run_audio_pipeline(app: AppHandle, clip_id: i64, audio_path: std::path::PathBuf) {
-    set_status(clip_id, "transcribing", "", None);
-    match run_audio_pipeline_inner(&app, clip_id, &audio_path) {
+///
+/// `target` is always `ClipTarget::Media(id)` for rows in `media_items`.
+/// We accept it as a parameter (rather than hard-coding Media) so tests
+/// and future callers can exercise the same pipeline against other
+/// targets without reflection.
+pub fn run_audio_pipeline(
+    app: AppHandle,
+    target: ClipTarget,
+    audio_path: std::path::PathBuf,
+) {
+    let clip_id = target.id();
+    set_status(target, "transcribing", "", None);
+    match run_audio_pipeline_inner(&app, target, &audio_path) {
         Ok(provider_id) => {
-            set_status(clip_id, "completed", "", Some(&provider_id));
+            set_status(target, "completed", "", Some(&provider_id));
             emit(&app, clip_id, Stage::Summarize, 100, Some("完成"));
         }
         Err(e) => {
             tracing::error!(target = "transcribe", clip_id, "audio pipeline failed: {}", e);
-            set_status(clip_id, "failed", &e.message, None);
+            set_status(target, "failed", &e.message, None);
         }
     }
 }
 
 fn run_audio_pipeline_inner(
     app: &AppHandle,
-    clip_id: i64,
+    target: ClipTarget,
     audio_path: &Path,
 ) -> Result<String, AppError> {
+    let clip_id = target.id();
     emit(app, clip_id, Stage::Asr, 45, Some("正在转录"));
     let (transcript, provider_id) = run_asr(app, clip_id, audio_path)?;
     emit(
@@ -381,40 +429,30 @@ fn run_audio_pipeline_inner(
         Some(&format!("转录完成 · {} 字", transcript.chars().count())),
     );
 
-    set_status(clip_id, "cleaning", "", None);
-    save_raw_transcript(clip_id, &transcript)?;
+    set_status(target, "cleaning", "", None);
+    save_raw_transcript(target, &transcript)?;
     emit(app, clip_id, Stage::Clean, 82, Some("AI 清洗为可读版"));
-    run_ai_cleanup(clip_id);
+    run_ai_cleanup(target);
     emit(app, clip_id, Stage::Clean, 93, Some("清洗完成"));
 
     emit(app, clip_id, Stage::Summarize, 96, Some("生成摘要与标签"));
-    run_auto_tag(clip_id);
-    enforce_audio_source_type(clip_id);
+    run_auto_tag(target);
+    // media_items has an immutable `media_type` — nothing to re-enforce.
+    // (Contrast with web_clips.source_type, which auto_tag can modify and
+    // must be pinned back to 'video' after the URL-video pipeline.)
 
     emit(app, clip_id, Stage::Summarize, 98, Some("生成译文"));
-    run_ai_translate(clip_id);
+    run_ai_translate(target);
 
     Ok(provider_id)
-}
-
-/// Mirror of `enforce_video_source_type` — `auto_tag` can reclassify based on
-/// content, but a local audio file is forever an audio clip regardless of
-/// what topic the transcript covers.
-fn enforce_audio_source_type(clip_id: i64) {
-    if let Ok(conn) = open_db() {
-        let _ = conn.execute(
-            "UPDATE web_clips SET source_type = 'audio',
-                updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-             WHERE id = ?1",
-            [clip_id],
-        );
-    }
 }
 
 /// Safety belt: `auto_tag` classifies `source_type` from the AI reply. Our
 /// transcripts are always from video — force the label back so the UI's
 /// video-specific affordances (player link, duration badge) stay correct
-/// even if the model picks a different bucket.
+/// even if the model picks a different bucket. Only applies to the Web
+/// target; `media_items` has no `source_type` column and its `media_type`
+/// is immutable from `import_*_file`.
 fn enforce_video_source_type(clip_id: i64) {
     if let Ok(conn) = open_db() {
         let _ = conn.execute(
@@ -825,8 +863,9 @@ fn read_asr_chunk_seconds() -> u32 {
 }
 
 /// Write status + optional source. Swallows DB errors (logged) so a failing
-/// status update doesn't mask the original pipeline error.
-fn set_status(clip_id: i64, status: &str, error: &str, source: Option<&str>) {
+/// status update doesn't mask the original pipeline error. Parameterized
+/// over `ClipTarget` — writes to whichever table the target lives in.
+fn set_status(target: ClipTarget, status: &str, error: &str, source: Option<&str>) {
     let conn = match open_db() {
         Ok(c) => c,
         Err(e) => {
@@ -834,32 +873,38 @@ fn set_status(clip_id: i64, status: &str, error: &str, source: Option<&str>) {
             return;
         }
     };
+    let table = target.table();
+    let clip_id = target.id();
     let res = if let Some(src) = source {
-        conn.execute(
-            "UPDATE web_clips
+        let sql = format!(
+            "UPDATE {table}
                 SET transcription_status = ?1,
                     transcription_error = ?2,
                     transcription_source = ?3,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-              WHERE id = ?4",
-            rusqlite::params![status, error, src, clip_id],
-        )
+              WHERE id = ?4"
+        );
+        conn.execute(&sql, rusqlite::params![status, error, src, clip_id])
     } else {
-        conn.execute(
-            "UPDATE web_clips
+        let sql = format!(
+            "UPDATE {table}
                 SET transcription_status = ?1,
                     transcription_error = ?2,
                     updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-              WHERE id = ?3",
-            rusqlite::params![status, error, clip_id],
-        )
+              WHERE id = ?3"
+        );
+        conn.execute(&sql, rusqlite::params![status, error, clip_id])
     };
     if let Err(e) = res {
         tracing::error!(target = "transcribe", clip_id, "status update failed: {}", e);
     }
 }
 
-fn update_clip_metadata(
+/// URL-video-only: writes title/summary/favicon/duration pulled from the
+/// yt-dlp metadata probe. Called exclusively by `run_pipeline_inner`, which
+/// targets `web_clips`. The `media_items` pipeline doesn't probe remote
+/// metadata (the file's already on disk with known bytes).
+fn update_web_clip_metadata(
     clip_id: i64,
     meta: &ytdlp::VideoMetadata,
 ) -> Result<(), AppError> {
@@ -885,20 +930,22 @@ fn update_clip_metadata(
     Ok(())
 }
 
-fn save_raw_transcript(clip_id: i64, transcript: &str) -> Result<(), AppError> {
+/// Write the transcript to both `raw_content` and `content` on whichever
+/// target table owns this row. Mirrors raw → content so the UI has
+/// something visible before `ai_clean_clip_inner` rewrites `content` to
+/// the cleaned Markdown version (and leaves `raw_content` intact for the
+/// "查看原始" toggle).
+fn save_raw_transcript(target: ClipTarget, transcript: &str) -> Result<(), AppError> {
     let conn = open_db().map_err(AppError::database)?;
-    // Mirror raw → content for now so the UI has something visible. A later
-    // slice plugs in `ai_clean_clip_inner(clip_id)` which rewrites `content`
-    // to a cleaned Markdown version and leaves `raw_content` untouched for
-    // the "查看原始" toggle.
-    conn.execute(
-        "UPDATE web_clips
+    let sql = format!(
+        "UPDATE {table}
             SET raw_content = ?1,
                 content     = ?1,
                 updated_at  = strftime('%Y-%m-%dT%H:%M:%fZ','now')
           WHERE id = ?2",
-        rusqlite::params![transcript, clip_id],
-    )?;
+        table = target.table()
+    );
+    conn.execute(&sql, rusqlite::params![transcript, target.id()])?;
     Ok(())
 }
 

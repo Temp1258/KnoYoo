@@ -4,7 +4,7 @@ import { Headphones, Video, Upload, Film } from "lucide-react";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
 import { tauriInvoke } from "../hooks/useTauriInvoke";
-import type { WebClip } from "../types";
+import type { MediaItem, WebClip } from "../types";
 import ClipCard from "../components/Clips/ClipCard";
 import ClipDetail from "../components/Clips/ClipDetail";
 import { SkeletonCard } from "../components/ui/Skeleton";
@@ -17,6 +17,63 @@ const VIDEO_EXTS = ["mp4", "mov", "mkv", "avi", "webm", "m4v", "flv", "wmv"];
 function hasExt(path: string, exts: string[]): boolean {
   const lower = path.toLowerCase();
   return exts.some((ext) => lower.endsWith(`.${ext}`));
+}
+
+/**
+ * macOS 的「照片」App 拖拽出来的一般是 library bundle 里的一张衍生缩略图
+ * （`.../Photos Library.photoslibrary/resources/derivatives/.../xxx.jpeg`），
+ * 不是原始视频 / 照片文件。即便偶尔命中 .mov，也是内部管理文件，不应直接
+ * 读取（Photos 会重打包）。统一截胡，请用户通过「文件 → 导出 → 导出未修改
+ * 的原始文件」把真实文件落到桌面再拖进来。
+ */
+function isFromPhotosLibrary(path: string): boolean {
+  return path.toLowerCase().includes(".photoslibrary/");
+}
+
+/** Short filename for error toasts — 完整绝对路径太长，用户只需要知道是哪个文件 */
+function basename(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+/**
+ * Adapt a `media_items` row to the `WebClip` shape the shared `ClipCard` /
+ * `ClipDetail` components render. Keeps rendering logic (which hasn't
+ * needed media-specific display affordances so far) untouched.
+ *
+ * - `url`: synthesized from `file_hash` so the "open in browser" button can
+ *   hide cleanly (URL check `isSafeUrl` rejects the `media-local://` scheme).
+ * - `source_type`: mirrored from `media_type` so the existing card icon
+ *   map renders the right glyph (🎧 for audio, 🎬 for local_video).
+ * - `deleted_at`: passed through as null for active rows — the trash page
+ *   reads it separately.
+ * - `notes`: carried across as an extra (non-WebClip) field; `ClipDetail`
+ *   reads it inline when `kind="media"` to avoid a redundant IPC.
+ */
+function asClipShape(m: MediaItem): WebClip & { notes: string } {
+  return {
+    id: m.id,
+    url: `media-local://${m.file_hash || m.id}`,
+    title: m.title,
+    content: m.content,
+    raw_content: m.raw_content,
+    summary: m.summary,
+    tags: m.tags,
+    source_type: m.media_type,
+    favicon: "",
+    og_image: "",
+    is_read: m.is_read,
+    is_starred: m.is_starred,
+    created_at: m.created_at,
+    updated_at: m.updated_at,
+    deleted_at: m.deleted_at,
+    transcription_status: m.transcription_status,
+    transcription_error: m.transcription_error,
+    transcription_source: m.transcription_source,
+    audio_duration_sec: m.audio_duration_sec,
+    source_language: m.source_language,
+    translated_content: m.translated_content,
+    notes: m.notes,
+  };
 }
 
 function MediaDropOverlay({ visible }: { visible: boolean }) {
@@ -38,54 +95,53 @@ function MediaDropOverlay({ visible }: { visible: boolean }) {
 }
 
 export default function MediaPage() {
-  const [clips, setClips] = useState<WebClip[]>([]);
+  const [items, setItems] = useState<MediaItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
-  const [selectedClip, setSelectedClip] = useState<WebClip | null>(null);
+  const [selected, setSelected] = useState<MediaItem | null>(null);
   const uploadingRef = useRef(false);
   const { showToast } = useToast();
   const isWide = useMediaQuery("(min-width: 1024px)");
 
-  const loadClips = useCallback(async () => {
+  const loadItems = useCallback(async () => {
     setLoading(true);
     try {
-      // list_web_clips_advanced returns all source types; we filter client-side
-      // for audio + local_video. The dataset is small (single user library)
-      // so this is fine; promoting to a backend includeSourceTypes param is a
-      // follow-up if performance ever matters.
-      const all = await tauriInvoke<WebClip[]>("list_web_clips_advanced", {
-        page: 1,
-        pageSize: 100,
+      const list = await tauriInvoke<MediaItem[]>("list_media_items", {
+        filter: { limit: 200 },
       });
-      setClips(all.filter((c) => c.source_type === "audio" || c.source_type === "local_video"));
+      setItems(list);
     } catch (e) {
-      console.error("load media clips failed:", e);
+      console.error("load media items failed:", e);
     } finally {
       setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    loadClips();
-  }, [loadClips]);
+    loadItems();
+  }, [loadItems]);
 
-  // Deep-link support (from QuickSearch / HomePage).
+  // Deep-link support (from QuickSearch / HomePage). Supports both the
+  // legacy `openClip` param (for backward compat during the B.5 rollout)
+  // and a new `openMedia` param the future search integration (B.6) will
+  // use once it can distinguish kinds.
   const [searchParams, setSearchParams] = useSearchParams();
   useEffect(() => {
-    const idRaw = searchParams.get("openClip");
+    const idRaw = searchParams.get("openMedia") || searchParams.get("openClip");
     if (!idRaw) return;
     const id = Number(idRaw);
     if (!Number.isFinite(id) || id <= 0) return;
     let stale = false;
-    tauriInvoke<WebClip>("get_clip", { id })
-      .then((clip) => {
-        if (!stale) setSelectedClip(clip);
+    tauriInvoke<MediaItem>("get_media_item", { id })
+      .then((item) => {
+        if (!stale) setSelected(item);
       })
       .catch(console.error)
       .finally(() => {
         if (!stale) {
           const next = new URLSearchParams(searchParams);
+          next.delete("openMedia");
           next.delete("openClip");
           setSearchParams(next, { replace: true });
         }
@@ -97,24 +153,33 @@ export default function MediaPage() {
 
   const importFile = useCallback(
     async (filePath: string) => {
+      // 拦截「照片」App：无论扩展名是什么都拒绝，避免读 library bundle
+      // 内部管理文件，同时给用户可操作的指引。
+      if (isFromPhotosLibrary(filePath)) {
+        showToast(
+          "『照片』App 的文件不能直接拖入。请先选中视频 → 文件 → 导出 → 导出未修改的原始文件，再把导出后的文件拖进来。",
+          "error",
+        );
+        return;
+      }
       const isVideo = hasExt(filePath, VIDEO_EXTS);
       const isAudio = hasExt(filePath, AUDIO_EXTS);
       if (!isAudio && !isVideo) {
-        showToast(`不支持的文件格式：${filePath}`, "error");
+        showToast(`不支持的文件格式：${basename(filePath)}`, "error");
         return;
       }
       const cmd = isVideo ? "import_local_video_file" : "import_audio_file";
       try {
-        const clipId = await tauriInvoke<number>(cmd, { filePath });
+        const mediaId = await tauriInvoke<number>(cmd, { filePath });
         // Open detail so the user can watch transcribe progress.
-        const clip = await tauriInvoke<WebClip>("get_clip", { id: clipId });
-        setSelectedClip(clip);
-        loadClips();
+        const item = await tauriInvoke<MediaItem>("get_media_item", { id: mediaId });
+        setSelected(item);
+        loadItems();
       } catch (e) {
         showToast(`导入失败：${String(e)}`, "error");
       }
     },
-    [showToast, loadClips],
+    [showToast, loadItems],
   );
 
   const importMultiple = useCallback(
@@ -163,78 +228,107 @@ export default function MediaPage() {
   }, [importMultiple]);
 
   const pickAudio = async () => {
-    const selected = await openFileDialog({
+    const selectedPaths = await openFileDialog({
       multiple: true,
       filters: [{ name: "音频文件", extensions: AUDIO_EXTS }],
     });
-    if (!selected) return;
-    const paths = Array.isArray(selected) ? selected : [selected];
+    if (!selectedPaths) return;
+    const paths = Array.isArray(selectedPaths) ? selectedPaths : [selectedPaths];
     await importMultiple(paths);
   };
 
   const pickVideo = async () => {
-    const selected = await openFileDialog({
+    const selectedPaths = await openFileDialog({
       multiple: true,
       filters: [{ name: "视频文件", extensions: VIDEO_EXTS }],
     });
-    if (!selected) return;
-    const paths = Array.isArray(selected) ? selected : [selected];
+    if (!selectedPaths) return;
+    const paths = Array.isArray(selectedPaths) ? selectedPaths : [selectedPaths];
     await importMultiple(paths);
   };
 
   const handleStar = async (id: number) => {
-    await tauriInvoke("toggle_star_clip", { id });
-    loadClips();
-    if (selectedClip?.id === id) {
-      setSelectedClip((prev) => (prev ? { ...prev, is_starred: !prev.is_starred } : null));
+    await tauriInvoke("toggle_star_media_item", { id });
+    loadItems();
+    if (selected?.id === id) {
+      setSelected((prev) => (prev ? { ...prev, is_starred: !prev.is_starred } : null));
     }
   };
 
   const handleDelete = async (id: number) => {
-    await tauriInvoke("delete_web_clip", { id });
-    if (selectedClip?.id === id) setSelectedClip(null);
-    loadClips();
+    await tauriInvoke("delete_media_item", { id });
+    if (selected?.id === id) setSelected(null);
+    loadItems();
   };
 
   const handleRetag = async (id: number) => {
-    await tauriInvoke("ai_auto_tag_clip", { id }).catch(console.error);
-    loadClips();
+    await tauriInvoke("ai_auto_tag_media_item", { id }).catch(console.error);
+    loadItems();
   };
 
+  // When ClipDetail calls onUpdate with a WebClip shape, we need to fold
+  // those edits back into the MediaItem state. The shape is a superset
+  // (it still has `notes`, which is the only field not in WebClip) so
+  // we reconstruct the MediaItem by merging the edited web-shape fields
+  // with the original MediaItem's file-origin fields.
+  const onDetailUpdate = useCallback(
+    (updated: WebClip) => {
+      setSelected((prev) => {
+        if (!prev || prev.id !== updated.id) return prev;
+        return {
+          ...prev,
+          title: updated.title,
+          content: updated.content,
+          raw_content: updated.raw_content,
+          summary: updated.summary,
+          tags: updated.tags,
+          is_read: updated.is_read,
+          is_starred: updated.is_starred,
+          updated_at: updated.updated_at,
+          transcription_status: updated.transcription_status ?? prev.transcription_status,
+          transcription_error: updated.transcription_error ?? prev.transcription_error,
+          transcription_source: updated.transcription_source ?? prev.transcription_source,
+          source_language: updated.source_language ?? prev.source_language,
+          translated_content: updated.translated_content ?? prev.translated_content,
+        };
+      });
+      loadItems();
+    },
+    [loadItems],
+  );
+
+  const selectedClipShape = selected ? asClipShape(selected) : null;
+
   // Narrow view: full-page detail.
-  if (selectedClip && !isWide) {
+  if (selectedClipShape && !isWide) {
     return (
       <ClipDetail
-        key={selectedClip.id}
-        clip={selectedClip}
-        onBack={() => setSelectedClip(null)}
+        key={selectedClipShape.id}
+        clip={selectedClipShape}
+        kind="media"
+        onBack={() => setSelected(null)}
         onStar={handleStar}
-        onUpdate={(c) => {
-          setSelectedClip(c);
-          loadClips();
-        }}
+        onUpdate={onDetailUpdate}
       />
     );
   }
 
-  const splitView = isWide && selectedClip;
-  const audioClips = clips.filter((c) => c.source_type === "audio");
-  const videoClips = clips.filter((c) => c.source_type === "local_video");
+  const splitView = isWide && selectedClipShape;
+  const audioItems = items.filter((m) => m.media_type === "audio");
+  const videoItems = items.filter((m) => m.media_type === "local_video");
 
   return (
     <div className={splitView ? "flex gap-0 -mx-6 -my-6 h-[calc(100vh)]" : "relative"}>
       <MediaDropOverlay visible={dragging} />
-      {splitView && (
+      {splitView && selectedClipShape && (
         <div className="w-3/5 order-2 overflow-y-auto px-6 py-6 border-l border-border">
           <ClipDetail
-            key={selectedClip.id}
-            clip={selectedClip}
-            onBack={() => setSelectedClip(null)}
+            key={selectedClipShape.id}
+            clip={selectedClipShape}
+            kind="media"
+            onBack={() => setSelected(null)}
             onStar={handleStar}
-            onUpdate={(c) => {
-              setSelectedClip(c);
-              loadClips();
-            }}
+            onUpdate={onDetailUpdate}
             compact
           />
         </div>
@@ -269,7 +363,7 @@ export default function MediaPage() {
         </div>
 
         {/* Drop hint */}
-        {!loading && clips.length === 0 && !dragging && (
+        {!loading && items.length === 0 && !dragging && (
           <div className="py-16 text-center rounded-xl border-2 border-dashed border-border">
             <Upload
               size={36}
@@ -295,23 +389,23 @@ export default function MediaPage() {
         )}
 
         {/* Audio section */}
-        {!loading && audioClips.length > 0 && (
+        {!loading && audioItems.length > 0 && (
           <section className="mb-8">
             <div className="flex items-center gap-2 mb-3">
               <Headphones size={15} className="text-accent" />
               <h2 className="text-[15px] font-semibold m-0">音频</h2>
-              <span className="text-[11px] text-text-tertiary">· {audioClips.length}</span>
+              <span className="text-[11px] text-text-tertiary">· {audioItems.length}</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {audioClips.map((clip) => (
+              {audioItems.map((m) => (
                 <ClipCard
-                  key={clip.id}
-                  clip={clip}
+                  key={m.id}
+                  clip={asClipShape(m)}
                   onStar={handleStar}
                   onDelete={handleDelete}
-                  onSelect={setSelectedClip}
+                  onSelect={() => setSelected(m)}
                   onRetag={handleRetag}
-                  isSelected={selectedClip?.id === clip.id}
+                  isSelected={selected?.id === m.id}
                 />
               ))}
             </div>
@@ -319,23 +413,23 @@ export default function MediaPage() {
         )}
 
         {/* Local video section */}
-        {!loading && videoClips.length > 0 && (
+        {!loading && videoItems.length > 0 && (
           <section>
             <div className="flex items-center gap-2 mb-3">
               <Video size={15} className="text-accent" />
               <h2 className="text-[15px] font-semibold m-0">本地视频</h2>
-              <span className="text-[11px] text-text-tertiary">· {videoClips.length}</span>
+              <span className="text-[11px] text-text-tertiary">· {videoItems.length}</span>
             </div>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              {videoClips.map((clip) => (
+              {videoItems.map((m) => (
                 <ClipCard
-                  key={clip.id}
-                  clip={clip}
+                  key={m.id}
+                  clip={asClipShape(m)}
                   onStar={handleStar}
                   onDelete={handleDelete}
-                  onSelect={setSelectedClip}
+                  onSelect={() => setSelected(m)}
                   onRetag={handleRetag}
-                  isSelected={selectedClip?.id === clip.id}
+                  isSelected={selected?.id === m.id}
                 />
               ))}
             </div>

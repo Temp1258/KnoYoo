@@ -444,19 +444,45 @@ fn find_balanced_json(s: &str) -> Option<String> {
     None
 }
 
-/// AI chat response with referenced clip IDs for attribution.
+/// AI chat response with referenced source IDs for attribution. Each kind
+/// lives in its own array because `web_clips.id` / `media_items.id` /
+/// `books.id` share a namespace collision — the frontend uses the kind
+/// signal to route clicks to the right detail page.
 #[derive(Debug, Serialize)]
 pub struct AiChatResponse {
     pub content: String,
+    /// `web_clips` rows (articles + online video) — backward-compat name.
     pub referenced_clip_ids: Vec<i64>,
+    /// `media_items` rows (local audio + local video). Added in Phase B.7.
+    pub referenced_media_ids: Vec<i64>,
 }
 
-/// AI chat with automatic context: gathers recent clips for context.
+/// Parse all `[PREFIX:<n>]` references the AI emitted, scoped to the
+/// caller-provided allow-list of known IDs. The allow-list filter is the
+/// anti-hallucination guard — if the model invents an ID that wasn't in
+/// the context we drop it rather than surfacing a broken citation. The
+/// legacy `[ID:n]` format is folded into the clip bucket so chat
+/// transcripts saved before B.7 still render their source cards.
+fn extract_referenced_ids(content: &str, prefix: &str, valid: &[i64]) -> Vec<i64> {
+    let needle = format!("[{prefix}:");
+    content
+        .split(&needle)
+        .skip(1)
+        .filter_map(|s| s.split(']').next()?.parse::<i64>().ok())
+        .filter(|id| valid.contains(id))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect()
+}
+
+/// AI chat with automatic context: gathers recent web clips + media items
+/// plus user notes from both tables so the assistant can cite across the
+/// full knowledge base (no longer just articles).
 #[tauri::command]
 pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse, String> {
     let conn = open_db()?;
 
-    // Gather recent web clips with IDs for reference tracking
+    // ── web_clips context (20 most-recent; articles + online videos) ──
     let mut clip_ids: Vec<i64> = Vec::new();
     let clips_ctx: String = {
         let mut stmt = conn
@@ -484,29 +510,106 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
             } else {
                 format!("{title}: {summary}")
             };
-            buf.push_str(&format!("- [ID:{id}][{domain}] {desc} (标签:{tags})\n"));
+            buf.push_str(&format!("- [CLIP:{id}][{domain}] {desc} (标签:{tags})\n"));
             clip_ids.push(id);
         }
         buf
     };
 
-    // Gather recent notes
-    let notes_ctx: String = {
+    // ── media_items context (10 most-recent; local audio + local video) ──
+    //
+    // Smaller budget than clips: a single transcript can be many thousands
+    // of characters; we rely on the summary for context brevity, and
+    // limiting to 10 keeps the total system prompt size comparable to the
+    // pre-B.7 baseline.
+    let mut media_ids: Vec<i64> = Vec::new();
+    let media_ctx: String = {
         let mut stmt = conn
             .prepare(
-                "SELECT cn.content, wc.title FROM clip_notes cn
-                 JOIN web_clips wc ON cn.clip_id = wc.id
-                 WHERE wc.deleted_at IS NULL
-                 ORDER BY cn.updated_at DESC LIMIT 5",
+                "SELECT id, title, summary, tags, media_type FROM media_items
+                 WHERE deleted_at IS NULL
+                 ORDER BY datetime(created_at) DESC LIMIT 10",
             )
             .map_err(|e| e.to_string())?;
-        let mut buf = String::new();
         let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+        let mut buf = String::new();
         while let Some(row) = rows.next().map_err(|e| e.to_string())? {
-            let content: String = row.get(0).map_err(|e| e.to_string())?;
+            let id: i64 = row.get(0).map_err(|e| e.to_string())?;
             let title: String = row.get(1).map_err(|e| e.to_string())?;
-            buf.push_str(&format!("- 关于「{}」的笔记: {}\n", title, content.chars().take(100).collect::<String>()));
+            let summary: String = row.get(2).map_err(|e| e.to_string())?;
+            let tags: String = row.get(3).map_err(|e| e.to_string())?;
+            let media_type: String = row.get(4).map_err(|e| e.to_string())?;
+            let type_label = if media_type == "audio" {
+                "音频"
+            } else {
+                "本地视频"
+            };
+            let desc = if summary.is_empty() {
+                title.clone()
+            } else {
+                format!("{title}: {summary}")
+            };
+            buf.push_str(&format!(
+                "- [MEDIA:{id}][{type_label}] {desc} (标签:{tags})\n"
+            ));
+            media_ids.push(id);
         }
+        buf
+    };
+
+    // ── notes context ────────────────────────────────────────────────────
+    //
+    // Two sources: `clip_notes` for web clips (separate table, 1:1 FK) and
+    // `media_items.notes` inline (populated by the B.3 migration and by
+    // the MediaPage notes editor). Merged into one section so the prompt
+    // stays readable; each entry names its parent by title.
+    let notes_ctx: String = {
+        let mut buf = String::new();
+
+        // clip_notes (web clips) — scoped so the Rows borrow of stmt
+        // releases before we prepare the next statement.
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT cn.content, wc.title FROM clip_notes cn
+                     JOIN web_clips wc ON cn.clip_id = wc.id
+                     WHERE wc.deleted_at IS NULL
+                     ORDER BY cn.updated_at DESC LIMIT 5",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                let content: String = row.get(0).map_err(|e| e.to_string())?;
+                let title: String = row.get(1).map_err(|e| e.to_string())?;
+                buf.push_str(&format!(
+                    "- 关于「{}」的笔记: {}\n",
+                    title,
+                    content.chars().take(100).collect::<String>()
+                ));
+            }
+        }
+
+        // media_items.notes (inline)
+        {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT notes, title FROM media_items
+                     WHERE deleted_at IS NULL AND notes <> ''
+                     ORDER BY datetime(updated_at) DESC LIMIT 5",
+                )
+                .map_err(|e| e.to_string())?;
+            let mut rows = stmt.query([]).map_err(|e| e.to_string())?;
+            while let Some(row) = rows.next().map_err(|e| e.to_string())? {
+                let content: String = row.get(0).map_err(|e| e.to_string())?;
+                let title: String = row.get(1).map_err(|e| e.to_string())?;
+                buf.push_str(&format!(
+                    "- 关于「{}」的笔记: {}\n",
+                    title,
+                    content.chars().take(100).collect::<String>()
+                ));
+            }
+        }
+
         if buf.is_empty() {
             String::new()
         } else {
@@ -514,18 +617,32 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
         }
     };
 
+    let knowledge_section = if clips_ctx.is_empty() && media_ctx.is_empty() {
+        "（智库暂无内容）\n".to_string()
+    } else {
+        let mut s = String::new();
+        if !clips_ctx.is_empty() {
+            s.push_str("### 网页剪藏\n");
+            s.push_str(&clips_ctx);
+        }
+        if !media_ctx.is_empty() {
+            if !s.is_empty() {
+                s.push('\n');
+            }
+            s.push_str("### 影音（本地音视频转录）\n");
+            s.push_str(&media_ctx);
+        }
+        s
+    };
+
     let system_prompt = format!(
         "你是 KnoYoo AI 知识助手。用户有一个个人智库，以下是智库中的内容。\n\n\
         **重要规则：回答问题时必须优先基于智库中的内容。**\n\
-        - 如果智库中有相关信息，直接引用并回答，使用 [ID:数字] 格式标注来源\n\
-        - 如果智库中没有相关信息，再用你自己的知识补充，并说明这不是来自用户的智库\n\n\
-        ## 用户智库\n{}{}",
-        if clips_ctx.is_empty() {
-            "（智库暂无内容）\n"
-        } else {
-            &clips_ctx
-        },
-        notes_ctx,
+        - 引用网页剪藏时用 [CLIP:数字] 格式\n\
+        - 引用影音（本地音视频转录）时用 [MEDIA:数字] 格式\n\
+        - 如果智库中有相关信息，直接引用并回答\n\
+        - 如果智库中没有相关信息，再用你自己的知识补充，并明确说明这不是来自用户的智库\n\n\
+        ## 用户智库\n{knowledge_section}{notes_ctx}",
     );
 
     let mut full_messages: Vec<serde_json::Value> =
@@ -538,19 +655,21 @@ pub fn ai_chat_with_context(messages: Vec<ChatMessage>) -> Result<AiChatResponse
     let config = AiClientConfig::from_map(&cfg).map_err(String::from)?;
     let content = ai_client::chat(&config, full_messages, 0.3).map_err(String::from)?;
 
-    // Extract referenced clip IDs from the AI response (looks for [ID:123] patterns)
-    let referenced: Vec<i64> = content
-        .split("[ID:")
-        .skip(1)
-        .filter_map(|s| s.split(']').next()?.parse::<i64>().ok())
-        .filter(|id| clip_ids.contains(id))
-        .collect::<std::collections::HashSet<_>>()
-        .into_iter()
-        .collect();
+    // Parse new-format markers + legacy `[ID:N]` (treated as clip for
+    // rendering chat transcripts saved before B.7 introduced CLIP/MEDIA).
+    let mut referenced_clip_ids = extract_referenced_ids(&content, "CLIP", &clip_ids);
+    let legacy_clip_ids = extract_referenced_ids(&content, "ID", &clip_ids);
+    for id in legacy_clip_ids {
+        if !referenced_clip_ids.contains(&id) {
+            referenced_clip_ids.push(id);
+        }
+    }
+    let referenced_media_ids = extract_referenced_ids(&content, "MEDIA", &media_ids);
 
     Ok(AiChatResponse {
         content,
-        referenced_clip_ids: referenced,
+        referenced_clip_ids,
+        referenced_media_ids,
     })
 }
 

@@ -241,14 +241,15 @@ pub fn add_web_clip(clip: NewClip) -> Result<WebClip, String> {
     // Each stage is independent — a failure at 1a still lets stages 2 and 3
     // run on whatever we have.
     let clip_id = row.id;
+    let target = crate::transcribe::ClipTarget::Web(clip_id);
     try_spawn_ai_task(&format!("clip-{clip_id}"), move || {
         if let Err(e) = enrich_raw_content_if_thin(clip_id) {
             tracing::warn!("Enrich clip {} failed: {}", clip_id, e);
         }
-        if let Err(e) = ai_clean_clip_inner(clip_id) {
+        if let Err(e) = ai_clean_clip_inner(target) {
             tracing::warn!("AI clean clip {} failed: {}", clip_id, e);
         }
-        if let Err(e) = auto_tag_clip_inner(clip_id) {
+        if let Err(e) = auto_tag_clip_inner(target) {
             tracing::warn!("Auto-tag clip {} failed: {}", clip_id, e);
         }
         // Re-evaluate tag_depth AFTER auto-tag so milestones reflect the
@@ -731,21 +732,27 @@ fn gather_existing_tags(conn: &rusqlite::Connection) -> Vec<String> {
 /// under a couple of seconds on a typical provider.
 const AI_CLEAN_INPUT_CHARS: usize = 24_000;
 
-/// Stage 2 of the web-clip pipeline: read `raw_content` and ask the AI to
+/// Stage 2 of the clip pipeline: read `raw_content` and ask the AI to
 /// produce a cleaned, readable Markdown version. Writes the result back to
-/// `content`, overwriting the first-pass scraper output.
+/// `content`, overwriting the first-pass scraper/ASR output.
 ///
 /// Deliberately asks the model **not** to summarize — we want size-preserving
 /// cleanup. Summarization happens in stage 3 (`auto_tag_clip_inner`).
-pub(crate) fn ai_clean_clip_inner(clip_id: i64) -> Result<(), String> {
+///
+/// Parameterized over `ClipTarget` so the same logic drives both web-sourced
+/// clips (`web_clips`) and locally uploaded media (`media_items`). The two
+/// tables share all the fields this function reads and writes (`title`,
+/// `content`, `raw_content`).
+pub(crate) fn ai_clean_clip_inner(target: crate::transcribe::ClipTarget) -> Result<(), String> {
     let conn = open_db()?;
+    let clip_id = target.id();
+    let table = target.table();
 
+    let select_sql = format!("SELECT raw_content, content FROM {table} WHERE id = ?1");
     let (raw, current): (String, String) = conn
-        .query_row(
-            "SELECT raw_content, content FROM web_clips WHERE id = ?1",
-            [clip_id],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
+        .query_row(&select_sql, [clip_id], |r| {
+            Ok((r.get(0)?, r.get(1)?))
+        })
         .map_err(|e| e.to_string())?;
 
     // Fall back to current content if raw is empty (old clip, or extension
@@ -825,12 +832,12 @@ pub(crate) fn ai_clean_clip_inner(clip_id: i64) -> Result<(), String> {
 
     let cleaned_capped: String = cleaned.chars().take(MAX_CONTENT_LEN).collect();
 
-    conn.execute(
-        "UPDATE web_clips SET content = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id = ?2",
-        rusqlite::params![cleaned_capped, clip_id],
-    )
-    .map_err(|e| e.to_string())?;
+    let update_sql = format!(
+        "UPDATE {table} SET content = ?1, updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
+         WHERE id = ?2"
+    );
+    conn.execute(&update_sql, rusqlite::params![cleaned_capped, clip_id])
+        .map_err(|e| e.to_string())?;
 
     tracing::info!(
         "AI cleaned clip {} (source: {} → cleaned: {} chars)",
@@ -841,20 +848,34 @@ pub(crate) fn ai_clean_clip_inner(clip_id: i64) -> Result<(), String> {
     Ok(())
 }
 
-pub(crate) fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
+/// Stage 3 of the clip pipeline: generate summary + tags from the cleaned
+/// content. For `ClipTarget::Web`, `source_type` is also updated (except for
+/// legacy file-origin rows that shouldn't exist post-migration). For
+/// `ClipTarget::Media`, `media_type` is never touched — it's set once at
+/// import time and is immutable.
+pub(crate) fn auto_tag_clip_inner(target: crate::transcribe::ClipTarget) -> Result<(), String> {
     let conn = open_db()?;
+    let clip_id = target.id();
+    let table = target.table();
+    let is_media = matches!(target, crate::transcribe::ClipTarget::Media(_));
 
-    // Pull `source_type` alongside the text so we can preserve file-origin
-    // types (`audio` / `local_video`) when the AI tries to reclassify. These
-    // aren't content categories the AI can judge — they reflect HOW the clip
-    // was imported, which is immutable after insert.
-    let (title, content, original_source_type): (String, String, String) = conn
-        .query_row(
-            "SELECT title, content, source_type FROM web_clips WHERE id = ?1",
-            [clip_id],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-        )
-        .map_err(|e| e.to_string())?;
+    // For web_clips we co-read `source_type` so the immutable file-origin
+    // guard still applies for any legacy audio/local_video rows that may
+    // live there before migration. For media_items we skip the column —
+    // media_type is immutable by construction and doesn't need AI approval.
+    let (title, content, original_source_type): (String, String, String) = if is_media {
+        let sql = format!("SELECT title, content FROM {table} WHERE id = ?1");
+        conn.query_row(&sql, [clip_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, String::new()))
+        })
+        .map_err(|e| e.to_string())?
+    } else {
+        let sql = format!("SELECT title, content, source_type FROM {table} WHERE id = ?1");
+        conn.query_row(&sql, [clip_id], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+        })
+        .map_err(|e| e.to_string())?
+    };
 
     let cfg = crate::db::read_ai_config(&conn)?;
     let config = match AiClientConfig::from_map(&cfg) {
@@ -963,12 +984,27 @@ pub(crate) fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
 
         let tags_json = serde_json::to_string(&tags).unwrap_or_else(|_| "[]".to_string());
 
-        conn.execute(
-            "UPDATE web_clips SET summary = ?1, tags = ?2, source_type = ?3,
-             updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?4",
-            rusqlite::params![summary, tags_json, source_type, clip_id],
-        )
-        .map_err(|e| e.to_string())?;
+        // media_items has no `source_type` column — skip that clause for
+        // media targets. web_clips still gets it so URL-video clips keep
+        // their semi-mutable source_type behaviour.
+        if is_media {
+            let sql = format!(
+                "UPDATE {table} SET summary = ?1, tags = ?2,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?3"
+            );
+            conn.execute(&sql, rusqlite::params![summary, tags_json, clip_id])
+                .map_err(|e| e.to_string())?;
+        } else {
+            let sql = format!(
+                "UPDATE {table} SET summary = ?1, tags = ?2, source_type = ?3,
+                 updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = ?4"
+            );
+            conn.execute(
+                &sql,
+                rusqlite::params![summary, tags_json, source_type, clip_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
 
         tracing::info!("Auto-tagged clip {}: [{}]", clip_id, tags_json);
     }
@@ -976,10 +1012,10 @@ pub(crate) fn auto_tag_clip_inner(clip_id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Manually trigger AI auto-tag for a clip.
+/// Manually trigger AI auto-tag for a web clip (UI button on `ClipDetail`).
 #[tauri::command]
 pub fn ai_auto_tag_clip(id: i64) -> Result<(), String> {
-    auto_tag_clip_inner(id)
+    auto_tag_clip_inner(crate::transcribe::ClipTarget::Web(id))
 }
 
 /// Character budget for the translation prompt. Reuses the 24K ceiling from
@@ -1008,14 +1044,13 @@ const TRANSLATE_MIN_CHARS: usize = 50;
 /// leaves the clip untouched. The UI only renders a "译文" toggle when
 /// `translated_content` is non-empty, so a failed translation simply
 /// hides the affordance — no error surface the user has to deal with.
-pub(crate) fn ai_translate_clip_inner(clip_id: i64) -> Result<(), String> {
+pub(crate) fn ai_translate_clip_inner(target: crate::transcribe::ClipTarget) -> Result<(), String> {
     let conn = open_db()?;
+    let clip_id = target.id();
+    let table = target.table();
+    let select_sql = format!("SELECT content FROM {table} WHERE id = ?1");
     let content: String = conn
-        .query_row(
-            "SELECT content FROM web_clips WHERE id = ?1",
-            [clip_id],
-            |r| r.get(0),
-        )
+        .query_row(&select_sql, [clip_id], |r| r.get(0))
         .map_err(|e| e.to_string())?;
 
     if content.trim().chars().count() < TRANSLATE_MIN_CHARS {
@@ -1082,10 +1117,13 @@ pub(crate) fn ai_translate_clip_inner(clip_id: i64) -> Result<(), String> {
         translation_raw.chars().take(MAX_CONTENT_LEN).collect()
     };
 
-    conn.execute(
-        "UPDATE web_clips SET source_language = ?1, translated_content = ?2,
+    let update_sql = format!(
+        "UPDATE {table} SET source_language = ?1, translated_content = ?2,
            updated_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')
-         WHERE id = ?3",
+         WHERE id = ?3"
+    );
+    conn.execute(
+        &update_sql,
         rusqlite::params![source_language, translated_content, clip_id],
     )
     .map_err(|e| e.to_string())?;
@@ -1103,12 +1141,12 @@ pub(crate) fn ai_translate_clip_inner(clip_id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// Manually trigger AI translation for a clip. Useful for retrying after
-/// an AI config fix, or back-filling clips imported before this feature
-/// existed.
+/// Manually trigger AI translation for a web clip (UI button on `ClipDetail`).
+/// Useful for retrying after an AI config fix, or back-filling clips imported
+/// before this feature existed.
 #[tauri::command]
 pub fn ai_translate_clip(id: i64) -> Result<(), String> {
-    ai_translate_clip_inner(id)
+    ai_translate_clip_inner(crate::transcribe::ClipTarget::Web(id))
 }
 
 /// Batch re-tag all clips that have no summary yet.
@@ -1130,7 +1168,8 @@ pub fn ai_batch_retag_clips() -> Result<i64, String> {
     if total > 0 {
         try_spawn_ai_task("batch-retag", move || {
             for id in ids {
-                if let Err(e) = auto_tag_clip_inner(id) {
+                let target = crate::transcribe::ClipTarget::Web(id);
+                if let Err(e) = auto_tag_clip_inner(target) {
                     tracing::warn!("Batch retag clip {} failed: {}", id, e);
                 }
             }

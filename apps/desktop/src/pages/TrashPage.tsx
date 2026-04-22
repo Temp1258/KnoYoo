@@ -3,13 +3,15 @@ import { invoke } from "@tauri-apps/api/core";
 import SegmentedControl from "../components/ui/SegmentedControl";
 import ClipsTrashPanel from "../components/Trash/ClipsTrashPanel";
 import BooksTrashPanel from "../components/Trash/BooksTrashPanel";
+import MediaTrashPanel from "../components/Trash/MediaTrashPanel";
 
-type Tab = "clips" | "books";
+type Tab = "clips" | "books" | "media";
 
 export default function TrashPage() {
   const [tab, setTab] = useState<Tab>("clips");
   const [clipCount, setClipCount] = useState<number | null>(null);
   const [bookCount, setBookCount] = useState<number | null>(null);
+  const [mediaCount, setMediaCount] = useState<number | null>(null);
 
   // Pre-fetch counts to decorate tab labels. Cheap queries, so we always do it.
   useEffect(() => {
@@ -19,11 +21,15 @@ export default function TrashPage() {
     invoke<number>("count_books_trash")
       .then(setBookCount)
       .catch(() => {});
+    invoke<number>("count_media_trash")
+      .then(setMediaCount)
+      .catch(() => {});
   }, []);
 
   const tabs = [
     { value: "clips" as Tab, label: `剪藏${clipCount != null ? ` · ${clipCount}` : ""}` },
-    { value: "books" as Tab, label: `图书${bookCount != null ? ` · ${bookCount}` : ""}` },
+    { value: "books" as Tab, label: `书籍${bookCount != null ? ` · ${bookCount}` : ""}` },
+    { value: "media" as Tab, label: `影音${mediaCount != null ? ` · ${mediaCount}` : ""}` },
   ];
 
   return (
@@ -36,6 +42,7 @@ export default function TrashPage() {
 
       {tab === "clips" && <ClipsTrashPanel onCountChange={setClipCount} />}
       {tab === "books" && <BooksTrashPanel onCountChange={setBookCount} />}
+      {tab === "media" && <MediaTrashPanel onCountChange={setMediaCount} />}
     </div>
   );
 }

@@ -2,6 +2,13 @@ use crate::clips::{row_to_clip, WebClip};
 use crate::db::{app_db_path, open_db};
 use rusqlite::OptionalExtension;
 
+// ─── Phase B.7: media_items export ────────────────────────────────────
+// `export_media_item_to_file` mirrors `export_clip_to_file` but pulls from
+// `media_items` and uses its inline `notes` column (no separate
+// `clip_notes` round-trip). YAML frontmatter swaps `url` / `source_type`
+// for `media_type` / `file_path` / `file_hash` so the exported markdown
+// is self-describing even without a remembering reader.
+
 /// Escape a string for use in YAML double-quoted values.
 fn yaml_escape(s: &str) -> String {
     s.replace('\\', "\\\\")
@@ -78,6 +85,129 @@ pub fn export_clip_to_file(id: i64, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())?;
 
     let md = clip_to_markdown(&clip, note.as_deref());
+    std::fs::write(dest, md).map_err(|_| "导出失败：无法写入文件".to_string())
+}
+
+fn media_item_to_markdown(
+    title: &str,
+    media_type: &str,
+    file_path: &str,
+    file_hash: &str,
+    tags_json: &str,
+    summary: &str,
+    transcription_source: &str,
+    source_language: &str,
+    notes: &str,
+    created_at: &str,
+    content: &str,
+) -> String {
+    // tags is persisted as a JSON array string; parse + re-render in the
+    // YAML shape so the exported file matches the clip export format.
+    let tags: Vec<String> = serde_json::from_str(tags_json).unwrap_or_default();
+    let tags_yaml = tags
+        .iter()
+        .map(|t| format!("\"{}\"", yaml_escape(t)))
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    let type_label = if media_type == "audio" {
+        "音频"
+    } else if media_type == "local_video" {
+        "本地视频"
+    } else {
+        media_type
+    };
+
+    let mut md = format!(
+        "---\n\
+         title: \"{title}\"\n\
+         media_type: \"{media_type}\"\n\
+         file_path: \"{file_path}\"\n\
+         file_hash: \"{file_hash}\"\n\
+         tags: [{tags_yaml}]\n\
+         saved_at: \"{created_at}\"\n\
+         ---\n\n\
+         # {title_h1}\n\n\
+         *类型：{type_label}*\n\n",
+        title = yaml_escape(title),
+        media_type = yaml_escape(media_type),
+        file_path = yaml_escape(file_path),
+        file_hash = yaml_escape(file_hash),
+        title_h1 = title,
+    );
+
+    if !summary.is_empty() {
+        md.push_str(&format!("> **AI 摘要：** {summary}\n\n"));
+    }
+    if !transcription_source.is_empty() {
+        let tlabel = if transcription_source == "subtitle" {
+            "字幕".to_string()
+        } else if let Some(id) = transcription_source.strip_prefix("asr:") {
+            format!("ASR · {id}")
+        } else {
+            transcription_source.to_string()
+        };
+        md.push_str(&format!("*转录来源：{tlabel}*  "));
+    }
+    if !source_language.is_empty() {
+        md.push_str(&format!("*源语言：{source_language}*"));
+    }
+    if !transcription_source.is_empty() || !source_language.is_empty() {
+        md.push_str("\n\n");
+    }
+
+    if !notes.is_empty() {
+        md.push_str(&format!("## 我的笔记\n\n{notes}\n\n"));
+    }
+
+    md.push_str("---\n\n");
+    md.push_str(content);
+    md.push('\n');
+    md
+}
+
+#[tauri::command]
+pub fn export_media_item_to_file(id: i64, path: String) -> Result<(), String> {
+    let dest = std::path::Path::new(&path);
+    validate_export_path(dest)?;
+
+    let conn = open_db()?;
+    let (
+        title,
+        media_type,
+        file_path,
+        file_hash,
+        tags,
+        summary,
+        transcription_source,
+        source_language,
+        notes,
+        created_at,
+        content,
+    ): (
+        String, String, String, String, String, String, String, String,
+        String, String, String,
+    ) = conn
+        .query_row(
+            "SELECT title, media_type, file_path, file_hash, tags, summary,
+                    transcription_source, source_language, notes, created_at, content
+             FROM media_items WHERE id = ?1",
+            [id],
+            |r| {
+                Ok((
+                    r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?,
+                    r.get(5)?, r.get(6)?, r.get(7)?, r.get(8)?, r.get(9)?,
+                    r.get(10)?,
+                ))
+            },
+        )
+        .map_err(|e| e.to_string())?;
+
+    let md = media_item_to_markdown(
+        &title, &media_type, &file_path, &file_hash, &tags,
+        &summary, &transcription_source, &source_language, &notes,
+        &created_at, &content,
+    );
     std::fs::write(dest, md).map_err(|_| "导出失败：无法写入文件".to_string())
 }
 

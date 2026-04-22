@@ -109,7 +109,6 @@ fn search_clips_fts(
     fts_q: &str,
     want_article: bool,
     want_video: bool,
-    want_media: bool,
     per_table_k: u32,
 ) -> Result<Vec<SearchHit>, String> {
     let mut stmt = conn
@@ -144,7 +143,7 @@ fn search_clips_fts(
         let (id, title, summary, url, favicon, source_type, created_at, bm) =
             r.map_err(|e| e.to_string())?;
         let kind = kind_for_source_type(&source_type);
-        if !keep_kind(kind, want_article, want_video, want_media) {
+        if !keep_kind(kind, want_article, want_video) {
             continue;
         }
         out.push(SearchHit {
@@ -163,26 +162,29 @@ fn search_clips_fts(
 }
 
 /// Map a `web_clips.source_type` string to the wire-level `kind` the UI
-/// routes on. Keeps the mapping centralized so FTS + LIKE paths stay in sync.
+/// routes on. After Phase B migration, `web_clips` only ever carries
+/// article and online-video rows — local audio / `local_video` live in
+/// `media_items` and are surfaced by `search_media_*` below. Any legacy
+/// row with a stale `audio` / `local_video` `source_type` (shouldn't exist
+/// post-migration; defensive only) collapses to `KIND_CLIP` so it still
+/// renders somewhere rather than silently disappearing.
 fn kind_for_source_type(source_type: &str) -> &'static str {
     match source_type {
         "video" => KIND_VIDEO,
-        "audio" | "local_video" => KIND_MEDIA,
         _ => KIND_CLIP,
     }
 }
 
-/// Scope-check in one place so FTS + LIKE paths agree on which hits make it
-/// through. Books are filtered at the `want_book` level up the stack —
-/// this helper only discriminates among clip-like kinds.
-fn keep_kind(kind: &str, want_article: bool, want_video: bool, want_media: bool) -> bool {
+/// Scope-check for the `web_clips` search path. Only article and
+/// online-video reach here — media (audio / `local_video`) is served by a
+/// separate path rooted at `media_items`. Books are filtered one level up
+/// in `unified_search`.
+fn keep_kind(kind: &str, want_article: bool, want_video: bool) -> bool {
     match kind {
         k if k == KIND_CLIP => want_article,
         k if k == KIND_VIDEO => want_video,
-        k if k == KIND_MEDIA => want_media,
-        // KIND_BOOK is filtered at the unified_search dispatch level, but
-        // be defensive: books never reach this helper so `false` here is
-        // moot yet also safer than `true`.
+        // Anything else (books handled upstream; media routed to its own
+        // path) is outside this helper's jurisdiction.
         _ => false,
     }
 }
@@ -280,7 +282,6 @@ fn search_clips_like(
     raw_query: &str,
     want_article: bool,
     want_video: bool,
-    want_media: bool,
     per_table_k: u32,
 ) -> Result<Vec<SearchHit>, String> {
     let toks = tokens_of(raw_query);
@@ -290,9 +291,8 @@ fn search_clips_like(
     let (where_like, like_params) =
         like_clause(&toks, &["title", "content", "summary", "tags"]);
 
-    // No SQL-level type filter: post-filter in Rust keeps the FTS and LIKE
-    // branches behaviourally identical and sidesteps the ugly branching
-    // that was needed to cover 4 kinds in one SQL `type_clause`.
+    // Post-filter the kind scope in Rust keeps the FTS and LIKE branches
+    // behaviourally identical and sidesteps ugly SQL branching.
     let sql = format!(
         "SELECT id, title, summary, url, favicon, source_type, created_at
          FROM web_clips
@@ -323,7 +323,7 @@ fn search_clips_like(
         let (id, title, summary, url, favicon, source_type, created_at) =
             r.map_err(|e| e.to_string())?;
         let kind = kind_for_source_type(&source_type);
-        if !keep_kind(kind, want_article, want_video, want_media) {
+        if !keep_kind(kind, want_article, want_video) {
             continue;
         }
         out.push(SearchHit {
@@ -396,6 +396,119 @@ fn search_books_like(
     Ok(out)
 }
 
+// ── media_items path (split off from web_clips in Phase B.6) ──────────────
+//
+// `media_items` is the dedicated table for user-uploaded local audio / local
+// video. Field layout mirrors `web_clips` closely (title / content / summary
+// / tags / created_at) so the FTS and LIKE queries reuse the same shape —
+// the differences surface in the `SearchHit`: `url` is synthesized as
+// `media://<id>` so the UI has a stable identifier, and `favicon` stays
+// empty (no web origin).
+
+/// Synthetic URL scheme for media search hits. The UI treats it as opaque
+/// — it never tries to open it in a browser (`isSafeUrl` rejects the
+/// scheme) — but having *something* in `SearchHit.url` keeps the struct
+/// layout uniform for downstream code that switches on `kind`.
+const MEDIA_URL_SCHEME: &str = "media://";
+
+fn search_media_fts(
+    conn: &rusqlite::Connection,
+    fts_q: &str,
+    per_table_k: u32,
+) -> Result<Vec<SearchHit>, String> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT m.id, m.title, m.summary, m.created_at, bm25(media_items_fts) AS bm
+             FROM media_items_fts
+             JOIN media_items m ON m.id = media_items_fts.rowid
+             WHERE media_items_fts MATCH ?1 AND m.deleted_at IS NULL
+             ORDER BY rank
+             LIMIT ?2",
+        )
+        .map_err(|e| e.to_string())?;
+
+    let rows = stmt
+        .query_map(rusqlite::params![fts_q, per_table_k], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, f64>(4)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        let (id, title, summary, created_at, bm) = r.map_err(|e| e.to_string())?;
+        out.push(SearchHit {
+            kind: KIND_MEDIA.to_string(),
+            id,
+            title,
+            snippet: summary,
+            score: normalize_bm25(bm),
+            url: format!("{MEDIA_URL_SCHEME}{id}"),
+            favicon: String::new(),
+            cover_path: String::new(),
+            created_at,
+        });
+    }
+    Ok(out)
+}
+
+fn search_media_like(
+    conn: &rusqlite::Connection,
+    raw_query: &str,
+    per_table_k: u32,
+) -> Result<Vec<SearchHit>, String> {
+    let toks = tokens_of(raw_query);
+    if toks.is_empty() {
+        return Ok(Vec::new());
+    }
+    let (where_like, like_params) =
+        like_clause(&toks, &["title", "content", "summary", "tags"]);
+
+    let sql = format!(
+        "SELECT id, title, summary, created_at
+         FROM media_items
+         WHERE deleted_at IS NULL{where_like}
+         ORDER BY updated_at DESC
+         LIMIT ?",
+    );
+
+    let mut stmt = conn.prepare(&sql).map_err(|e| e.to_string())?;
+    let mut all_params: Vec<String> = like_params;
+    all_params.push(per_table_k.to_string());
+    let rows = stmt
+        .query_map(rusqlite::params_from_iter(all_params.iter()), |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?;
+
+    let mut out = Vec::new();
+    for r in rows {
+        let (id, title, summary, created_at) = r.map_err(|e| e.to_string())?;
+        out.push(SearchHit {
+            kind: KIND_MEDIA.to_string(),
+            id,
+            title,
+            snippet: summary,
+            score: LIKE_SCORE,
+            url: format!("{MEDIA_URL_SCHEME}{id}"),
+            favicon: String::new(),
+            cover_path: String::new(),
+            created_at,
+        });
+    }
+    Ok(out)
+}
+
 // ── Scope parsing + entry point ────────────────────────────────────────────
 
 /// Returns `(want_article, want_video, want_book, want_media)`.
@@ -453,14 +566,15 @@ pub fn unified_search(
 
     let mut hits: Vec<SearchHit> = Vec::new();
 
-    if want_article || want_video || want_media {
+    // web_clips path — articles + online video only (media is a separate
+    // table since Phase B.6).
+    if want_article || want_video {
         if use_fts {
             hits.extend(search_clips_fts(
                 &conn,
                 &build_fts_query(trimmed),
                 want_article,
                 want_video,
-                want_media,
                 per_table_k,
             )?);
         } else {
@@ -469,9 +583,20 @@ pub fn unified_search(
                 trimmed,
                 want_article,
                 want_video,
-                want_media,
                 per_table_k,
             )?);
+        }
+    }
+    // media_items path — local audio + local_video.
+    if want_media {
+        if use_fts {
+            hits.extend(search_media_fts(
+                &conn,
+                &build_fts_query(trimmed),
+                per_table_k,
+            )?);
+        } else {
+            hits.extend(search_media_like(&conn, trimmed, per_table_k)?);
         }
     }
     if want_book {
@@ -530,6 +655,26 @@ mod tests {
                 VALUES (new.id, new.title, new.content, new.summary, new.tags);
             END;
 
+            CREATE TABLE media_items (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              media_type TEXT NOT NULL,
+              title TEXT NOT NULL DEFAULT '',
+              content TEXT NOT NULL DEFAULT '',
+              summary TEXT NOT NULL DEFAULT '',
+              tags TEXT NOT NULL DEFAULT '[]',
+              deleted_at TEXT,
+              created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+              updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+            );
+            CREATE VIRTUAL TABLE media_items_fts USING fts5(
+              title, content, summary, tags,
+              content='media_items', content_rowid='id',
+              tokenize='trigram');
+            CREATE TRIGGER media_items_ai AFTER INSERT ON media_items BEGIN
+              INSERT INTO media_items_fts(rowid, title, content, summary, tags)
+                VALUES (new.id, new.title, new.content, new.summary, new.tags);
+            END;
+
             CREATE TABLE books (
               id INTEGER PRIMARY KEY AUTOINCREMENT,
               title TEXT NOT NULL DEFAULT '',
@@ -566,6 +711,15 @@ mod tests {
                 summary,
                 source_type
             ],
+        )
+        .unwrap();
+    }
+
+    fn add_media(conn: &Connection, title: &str, summary: &str, media_type: &str) {
+        conn.execute(
+            "INSERT INTO media_items(media_type, title, content, summary)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![media_type, title, summary, summary],
         )
         .unwrap();
     }
@@ -621,7 +775,6 @@ mod tests {
             &build_fts_query("rust"),
             true, // want_article
             true, // want_video
-            true, // want_media
             MIN_PER_TABLE_K,
         )
         .unwrap();
@@ -635,7 +788,7 @@ mod tests {
         add_clip(&conn, "富爸爸穷爸爸", "关于财务思维", "article");
         // 2 chars — FTS would miss this under trigram; LIKE must catch it.
         let hits = search_clips_like(
-            &conn, "爸爸", true, true, true, MIN_PER_TABLE_K,
+            &conn, "爸爸", true, true, MIN_PER_TABLE_K,
         )
         .unwrap();
         assert_eq!(hits.len(), 1);
@@ -649,7 +802,7 @@ mod tests {
         let conn = test_db();
         add_clip(&conn, "富爸爸穷爸爸", "summary here", "article");
         let hits = search_clips_like(
-            &conn, "穷", true, true, true, MIN_PER_TABLE_K,
+            &conn, "穷", true, true, MIN_PER_TABLE_K,
         )
         .unwrap();
         assert_eq!(hits.len(), 1);
@@ -662,7 +815,7 @@ mod tests {
         add_clip(&conn, "python", "python decorators", "article");
         // AND semantics: only docs containing BOTH tokens.
         let hits = search_clips_like(
-            &conn, "rust cli", true, true, true, MIN_PER_TABLE_K,
+            &conn, "rust cli", true, true, MIN_PER_TABLE_K,
         )
         .unwrap();
         assert_eq!(hits.len(), 0);
@@ -678,7 +831,7 @@ mod tests {
         )
         .unwrap();
         let hits = search_clips_like(
-            &conn, "爸爸", true, true, true, MIN_PER_TABLE_K,
+            &conn, "爸爸", true, true, MIN_PER_TABLE_K,
         )
         .unwrap();
         assert_eq!(hits.len(), 0);
@@ -689,33 +842,88 @@ mod tests {
         let conn = test_db();
         add_clip(&conn, "富爸爸 视频", "", "video");
         add_clip(&conn, "富爸爸 文章", "", "article");
-        // want_article=false, want_video=true, want_media=false — videos only.
+        // want_article=false, want_video=true — online videos only.
         let only_video = search_clips_like(
-            &conn, "爸爸", false, true, false, MIN_PER_TABLE_K,
+            &conn, "爸爸", false, true, MIN_PER_TABLE_K,
         )
         .unwrap();
         assert_eq!(only_video.len(), 1);
         assert_eq!(only_video[0].kind, KIND_VIDEO);
     }
 
+    // ── media_items search paths (Phase B.6) ───────────────────────────────
+    //
+    // These replace the old `like_path_scope_media_excludes_video_and_article`
+    // test: media no longer lives in web_clips, so the "kind filter within
+    // web_clips" case is moot. Instead we verify media comes out of
+    // `search_media_*` with the right kind label and URL scheme.
+
     #[test]
-    fn like_path_scope_media_excludes_video_and_article() {
-        // Scope="media" means audio + local_video only.
+    fn media_fts_path_finds_audio_and_video() {
         let conn = test_db();
-        add_clip(&conn, "文章", "", "article");
-        add_clip(&conn, "在线视频", "", "video");
-        add_clip(&conn, "音频", "", "audio");
-        add_clip(&conn, "本地视频", "", "local_video");
-        let hits = search_clips_like(
-            &conn, "频", false, false, true, MIN_PER_TABLE_K,
+        add_media(&conn, "跑步播客", "今天聊马拉松训练", "audio");
+        add_media(&conn, "家庭录像", "马拉松完赛", "local_video");
+        let hits = search_media_fts(
+            &conn,
+            &build_fts_query("马拉松"),
+            MIN_PER_TABLE_K,
         )
         .unwrap();
-        let titles: Vec<&str> = hits.iter().map(|h| h.title.as_str()).collect();
-        assert!(titles.contains(&"音频"));
-        assert!(titles.contains(&"本地视频"));
-        assert!(!titles.contains(&"在线视频"));
-        // All hits should be KIND_MEDIA
+        assert_eq!(hits.len(), 2);
+        // Both audio and local_video roll up under a single KIND_MEDIA so
+        // the UI's routing surface stays uniform.
         assert!(hits.iter().all(|h| h.kind == KIND_MEDIA));
+        // Synthetic URL scheme is stable — ID is the only state the UI
+        // needs to navigate to /media?openClip=<id>.
+        for h in &hits {
+            assert!(h.url.starts_with(MEDIA_URL_SCHEME));
+            assert!(h.url.ends_with(&h.id.to_string()));
+        }
+    }
+
+    #[test]
+    fn media_like_path_finds_short_cjk() {
+        let conn = test_db();
+        add_media(&conn, "影片 录音", "讨论", "audio");
+        // 1 char CJK — FTS trigram can't index; LIKE must catch.
+        let hits = search_media_like(&conn, "影", MIN_PER_TABLE_K).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].kind, KIND_MEDIA);
+    }
+
+    #[test]
+    fn media_like_path_excludes_soft_deleted() {
+        let conn = test_db();
+        add_media(&conn, "已删除的", "", "audio");
+        conn.execute(
+            "UPDATE media_items SET deleted_at = strftime('%Y-%m-%dT%H:%M:%fZ','now')",
+            [],
+        )
+        .unwrap();
+        let hits = search_media_like(&conn, "删除", MIN_PER_TABLE_K).unwrap();
+        assert_eq!(hits.len(), 0);
+    }
+
+    #[test]
+    fn web_clips_search_no_longer_returns_media() {
+        // Regression: after B.6, the clips search path must not surface
+        // media-like source_types even if some stale row sneaks back in.
+        // `kind_for_source_type` folds unknown values to KIND_CLIP; a
+        // hypothetical stray 'audio' row appears as a clip, not media.
+        let conn = test_db();
+        add_clip(&conn, "停留的音频", "legacy row", "audio");
+        let hits = search_clips_like(
+            &conn,
+            "音频",
+            true, // want_article
+            true, // want_video
+            MIN_PER_TABLE_K,
+        )
+        .unwrap();
+        // The legacy row IS returned (one article-kind hit) rather than
+        // silently dropped — surface-visible over silent loss — but
+        // never as KIND_MEDIA.
+        assert!(hits.iter().all(|h| h.kind != KIND_MEDIA));
     }
 
     #[test]
@@ -743,13 +951,12 @@ mod tests {
         add_clip(&conn, "Intro video", "react hooks", "video");
         add_clip(&conn, "Article", "react patterns", "article");
 
-        // want_article=false, want_video=true, want_media=false
+        // want_article=false, want_video=true
         let only_video = search_clips_fts(
             &conn,
             &build_fts_query("react"),
             false,
             true,
-            false,
             MIN_PER_TABLE_K,
         )
         .unwrap();
@@ -771,7 +978,6 @@ mod tests {
             &build_fts_query("rust"),
             true,
             true,
-            true,
             MIN_PER_TABLE_K,
         )
         .unwrap();
@@ -790,15 +996,16 @@ mod tests {
     }
 
     #[test]
-    fn keep_kind_scopes_all_four_kinds() {
-        // Every kind individually; only its own flag should let it through.
-        assert!(keep_kind(KIND_CLIP, true, false, false));
-        assert!(!keep_kind(KIND_CLIP, false, true, true));
-        assert!(keep_kind(KIND_VIDEO, false, true, false));
-        assert!(!keep_kind(KIND_VIDEO, true, false, true));
-        assert!(keep_kind(KIND_MEDIA, false, false, true));
-        assert!(!keep_kind(KIND_MEDIA, true, true, false));
-        // Books never reach this helper — guard should return false regardless.
-        assert!(!keep_kind(KIND_BOOK, true, true, true));
+    fn keep_kind_scopes_clip_and_video_only() {
+        // After B.6, `keep_kind` only scopes the web_clips-rooted search —
+        // article vs online-video. Media is served by its own path, so
+        // KIND_MEDIA coming into this helper is unreachable in production
+        // and guard-returns false defensively. Books likewise.
+        assert!(keep_kind(KIND_CLIP, true, false));
+        assert!(!keep_kind(KIND_CLIP, false, true));
+        assert!(keep_kind(KIND_VIDEO, false, true));
+        assert!(!keep_kind(KIND_VIDEO, true, false));
+        assert!(!keep_kind(KIND_MEDIA, true, true));
+        assert!(!keep_kind(KIND_BOOK, true, true));
     }
 }
