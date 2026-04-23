@@ -252,23 +252,21 @@ fn parse_docx_xml(xml: &str) -> (String, Vec<TocEntry>) {
                     _ => {}
                 }
             }
-            Ok(Event::Empty(e)) => {
-                // Most `<w:pStyle>` elements in docx are self-closing.
-                if e.name().as_ref() == b"w:pStyle" {
-                    for attr in e.attributes().flatten() {
-                        if attr.key.as_ref() == b"w:val" {
-                            if let Ok(v) = std::str::from_utf8(&attr.value) {
-                                para_level = level_from_style(v);
-                            }
+            // Most `<w:pStyle>` elements in docx are self-closing — fold
+            // the element-name check into the match arm to keep clippy's
+            // `collapsible_match` lint (rustc 1.95+) happy.
+            Ok(Event::Empty(e)) if e.name().as_ref() == b"w:pStyle" => {
+                for attr in e.attributes().flatten() {
+                    if attr.key.as_ref() == b"w:val" {
+                        if let Ok(v) = std::str::from_utf8(&attr.value) {
+                            para_level = level_from_style(v);
                         }
                     }
                 }
             }
-            Ok(Event::Text(t)) => {
-                if in_t {
-                    if let Ok(raw) = t.unescape() {
-                        para_text.push_str(raw.as_ref());
-                    }
+            Ok(Event::Text(t)) if in_t => {
+                if let Ok(raw) = t.unescape() {
+                    para_text.push_str(raw.as_ref());
                 }
             }
             Ok(Event::End(e)) => match e.name().as_ref() {
